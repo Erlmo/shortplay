@@ -1,0 +1,59 @@
+workflows:
+  ios_app_store:
+    name: iOS (App Store signed)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+      groups:
+        - appstore_connect
+      vars:
+        BUNDLE_ID: com.monika.longlong
+        FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
+        PUB_HOSTED_URL: https://pub.flutter-io.cn
+
+    cache:
+      cache_paths:
+        - $HOME/.pub-cache
+        - $HOME/Library/Caches/CocoaPods
+        - $HOME/.cocoapods
+        - ios/Pods
+
+    triggering:
+      events:
+        - push
+        - pull_request
+      branch_patterns:
+        - pattern: "*"
+          include: true
+          source: true
+      cancel_previous_builds: true
+
+    scripts:
+      - name: Pub get
+        script: flutter pub get
+      - name: Test
+        script: flutter test
+      - name: Fetch signing files
+        script: |
+          keychain initialize
+          app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create
+          keychain add-certificates
+          xcode-project use-profiles
+          app-store-connect create-export-options-plist --bundle-id "$BUNDLE_ID" --type IOS_APP_STORE --output export_options.plist
+      - name: Build signed ipa
+        script: |
+          flutter build ipa --release --build-number=$BUILD_NUMBER --export-options-plist=export_options.plist
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+
+    publishing:
+      app_store_connect:
+        # 自动提交到TestFlight
+        submit_to_testflight: true
+        # 如果要自动提交审核到App Store，设置为true（一般先false）
+        submit_to_app_store: false

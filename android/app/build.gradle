@@ -1,0 +1,65 @@
+plugins {
+    id "com.android.application"
+    id "kotlin-android"
+    // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
+    id "dev.flutter.flutter-gradle-plugin"
+}
+
+android {
+    namespace = "com.example.shortplay"
+    compileSdk = 36
+    ndkVersion = flutter.ndkVersion
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+
+    kotlinOptions {
+        jvmTarget = "11"
+    }
+
+    defaultConfig {
+        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
+        applicationId = "com.example.shortplay"
+        // You can update the following values to match your application needs.
+        // For more information, see: https://flutter.dev/to/review-gradle-config.
+        minSdkVersion = flutter.minSdkVersion
+        targetSdk = flutter.targetSdkVersion
+        versionCode = flutter.versionCode
+        versionName = flutter.versionName
+
+        // 只产出 arm64-v8a 一个架构。99% 的现代 Android 真机都是 arm64-v8a，
+        // 移除 x86/x86_64/armeabi-v7a 后 APK 内的 native 库（libmpv≈12M、
+        // libflutter≈10M 等）只保留一份，APK 体积从四架构 fat 包的 ~47MB
+        // 降到 ~22MB。如需兼容老 32 位机或 x86 模拟器，再把对应 abi 加回来。
+        ndk {
+            abiFilters "arm64-v8a"
+        }
+    }
+
+    buildTypes {
+        release {
+            // TODO: Add your own signing config for the release build.
+            // Signing with the debug keys for now, so `flutter run --release` works.
+            signingConfig = signingConfigs.debug
+        }
+    }
+}
+
+flutter {
+    source = "../.."
+}
+
+dependencies {
+    // OkHttp powers HttpBridge.httpRange, the range fetcher the native crypto
+    // core calls back into. Declared explicitly rather than relying on a
+    // transitive copy from media_kit.
+    implementation "com.squareup.okhttp3:okhttp:4.12.0"
+
+    // Media3 ExoPlayer — NativePlayerPlugin 使用，替代 media_kit 的原生播放器实现
+    def media3_version = "1.4.1"
+    implementation "androidx.media3:media3-exoplayer:$media3_version"
+    implementation "androidx.media3:media3-common:$media3_version"
+    implementation "androidx.media3:media3-datasource:$media3_version"
+}
