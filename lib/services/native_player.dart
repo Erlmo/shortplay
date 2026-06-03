@@ -109,6 +109,10 @@ class NativePlayer {
     });
   }
 
+  static Future<void> setKeepScreenOn(bool on) async {
+    _channel.invokeMethod('setKeepScreenOn', {'on': on});
+  }
+
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;

@@ -47,7 +47,8 @@ class PlayerPage extends StatefulWidget {
   State<PlayerPage> createState() => _PlayerPageState();
 }
 
-class _PlayerPageState extends State<PlayerPage> with PlayerPreloadMixin {
+class _PlayerPageState extends State<PlayerPage>
+    with PlayerPreloadMixin, WidgetsBindingObserver {
   NativePlayer? _player;
   bool _playerInitialized = false;
   int _currentEpisodeIndex = 0;
@@ -60,6 +61,7 @@ class _PlayerPageState extends State<PlayerPage> with PlayerPreloadMixin {
   bool _swipeBlocked = false;
   Timer? _swipeBlockTimer;
   bool _userPaused = false;
+  bool _pausedByLifecycle = false;
   bool _isSpeedUp = false;
   double _playbackSpeed = 1.0;
   double? _seekingPositionMs;
@@ -101,6 +103,7 @@ class _PlayerPageState extends State<PlayerPage> with PlayerPreloadMixin {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _systemUi = PlayerSystemUiController();
     _systemUi.addListener(_onSystemUiChanged);
     _preloadManager = widget.preloadManager ??
@@ -108,6 +111,7 @@ class _PlayerPageState extends State<PlayerPage> with PlayerPreloadMixin {
     _danmakuController = PlayerDanmakuController(apiClient: widget.apiClient);
     _currentEpisodeIndex = widget.initialEpisodeIndex ?? 0;
     unawaited(_systemUi.setFullScreen());
+    NativePlayer.setKeepScreenOn(true);
     _prepare();
   }
 
@@ -117,6 +121,8 @@ class _PlayerPageState extends State<PlayerPage> with PlayerPreloadMixin {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    NativePlayer.setKeepScreenOn(false);
     _swipeBlockTimer?.cancel();
     _systemUi.removeListener(_onSystemUiChanged);
     _positionSub?.cancel();
@@ -132,6 +138,22 @@ class _PlayerPageState extends State<PlayerPage> with PlayerPreloadMixin {
     durationMsNotifier.dispose();
     _pageController?.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      if (_player != null && playingNotifier.value && !_userPaused) {
+        _pausedByLifecycle = true;
+        _player!.pause();
+      }
+    } else if (state == AppLifecycleState.resumed) {
+      if (_pausedByLifecycle) {
+        _pausedByLifecycle = false;
+        _player?.play();
+      }
+    }
   }
 
   // ─── 数据加载 ──────────────────────────────────────────────────────────

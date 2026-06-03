@@ -56,6 +56,12 @@ final class NativePlayerPlugin: NSObject, FlutterPlugin {
             handleSetRate(args: args, result: result)
         case "dispose":
             handleDispose(args: args, result: result)
+        case "setKeepScreenOn":
+            let on = args?["on"] as? Bool ?? false
+            DispatchQueue.main.async {
+                UIApplication.shared.isIdleTimerDisabled = on
+            }
+            result(nil)
         default:
             result(FlutterMethodNotImplemented)
         }

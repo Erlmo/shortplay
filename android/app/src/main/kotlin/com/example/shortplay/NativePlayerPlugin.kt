@@ -1,9 +1,11 @@
 package com.example.shortplay
 
+import android.app.Activity
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.view.Surface
+import android.view.WindowManager
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
@@ -23,13 +25,15 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
-class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
+class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
+    io.flutter.embedding.engine.plugins.activity.ActivityAware {
 
     private lateinit var methodChannel: MethodChannel
     private lateinit var eventChannel: EventChannel
     private lateinit var textureRegistry: TextureRegistry
     private lateinit var flutterBinding: FlutterPlugin.FlutterPluginBinding
 
+    private var activity: Activity? = null
     private val players = ConcurrentHashMap<Int, PlayerInstance>()
     private val nextId = AtomicInteger(1)
     private val handler = Handler(Looper.getMainLooper())
@@ -60,6 +64,15 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             }
         })
     }
+
+    override fun onAttachedToActivity(binding: io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding) {
+        activity = binding.activity
+    }
+    override fun onDetachedFromActivityForConfigChanges() { activity = null }
+    override fun onReattachedToActivityForConfigChanges(binding: io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding) {
+        activity = binding.activity
+    }
+    override fun onDetachedFromActivity() { activity = null }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         methodChannel.setMethodCallHandler(null)
@@ -105,6 +118,16 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             "dispose" -> {
                 val id = call.argument<Int>("id")!!
                 disposePlayer(id)
+                result.success(null)
+            }
+            "setKeepScreenOn" -> {
+                val on = call.argument<Boolean>("on") ?: false
+                handler.post {
+                    activity?.window?.let { w ->
+                        if (on) w.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        else w.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    }
+                }
                 result.success(null)
             }
             else -> result.notImplemented()
