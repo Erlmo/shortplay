@@ -8,6 +8,7 @@ import '../models/workflow_step.dart';
 import '../services/api_client.dart';
 import '../models/playback_record.dart';
 import '../services/download_service.dart';
+import '../services/crypto_native_channel.dart';
 import '../services/native_player.dart';
 import '../services/playback_history_store.dart';
 import '../services/player_danmaku_controller.dart';
@@ -364,6 +365,11 @@ class _PlayerPageState extends State<PlayerPage>
         _errorMessage = '解析播放地址失败: $e';
       });
       return;
+    }
+
+    if (keyHex.isNotEmpty) {
+      await CryptoNativeChannel.instance.prewarm(cdnUrl, keyHex);
+      if (!mounted || reqId != _requestId) return;
     }
 
     final player = NativePlayer();
