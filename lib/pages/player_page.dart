@@ -64,6 +64,7 @@ class _PlayerPageState extends State<PlayerPage>
   bool _userPaused = false;
   bool _pausedByLifecycle = false;
   bool _isSpeedUp = false;
+  int _activePointers = 0;
   double _playbackSpeed = 1.0;
   double? _seekingPositionMs;
   String _loadingStatusText = '正在准备播放资源';
@@ -283,6 +284,9 @@ class _PlayerPageState extends State<PlayerPage>
     }
 
     if (reusedPlayer != null) {
+      if (reusedPlayer.completed) {
+        unawaited(reusedPlayer.seek(Duration.zero));
+      }
       _player = reusedPlayer;
       _playerInitialized = true;
       _loading = false;
@@ -292,7 +296,7 @@ class _PlayerPageState extends State<PlayerPage>
       playingNotifier.value = reusedPlayer.playing;
       setState(() {});
       unawaited(reusedPlayer.setVolume(1.0));
-      unawaited(reusedPlayer.setRate(_playbackSpeed));
+      unawaited(reusedPlayer.setRate(_isSpeedUp ? 2.0 : _playbackSpeed));
       unawaited(reusedPlayer.play());
       if (initialSeekMs != null && initialSeekMs > 0) {
         unawaited(reusedPlayer.seek(Duration(milliseconds: initialSeekMs)));
@@ -372,6 +376,11 @@ class _PlayerPageState extends State<PlayerPage>
       if (!mounted || reqId != _requestId) return;
     }
 
+    if (keyHex.isNotEmpty) {
+      await CryptoNativeChannel.instance.prewarm(cdnUrl, keyHex);
+      if (!mounted || reqId != _requestId) return;
+    }
+
     final player = NativePlayer();
     try {
       await player.create(cdnUrl, keyHex);
@@ -394,7 +403,7 @@ class _PlayerPageState extends State<PlayerPage>
 
     // 先 play，让 AVPlayer 开始缓冲和解码
     unawaited(player.play());
-    unawaited(player.setRate(_playbackSpeed));
+    unawaited(player.setRate(_isSpeedUp ? 2.0 : _playbackSpeed));
     if (initialSeekMs != null && initialSeekMs > 0) {
       unawaited(player.seek(Duration(milliseconds: initialSeekMs)));
     }
@@ -573,6 +582,16 @@ class _PlayerPageState extends State<PlayerPage>
   }
 
   void _onLongPressEnd(LongPressEndDetails _) {
+    if (_activePointers > 0) return;
+    _isSpeedUp = false;
+    if (_player != null && _playerInitialized) {
+      unawaited(_player!.setRate(_playbackSpeed));
+    }
+    setState(() {});
+  }
+
+  void _endSpeedUp() {
+    if (!_isSpeedUp) return;
     _isSpeedUp = false;
     if (_player != null && _playerInitialized) {
       unawaited(_player!.setRate(_playbackSpeed));
@@ -687,14 +706,26 @@ class _PlayerPageState extends State<PlayerPage>
 
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Stack(
-        children: [
-          if (_pageController != null) _buildPageView(),
-          if (_loading) _buildLoading(),
-          if (!_loading && _errorMessage != null) _buildError(),
-          if (_swipeBlocked) _buildSwipeBlockedHint(),
-          if (_showNextLoading) _buildNextLoading(),
-        ],
+      body: Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: (_) => _activePointers++,
+        onPointerUp: (_) {
+          _activePointers--;
+          _endSpeedUp();
+        },
+        onPointerCancel: (_) {
+          _activePointers--;
+          _endSpeedUp();
+        },
+        child: Stack(
+          children: [
+            if (_pageController != null) _buildPageView(),
+            if (_loading) _buildLoading(),
+            if (!_loading && _errorMessage != null) _buildError(),
+            if (_swipeBlocked) _buildSwipeBlockedHint(),
+            if (_showNextLoading) _buildNextLoading(),
+          ],
+        ),
       ),
     );
   }
