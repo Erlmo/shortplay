@@ -143,6 +143,7 @@ class ApiClient {
 
     final body = {
       'video_id': videoId,
+      'content_type': 1004,
       'biz_param': {
         'detail_page_version': 0,
         'device_level': 3,
@@ -154,7 +155,6 @@ class ApiClient {
         'source': 4,
         'use_os_player': false,
         'use_server_dns': false,
-        'video_id_type': 0,
         'video_platform': 3,
       },
     };

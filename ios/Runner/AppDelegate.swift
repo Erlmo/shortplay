@@ -22,6 +22,9 @@ class MainFlutterViewController: FlutterViewController {
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
+    // 配置音频会话为 .playback：视频播放无视硬件静音键，静音模式下仍有声音
+    configureAudioSession()
+
     // 预热并持有全局 FlutterEngine，避免黑屏
     let engine = FlutterEngine(name: "main_engine")
     self.flutterEngine = engine
@@ -133,6 +136,18 @@ class MainFlutterViewController: FlutterViewController {
 }
 
 extension AppDelegate {
+  /// 配置 AVAudioSession 为 .playback，使视频在硬件静音开关打开时仍能播放声音。
+  /// 默认 category 为 .soloAmbient，会跟随静音键被静音。
+  func configureAudioSession() {
+    let session = AVAudioSession.sharedInstance()
+    do {
+      try session.setCategory(.playback, mode: .moviePlayback)
+      try session.setActive(true)
+    } catch {
+      NSLog("配置 AVAudioSession 失败: \(error.localizedDescription)")
+    }
+  }
+
   func captureVideoThumbnail(path: String, completion: @escaping (FlutterStandardTypedData?) -> Void) {
     DispatchQueue.global(qos: .userInitiated).async {
       let url = URL(fileURLWithPath: path)

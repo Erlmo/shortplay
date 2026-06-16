@@ -222,7 +222,9 @@ class _PlayerPageState extends State<PlayerPage>
         .asMap()
         .entries
         .map((e) => Episode(
-              index: e.key,
+              // e.key 是 0-based 下标；index 字段语义为 1-based 集号
+              //（选集面板/离线页直接显示，下载文件名也用它），故 +1。
+              index: e.key + 1,
               name: e.value.title,
               size: 0,
               url: e.value.itemId,
