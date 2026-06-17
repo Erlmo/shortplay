@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../models/episode.dart';
+import '../services/crypto_native_channel.dart';
 import '../services/native_player.dart';
 import '../services/theater_video_preload_manager.dart';
 import 'player_page.dart';
@@ -88,6 +89,19 @@ mixin PlayerPreloadMixin on State<PlayerPage> {
     }
 
     if (!mounted || prepareId != _prepareId) return;
+
+    // 建真实播放器前先 prewarm：把 moov + mdat 种子拉进 native 缓存。
+    // 否则 create 是冷启动，要现拉整个 moov(~300KB)+box scan，叠加当前集正在
+    // 播放抢带宽/解码器，首帧极易 10s 超时。prewarm 后 create 命中缓存跳过扫描，
+    // 首帧时间降到“仅解码”量级。失败也无妨——create 会自行冷启动兜底。
+    if (keyHex.isNotEmpty) {
+      try {
+        await CryptoNativeChannel.instance.prewarm(cdnUrl, keyHex);
+      } catch (e) {
+        debugPrint('[Player] prepareNext prewarm 失败(忽略，create 兜底): $e');
+      }
+      if (!mounted || prepareId != _prepareId) return;
+    }
 
     final player = NativePlayer();
     try {

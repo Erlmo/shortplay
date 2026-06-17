@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:dio/dio.dart';
 
@@ -111,8 +112,22 @@ class ApiClient {
 
   /// 请求番茄官方API获取加密视频信息
   Future<List<FqVideoItem>> fetchFqVideoModel(String videoId) async {
-    final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-    final queryString = '${ApiConfig.fqQueryParams}&_rticket=$timestamp';
+    // iid / device_id 每次随机生成（番茄风控按设备维度限流，固定值易被封）。
+    // 同一组值同时用于签名请求与番茄请求，保证服务端签名的 URL 与实际请求逐字一致。
+    // 以下 9 个参数为实测的最小必需集：缺签名服务强制项(iid/device_id/aid/
+    // version_code/version_name/device_brand/os_version/cdid)会签名失败；
+    // 缺 device_platform 番茄返回空。其余参数实测可省。
+    final iid = _randomNumericId(19);
+    final deviceId = _randomNumericId(16);
+    final queryString = 'iid=$iid'
+        '&device_id=$deviceId'
+        '&aid=${ApiConfig.fqAid}'
+        '&version_code=72132'
+        '&version_name=7.2.1.32'
+        '&device_brand=Xiaomi'
+        '&os_version=13'
+        '&device_platform=android'
+        '&cdid=75e2081b-d8bf-4767-91e8-3424546b4d2e';
     final fullUrl =
         'https://${ApiConfig.fqVideoHost}${ApiConfig.fqVideoPath}?$queryString';
 
@@ -200,6 +215,16 @@ class ApiClient {
       item.posterUrl = posterUrl;
     }
     return items;
+  }
+
+  /// 生成 [length] 位随机数字字符串，首位非 0（用于 iid / device_id）。
+  static final Random _idRandom = Random();
+  String _randomNumericId(int length) {
+    final buffer = StringBuffer()..write(1 + _idRandom.nextInt(9));
+    for (var i = 1; i < length; i++) {
+      buffer.write(_idRandom.nextInt(10));
+    }
+    return buffer.toString();
   }
 
   /// 请求服务端解密spade_a获取AES key
