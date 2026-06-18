@@ -28,13 +28,24 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+    }
 
-        // 只产出 arm64-v8a 一个架构。99% 的现代 Android 真机都是 arm64-v8a，
-        // 移除 x86/x86_64/armeabi-v7a 后 APK 内的 native 库（libmpv≈12M、
-        // libflutter≈10M 等）只保留一份，APK 体积从四架构 fat 包的 ~47MB
-        // 降到 ~22MB。如需兼容老 32 位机或 x86 模拟器，再把对应 abi 加回来。
-        ndk {
-            abiFilters "arm64-v8a"
+    // 只保留 arm64-v8a 一个架构。99% 的现代 Android 真机都是 arm64-v8a。
+    //
+    // 注意：defaultConfig.ndk.abiFilters 对 Flutter 无效——Flutter 的 gradle
+    // 插件会在其后重新注入全部 ABI 的引擎库（libflutter/libapp 等），覆盖掉
+    // 过滤。必须用 packagingOptions.jniLibs.excludes，它在打包最后阶段按路径
+    // 排除，对所有 .so（含引擎库）都生效，把四架构 fat 包从 ~52MB 砍到 ~22MB。
+    //
+    // 如需兼容老 32 位 arm 机，从下面 excludes 里去掉 "**/armeabi-v7a/**"；
+    // 如需 x86 模拟器，去掉 "**/x86/**" 与 "**/x86_64/**"。
+    packagingOptions {
+        jniLibs {
+            excludes += [
+                "**/x86/**",
+                "**/x86_64/**",
+                "**/armeabi-v7a/**",
+            ]
         }
     }
 
