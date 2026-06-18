@@ -42,6 +42,22 @@ void main() {
       );
     });
 
+    test('整剧分享：video_series_id 有值时优先用它', () {
+      const location =
+          'https://x.com/p?a={"video_series_id":"111","video_id":"222","vid":"333"}';
+      expect(ShareLinkResolver.parseSeriesIdFromLocation(location), '111');
+    });
+
+    test('单集分享：video_series_id 为空时回退到 video_id', () {
+      // 来自真实动态漫画分享链接：series_id 空，落到 video_id。
+      const location =
+          'https://novelquickapp.com/hongguo/ug/pages/video-animation-share?zlink=https%3A%2F%2Fapplink.novelquickapp.com%2FdVu4P%3FschemeParams%3D%257B%2522video_series_id%2522%253A%2522%2522%252C%2522vid%2522%253A%25227643858507061529625%2522%252C%2522video_id%2522%253A%25227643856485763533886%2522%257D';
+      expect(
+        ShareLinkResolver.parseSeriesIdFromLocation(location),
+        '7643856485763533886',
+      );
+    });
+
     test('无法解析返回 null', () {
       expect(
         ShareLinkResolver.parseSeriesIdFromLocation('https://x.com/p?a=b'),

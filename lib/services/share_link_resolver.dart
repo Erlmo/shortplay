@@ -96,11 +96,17 @@ class ShareLinkResolver {
     return null;
   }
 
-  /// 从 302 location 解析出 video_series_id。
+  /// 从 302 location 解析出可用于拉剧集的 id。
   ///
-  /// 正常结构：location?zlink=[applink]，applink?schemeParams=[json]，
-  /// json.video_series_id。Uri.queryParameters 每解析一层自动解一次 URL 编码，
-  /// 故只需逐层取参数即可，无需手动 decode。任何一层异常都回退到正则直取。
+  /// 正常结构：location?zlink=[applink]，applink?schemeParams=[json]。
+  /// Uri.queryParameters 每解析一层自动解一次 URL 编码，故逐层取参数即可。
+  ///
+  /// 整剧分享 json.video_series_id 有值，直接用。但「播放器里分享单集」的链接
+  /// （动态漫画 motion_comic 等）video_series_id 为空，真正的标识落在 video_id
+  /// （作品）和 vid（单集）上 —— 按 video_series_id → video_id → vid 优先级回退，
+  /// video_id 更接近 directory 接口要的 book_id。任何异常回退到正则直取。
+  static const _idKeys = ['video_series_id', 'video_id', 'vid'];
+
   static String? parseSeriesIdFromLocation(String location) {
     try {
       final zlink = Uri.parse(location).queryParameters['zlink'];
@@ -109,21 +115,28 @@ class ShareLinkResolver {
         if (schemeParams != null && schemeParams.isNotEmpty) {
           final json = jsonDecode(schemeParams);
           if (json is Map) {
-            final id = json['video_series_id']?.toString();
-            if (id != null && id.isNotEmpty) return id;
+            for (final key in _idKeys) {
+              final id = json[key]?.toString();
+              if (id != null && id.isNotEmpty) return id;
+            }
           }
         }
       }
     } catch (_) {
       // 结构变化或解码失败，落到下面的正则兜底。
     }
-    // 兜底：不管编码层数，直接在整串里捞 video_series_id 的值。
-    // 覆盖 "video_series_id":"123"、%22video_series_id%22%3A%22123%22 等形态。
-    final match = RegExp(
-      r'video_series_id(?:%22|")?(?:%3A|:)(?:%22|")?(\d+)',
-    ).firstMatch(location);
-    return match?.group(1);
+    // 兜底：不管编码层数，按同样优先级直接在整串里捞 id 的值。
+    // 覆盖 "video_id":"123"、%22video_id%22%3A%22123%22 等形态，跳过空串。
+    for (final key in _idKeys) {
+      final match = RegExp(
+        '$key(?:%22|")?(?:%3A|:)(?:%22|")?(\\d+)',
+      ).firstMatch(location);
+      final id = match?.group(1);
+      if (id != null && id.isNotEmpty) return id;
+    }
+    return null;
   }
 }
+
 
 
