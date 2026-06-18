@@ -364,8 +364,19 @@ class ApiClient {
     return NewPlayResult.fromJson(data);
   }
 
-  Map<String, dynamic> _decode(Response response) {
-    if (response.statusCode == null ||
+  /// 获取滚动公告列表。X-Dusa 由 SignInterceptor 对 api.weeou.com 自动签名。
+  Future<List<String>> fetchNotice() async {
+    final uri = Uri.http(
+      Uri.parse(ApiConfig.noveBaseUrl).host,
+      ApiConfig.notice,
+    );
+    final response = await _dio.getUri(uri);
+    final decoded = _decode(response);
+    final data = decoded['data'] as List? ?? [];
+    return data.map((e) => e.toString()).where((e) => e.isNotEmpty).toList();
+  }
+
+  Map<String, dynamic> _decode(Response response) {    if (response.statusCode == null ||
         response.statusCode! < 200 ||
         response.statusCode! >= 300) {
       throw ApiException('请求失败 (${response.statusCode})');
