@@ -36,6 +36,9 @@ class ApiClient {
   final Dio _dio;
   final Map<String, Drama> _dramaCache = {};
 
+  /// 暴露已配置 SignInterceptor 的 Dio，供 ShareLinkResolver 等复用同一签名链路。
+  Dio get dio => _dio;
+
   Future<Drama> fetchDramaDetail(String dramaId) async {
     if (_dramaCache.containsKey(dramaId)) return _dramaCache[dramaId]!;
     final candidates = <({String path, Map<String, dynamic> query})>[
@@ -244,6 +247,47 @@ class ApiClient {
       throw ApiException('无效的解密key');
     }
     return key;
+  }
+
+  /// 解析分享口令：把整段剪贴板文本交给服务端 POST /nove/share，
+  /// 服务端跟随 302、解码并返回 {videoid, text}。X-Dusa 由 SignInterceptor
+  /// 自动签名。返回 (videoId, title)，失败抛 ApiException。
+  Future<({String videoId, String? title})> fetchShareInfo(
+    String text,
+  ) async {
+    final Response<dynamic> response;
+    try {
+      response = await _dio.post(
+        '${ApiConfig.noveBaseUrl}${ApiConfig.noveShare}',
+        data: {'text': text},
+        options: Options(headers: {'Content-Type': 'application/json'}),
+      );
+    } on DioException catch (e) {
+      // 非 2xx（如签名失败 401）默认会抛 DioException，把状态码和服务端
+      // 返回体一并暴露出来，便于定位（否则只会看到笼统的“打开失败”）。
+      final status = e.response?.statusCode;
+      final serverMsg = e.response?.data is Map
+          ? (e.response!.data as Map)['message']?.toString()
+          : e.response?.data?.toString();
+      throw ApiException(
+        serverMsg?.isNotEmpty == true
+            ? serverMsg!
+            : '请求失败：${e.message ?? e.type.name}',
+        code: status,
+      );
+    }
+    final decoded = _asJsonMap(response.data);
+    if (decoded['code'] != 0) {
+      throw ApiException(
+        decoded['message']?.toString() ?? '解析分享链接失败',
+        code: decoded['code'] is int ? decoded['code'] as int : null,
+      );
+    }
+    final data = decoded['data'] as Map<String, dynamic>? ?? {};
+    final videoId = data['videoid']?.toString() ?? '';
+    if (videoId.isEmpty) throw ApiException('未解析到视频ID');
+    final title = data['text']?.toString();
+    return (videoId: videoId, title: title?.isNotEmpty == true ? title : null);
   }
 
   Future<DanmakuResponse> fetchDanmaku({

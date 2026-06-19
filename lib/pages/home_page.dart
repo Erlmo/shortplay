@@ -38,10 +38,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final _playHistoryKey = GlobalKey<PlayHistoryPageState>();
 
   // ─── 剪贴板分享口令 ────────────────────────────────────────────────────
-  final _shareLinkResolver = ShareLinkResolver();
+  late final ShareLinkResolver _shareLinkResolver =
+      ShareLinkResolver(apiClient: widget.apiClient);
 
-  /// 已处理过的剪贴板文本，避免同一段口令反复弹窗。
-  String? _lastClipboardText;
+  /// 最近一次「已成功打开播放」的口令文本。仅用它去重：避免播放返回后又对
+  /// 同一段口令重复弹窗。用户取消/解析失败的口令不记入，下次回前台仍会再弹。
+  String? _openedClipboardText;
 
   /// 正在解析/弹窗中，避免并发触发。
   bool _handlingShareLink = false;
@@ -65,9 +67,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         apiClient: widget.apiClient,
       ),
     ];
-    // 冷启动时也查一次：用户常在打开 App 前就复制好了口令。
+    // 冷启动时也查一次：用户常在打开 App 前就复制好了口令。iOS 上 UIPasteboard
+    // 在首帧可能尚未就绪，读到空，故 600ms 后再补一次。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkClipboardForShareLink();
+      Future.delayed(const Duration(milliseconds: 600), () {
+        if (mounted) _checkClipboardForShareLink();
+      });
     });
   }
 
@@ -92,11 +98,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final text = data?.text?.trim();
     if (text == null || text.isEmpty) return;
-    // 已处理过的同一段文本不重复弹窗。
-    if (text == _lastClipboardText) return;
     if (!ShareLinkResolver.looksLikeShareText(text)) return;
+    // 已成功打开过的同一段口令不再重复弹窗（播放返回首页的常见场景）。
+    if (text == _openedClipboardText) return;
 
-    _lastClipboardText = text;
     if (!mounted) return;
 
     final title = ShareLinkResolver.extractTitle(text);
@@ -253,12 +258,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _showSnack('无法识别该分享链接');
         return;
       }
-      final seriesId = int.tryParse(result.seriesId);
+      final seriesId = int.tryParse(result.videoId);
       if (seriesId == null) {
         _showSnack('链接解析失败');
         return;
       }
-      // 仅需 id 驱动播放页拉剧集；name 用于顶部展示，优先用口令里的剧名。
+      // 仅需 id 驱动播放页拉剧集；name 用于顶部展示，优先用服务端返回的剧名。
       final drama = Drama(
         id: seriesId,
         name: result.title ?? title ?? '分享短剧',
@@ -270,6 +275,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         updateTime: '',
         isTheaterResource: true,
       );
+      // 成功解析并跳转，记下该口令，避免播放返回首页后又对同一段重复弹窗。
+      _openedClipboardText = text;
       Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => PlayerPage(
@@ -282,7 +289,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     } catch (e) {
       if (mounted) {
         Navigator.of(context).pop(); // 关掉加载圈
-        _showSnack('打开失败，请重试');
+        final msg = e is ApiException
+            ? (e.code != null ? '${e.message} (${e.code})' : e.message)
+            : '打开失败：$e';
+        _showSnack(msg);
       }
     } finally {
       _handlingShareLink = false;

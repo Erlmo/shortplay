@@ -38,8 +38,7 @@ class SignNative {
     return lib.lookupFunction<_WeeouSignC, _WeeouSignDart>('weeou_sign');
   }
 
-  /// Generate X-Dusa signature for the given request parts.
-  /// Returns the base64 signature string, or null on failure.
+  /// 为请求各部分生成签名，失败返回 null。
   String? sign({
     required String method,
     required String path,
@@ -53,7 +52,12 @@ class SignNative {
     final pOut = calloc<Uint8>(64).cast<Utf8>();
 
     try {
-      final len = _sign(pMethod, pPath, pQuery, pBody, body.length, pOut);
+      // body 长度须按 UTF-8 字节数传入，与 native 侧口径一致。Dart 的
+      // body.length 是 UTF-16 码元数，纯 ASCII 时恰好相等，但含中文/《》的
+      // body（如 /nove/share 的口令文本）会偏小导致校验失败。pBody.length
+      // 是 toNativeUtf8 写出的 UTF-8 字节数（不含结尾 \0）。
+      final bodyByteLen = pBody.length;
+      final len = _sign(pMethod, pPath, pQuery, pBody, bodyByteLen, pOut);
       if (len <= 0) return null;
       return pOut.toDartString();
     } finally {

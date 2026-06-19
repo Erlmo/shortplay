@@ -6,7 +6,7 @@ import '../config/api_config.dart';
 import 'sign_native.dart';
 
 /// Dio interceptor that automatically signs requests to api.weeou.com
-/// with the X-Dusa header (medusa_lite algorithm, native .so).
+/// with the X-Dusa header (computed by the native .so).
 ///
 /// Only signs requests whose host matches [ApiConfig.noveBaseUrl].
 /// Requests to other hosts (e.g. fqnovel.com) pass through unsigned.
@@ -29,7 +29,7 @@ class SignInterceptor extends Interceptor {
     final method = options.method.toUpperCase();
     final path = uri.path.isEmpty ? '/' : uri.path;
 
-    // Query: sort by key, encode same as PHP http_build_query(ksort())
+    // Query: sort by key, then encode
     final sorted = Map.fromEntries(
       uri.queryParameters.entries.toList()
         ..sort((a, b) => a.key.compareTo(b.key)),

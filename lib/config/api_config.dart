@@ -7,6 +7,7 @@ class ApiConfig {
   static const String noveDirectory = '/nove/directory';
   static const String noveDanmaku = '/nove/danmaku';
   static const String notice = '/notice';
+  static const String noveShare = '/nove/share';
 
   // 番茄视频API配置
   static const String fqVideoHost = 'api3-normal-sinfonlinea.fqnovel.com';

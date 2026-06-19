@@ -7,6 +7,7 @@ import '../models/episode.dart';
 import '../models/workflow_step.dart';
 import '../services/api_client.dart';
 import '../models/playback_record.dart';
+import '../services/app_route_observer.dart';
 import '../services/download_service.dart';
 import '../services/crypto_native_channel.dart';
 import '../services/native_player.dart';
@@ -49,7 +50,7 @@ class PlayerPage extends StatefulWidget {
 }
 
 class _PlayerPageState extends State<PlayerPage>
-    with PlayerPreloadMixin, WidgetsBindingObserver {
+    with PlayerPreloadMixin, WidgetsBindingObserver, RouteAware {
   NativePlayer? _player;
   bool _playerInitialized = false;
   int _currentEpisodeIndex = 0;
@@ -63,6 +64,9 @@ class _PlayerPageState extends State<PlayerPage>
   Timer? _swipeBlockTimer;
   bool _userPaused = false;
   bool _pausedByLifecycle = false;
+  // 本页被新路由（如再次打开的播放页）覆盖时暂停，新路由弹出回到本页时恢复，
+  // 与 _pausedByLifecycle 分开记，避免两套恢复逻辑互相误触发。
+  bool _pausedByRoute = false;
   bool _isSpeedUp = false;
   int _activePointers = 0;
   double _playbackSpeed = 1.0;
@@ -122,7 +126,38 @@ class _PlayerPageState extends State<PlayerPage>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 订阅路由覆盖事件。ModalRoute 在此处才可用。
+    final route = ModalRoute.of(context);
+    if (route is PageRoute) {
+      appRouteObserver.subscribe(this, route);
+    }
+  }
+
+  // 本页之上 push 了新路由（例如又识别剪贴板打开了新的播放页）：暂停，
+  // 否则旧播放器会在后面继续出声，与新页音频叠加。
+  @override
+  void didPushNext() {
+    if (_player != null && playingNotifier.value && !_userPaused) {
+      _pausedByRoute = true;
+      _player!.pause();
+    }
+  }
+
+  // 上层路由弹出、本页重新可见：恢复之前因覆盖而暂停的播放。
+  @override
+  void didPopNext() {
+    if (_pausedByRoute) {
+      _pausedByRoute = false;
+      // 用户未手动暂停、也不是被生命周期暂停时才自动续播。
+      if (!_userPaused && !_pausedByLifecycle) _player?.play();
+    }
+  }
+
+  @override
   void dispose() {
+    appRouteObserver.unsubscribe(this);
     WidgetsBinding.instance.removeObserver(this);
     NativePlayer.setKeepScreenOn(false);
     _swipeBlockTimer?.cancel();

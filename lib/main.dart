@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'pages/home_page.dart';
 import 'services/api_client.dart';
+import 'services/app_route_observer.dart';
 import 'services/download_service.dart';
 
 void main() async {
@@ -86,6 +87,7 @@ class _ShortPlayAppState extends State<ShortPlayApp>
       title: 'ShortPlay',
       debugShowCheckedModeBanner: false,
       theme: baseTheme,
+      navigatorObservers: [appRouteObserver],
       home: HomePage(
         apiClient: widget.apiClient,
         downloadService: widget.downloadService,
