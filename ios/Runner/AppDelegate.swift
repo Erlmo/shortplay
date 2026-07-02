@@ -22,7 +22,7 @@ class MainFlutterViewController: FlutterViewController {
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    // 配置音频会话为 .playback：视频播放无视硬件静音键，静音模式下仍有声音
+    // 配置音频会话为 .playback + .mixWithOthers=false：独占播放，新播放器激活时旧播放器应静音
     configureAudioSession()
 
     // 预热并持有全局 FlutterEngine，避免黑屏

@@ -98,17 +98,34 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final text = data?.text?.trim();
     if (text == null || text.isEmpty) return;
-    if (!ShareLinkResolver.looksLikeShareText(text)) return;
     // 已成功打开过的同一段口令不再重复弹窗（播放返回首页的常见场景）。
     if (text == _openedClipboardText) return;
 
-    if (!mounted) return;
+    // 设置标志防止重复触发（即使还没真正开始处理）
+    _handlingShareLink = true;
 
-    final title = ShareLinkResolver.extractTitle(text);
-    final confirmed = await _showShareConfirmDialog(title);
-    if (confirmed != true || !mounted) return;
+    // 直接调用 resolve，由 API 判断是否是分享链接并解析
+    final result = await _shareLinkResolver.resolve(text);
+    if (result == null) {
+      _handlingShareLink = false;
+      return; // 不是分享链接或解析失败，静默忽略
+    }
 
-    await _resolveAndOpen(text, title);
+    if (!mounted) {
+      _handlingShareLink = false;
+      return;
+    }
+
+    final confirmed = await _showShareConfirmDialog(result.title);
+    if (confirmed != true || !mounted) {
+      _handlingShareLink = false;
+      return;
+    }
+
+    // 弹窗确认后记录该口令，避免播放返回首页后又对同一段重复弹窗
+    _openedClipboardText = text;
+    await _resolveAndOpen(result);
+    _handlingShareLink = false;
   }
 
   Future<bool?> _showShareConfirmDialog(String? title) {
@@ -240,63 +257,37 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _resolveAndOpen(String text, String? title) async {
+  Future<void> _resolveAndOpen(ShareLinkResult result) async {
     _handlingShareLink = true;
-    // 解析需要几次网络往返，先给个不可关闭的加载圈。
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) =>
-          const Center(child: CupertinoActivityIndicator(radius: 16)),
-    );
-    try {
-      final result = await _shareLinkResolver.resolve(text);
-      if (!mounted) return;
-      Navigator.of(context).pop(); // 关掉加载圈
-
-      if (result == null) {
-        _showSnack('无法识别该分享链接');
-        return;
-      }
-      final seriesId = int.tryParse(result.videoId);
-      if (seriesId == null) {
-        _showSnack('链接解析失败');
-        return;
-      }
-      // 仅需 id 驱动播放页拉剧集；name 用于顶部展示，优先用服务端返回的剧名。
-      final drama = Drama(
-        id: seriesId,
-        name: result.title ?? title ?? '分享短剧',
-        actors: '',
-        cover: '',
-        intro: '',
-        tags: const [],
-        status: '',
-        updateTime: '',
-        isTheaterResource: true,
-      );
-      // 成功解析并跳转，记下该口令，避免播放返回首页后又对同一段重复弹窗。
-      _openedClipboardText = text;
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) => PlayerPage(
-            drama: drama,
-            apiClient: widget.apiClient,
-            downloadService: widget.downloadService,
-          ),
-        ),
-      );
-    } catch (e) {
-      if (mounted) {
-        Navigator.of(context).pop(); // 关掉加载圈
-        final msg = e is ApiException
-            ? (e.code != null ? '${e.message} (${e.code})' : e.message)
-            : '打开失败：$e';
-        _showSnack(msg);
-      }
-    } finally {
+    final seriesId = int.tryParse(result.videoId);
+    if (seriesId == null) {
       _handlingShareLink = false;
+      _showSnack('链接解析失败');
+      return;
     }
+    // 仅需 id 驱动播放页拉剧集；name 用于顶部展示，优先用服务端返回的剧名。
+    final drama = Drama(
+      id: seriesId,
+      name: result.title ?? '分享短剧',
+      actors: '',
+      cover: '',
+      intro: '',
+      tags: const [],
+      status: '',
+      updateTime: '',
+      isTheaterResource: true,
+    );
+    // 成功解析并跳转
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PlayerPage(
+          drama: drama,
+          apiClient: widget.apiClient,
+          downloadService: widget.downloadService,
+        ),
+      ),
+    );
+    _handlingShareLink = false;
   }
 
   void _showSnack(String message) {

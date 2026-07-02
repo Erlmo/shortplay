@@ -41,6 +41,8 @@ mixin PlayerPreloadMixin on State<PlayerPage> {
     _draining = true;
     while (_disposeQueue.isNotEmpty) {
       final p = _disposeQueue.removeAt(0);
+      // 先暂停再销毁，确保音频立即停止
+      await p.pause();
       await p.dispose();
     }
     _draining = false;
