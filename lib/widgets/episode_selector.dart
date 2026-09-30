@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import '../models/episode.dart';
 
 class EpisodeSelector extends StatefulWidget {
@@ -7,11 +8,17 @@ class EpisodeSelector extends StatefulWidget {
     required this.episodes,
     required this.activeIndex,
     required this.onSelect,
+    this.selectedIndexes,
+    this.disabledLabels = const {},
   });
 
   final List<Episode> episodes;
   final int activeIndex;
   final ValueChanged<int> onSelect;
+
+  /// 非 null 时复用相同分页与网格，改为多选下载模式。
+  final Set<int>? selectedIndexes;
+  final Map<int, String> disabledLabels;
 
   @override
   State<EpisodeSelector> createState() => _EpisodeSelectorState();
@@ -58,10 +65,9 @@ class _EpisodeSelectorState extends State<EpisodeSelector> {
   }
 
   void _scrollToActiveTab() {
-    if (!_tabScrollController.hasClients) return;
+    if (!mounted || !_tabScrollController.hasClients) return;
     const double estimatedItemWidth = 85.0;
-    final double targetOffset =
-        (_currentTabIndex * estimatedItemWidth) -
+    final double targetOffset = (_currentTabIndex * estimatedItemWidth) -
         (MediaQuery.of(context).size.width / 2) +
         (estimatedItemWidth / 2);
 
@@ -82,7 +88,7 @@ class _EpisodeSelectorState extends State<EpisodeSelector> {
     final hasTabs = totalTabs > 1;
 
     // 当前分页下的剧集列表
-    final start = _currentTabIndex * _pageSize;
+    final start = (_currentTabIndex * _pageSize).clamp(0, totalEpisodes);
     final end = (start + _pageSize) > totalEpisodes
         ? totalEpisodes
         : (start + _pageSize);
@@ -103,9 +109,8 @@ class _EpisodeSelectorState extends State<EpisodeSelector> {
               itemBuilder: (context, index) {
                 final tabStart = index * _pageSize + 1;
                 final tabEnd = (index + 1) * _pageSize;
-                final displayEnd = tabEnd > totalEpisodes
-                    ? totalEpisodes
-                    : tabEnd;
+                final displayEnd =
+                    tabEnd > totalEpisodes ? totalEpisodes : tabEnd;
                 final isSelected = index == _currentTabIndex;
 
                 return Center(
@@ -171,76 +176,102 @@ class _EpisodeSelectorState extends State<EpisodeSelector> {
             itemBuilder: (context, index) {
               final episode = currentEpisodes[index];
               final globalIndex = start + index;
-              final isActive = globalIndex == widget.activeIndex;
+              final multiSelect = widget.selectedIndexes != null;
+              final isActive = multiSelect
+                  ? widget.selectedIndexes!.contains(globalIndex)
+                  : globalIndex == widget.activeIndex;
+              final disabledLabel = widget.disabledLabels[globalIndex];
 
-              return AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                curve: Curves.easeOut,
-                decoration: BoxDecoration(
-                  gradient: isActive
-                      ? const LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [
-                            Color(0xFF333333), // 略浅的黑
-                            Color(0xFF111111), // 深黑
-                          ],
-                        )
-                      : null,
-                  color: isActive ? null : const Color(0xFFF3F4F6), // 浅灰背景
-                  borderRadius: BorderRadius.circular(8),
-                  boxShadow: isActive
-                      ? [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.25),
-                            blurRadius: 8,
-                            offset: const Offset(0, 4),
-                          ),
-                        ]
-                      : null,
-                  border: isActive
-                      ? Border.all(
-                          color: Colors.white.withValues(alpha: 0.1),
-                          width: 1,
-                        )
-                      : null,
-                ),
-                child: Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    onTap: () => widget.onSelect(globalIndex),
+              return Semantics(
+                label:
+                    '第${episode.index}集${disabledLabel == null ? '' : '，$disabledLabel'}',
+                selected: isActive,
+                enabled: disabledLabel == null,
+                child: AnimatedContainer(
+                  key: ValueKey('episode-$globalIndex'),
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeOut,
+                  decoration: BoxDecoration(
+                    gradient: isActive
+                        ? const LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [
+                              Color(0xFF333333), // 略浅的黑
+                              Color(0xFF111111), // 深黑
+                            ],
+                          )
+                        : null,
+                    color: isActive ? null : const Color(0xFFF3F4F6), // 浅灰背景
                     borderRadius: BorderRadius.circular(8),
-                    child: Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        Text(
-                          '${episode.index}',
-                          style: TextStyle(
-                            color: isActive
-                                ? const Color(0xFFFAFAFA)
-                                : const Color(0xFF4B5563),
-                            fontWeight: isActive
-                                ? FontWeight.w700
-                                : FontWeight.w600,
-                            fontSize: 15,
-                          ),
-                        ),
-                        // 正在播放的动态标识（静态模拟）
-                        if (isActive)
-                          Positioned(
-                            bottom: 6,
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                _buildMusicBar(3),
-                                const SizedBox(width: 1),
-                                _buildMusicBar(5),
-                                const SizedBox(width: 1),
-                                _buildMusicBar(2),
-                              ],
+                    boxShadow: isActive
+                        ? [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.25),
+                              blurRadius: 8,
+                              offset: const Offset(0, 4),
+                            ),
+                          ]
+                        : null,
+                    border: isActive
+                        ? Border.all(
+                            color: Colors.white.withValues(alpha: 0.1),
+                            width: 1,
+                          )
+                        : null,
+                  ),
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: disabledLabel == null
+                          ? () => widget.onSelect(globalIndex)
+                          : null,
+                      borderRadius: BorderRadius.circular(8),
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          Text(
+                            '${episode.index}',
+                            style: TextStyle(
+                              color: isActive
+                                  ? const Color(0xFFFAFAFA)
+                                  : const Color(0xFF4B5563),
+                              fontWeight:
+                                  isActive ? FontWeight.w700 : FontWeight.w600,
+                              fontSize: 15,
                             ),
                           ),
-                      ],
+                          // 正在播放的动态标识（静态模拟）
+                          if (disabledLabel != null)
+                            Positioned(
+                              bottom: 1,
+                              child: Text(disabledLabel,
+                                  style: const TextStyle(
+                                      fontSize: 8, color: Color(0xFF999999))),
+                            ),
+                          if (multiSelect && isActive)
+                            const Positioned(
+                              right: 2,
+                              top: 2,
+                              child: Icon(Icons.check_circle,
+                                  size: 12, color: Color(0xFF4ADE80)),
+                            ),
+                          if (!multiSelect && isActive)
+                            Positioned(
+                              bottom: 6,
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  _buildMusicBar(3),
+                                  const SizedBox(width: 1),
+                                  _buildMusicBar(5),
+                                  const SizedBox(width: 1),
+                                  _buildMusicBar(2),
+                                ],
+                              ),
+                            ),
+                        ],
+                      ),
                     ),
                   ),
                 ),

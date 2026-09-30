@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -6,6 +7,7 @@ import '../models/drama.dart';
 import '../services/api_client.dart';
 import '../services/download_service.dart';
 import '../services/offline_playback_cache.dart';
+import '../widgets/app_notice.dart';
 import 'player_page.dart';
 
 class CachePage extends StatefulWidget {
@@ -21,25 +23,51 @@ class CachePage extends StatefulWidget {
   State<CachePage> createState() => _CachePageState();
 }
 
-class _CachePageState extends State<CachePage> {
+class _CachePageState extends State<CachePage> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
     widget.downloadService.addListener(_onChanged);
-    if (!widget.downloadService.loaded) {
-      widget.downloadService.ensureLoaded().then((_) {
-        if (mounted) setState(() {});
-      });
-    }
+    WidgetsBinding.instance.addObserver(this);
+    unawaited(_refreshFiles());
   }
 
   @override
   void dispose() {
     widget.downloadService.removeListener(_onChanged);
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
-  void _onChanged() => setState(() {});
+  void _onChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) unawaited(_refreshFiles());
+  }
+
+  Future<void> _refreshFiles() async {
+    try {
+      await widget.downloadService.refreshFiles();
+    } catch (error) {
+      debugPrint('刷新缓存失败: $error');
+    }
+  }
+
+  Future<void> _deleteGroup(DramaDownloadGroup group) async {
+    try {
+      await widget.downloadService.deleteGroup(group.dramaId);
+    } catch (error) {
+      if (mounted) {
+        showAppNotice(context,
+            message: '删除缓存失败',
+            detail: error is ApiException ? error.message : '请稍后重试',
+            kind: AppNoticeKind.error);
+      }
+    }
+  }
 
   void _playEpisode(DramaDownloadGroup group, EpisodeDownload ep) {
     final sortedEps = OfflinePlaybackCache.completedEpisodesFromGroup(group);
@@ -47,12 +75,9 @@ class _CachePageState extends State<CachePage> {
       (e) => e.index == ep.episode.index,
     );
     if (targetIndex < 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('本地缓存文件不存在，请重新下载'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      unawaited(_refreshFiles());
+      showAppNotice(context,
+          message: '本地缓存不可用', detail: '文件已丢失，请重新下载', kind: AppNoticeKind.error);
       return;
     }
     final drama = Drama(
@@ -130,6 +155,17 @@ class _CachePageState extends State<CachePage> {
             elevation: 0,
             foregroundColor: const Color(0xFF1D1D1F),
           ),
+          if (ds.lastError != null)
+            SliverToBoxAdapter(
+              child: ListTile(
+                leading: const Icon(Icons.error_outline, color: Colors.red),
+                title: Text(ds.lastError!),
+                trailing: TextButton(
+                  onPressed: _refreshFiles,
+                  child: const Text('重试'),
+                ),
+              ),
+            ),
           if (groups.isEmpty)
             SliverToBoxAdapter(
               child: Padding(
@@ -152,7 +188,7 @@ class _CachePageState extends State<CachePage> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      '在播放页点击下载按钮即可缓存剧集',
+                      '在详情页点击下载按钮即可缓存剧集',
                       style: TextStyle(color: Colors.grey[300], fontSize: 13),
                     ),
                   ],
@@ -163,6 +199,7 @@ class _CachePageState extends State<CachePage> {
             SliverList(
               delegate: SliverChildBuilderDelegate(
                 (context, i) => _GroupCard(
+                  key: ValueKey(groups[i].dramaId),
                   group: groups[i],
                   onDelete: () => _confirmDelete(context, groups[i]),
                   onPlay: (ep) => _playEpisode(groups[i], ep),
@@ -191,7 +228,7 @@ class _CachePageState extends State<CachePage> {
           TextButton(
             onPressed: () {
               Navigator.pop(context);
-              widget.downloadService.deleteGroup(group.dramaId);
+              unawaited(_deleteGroup(group));
             },
             child: const Text('删除', style: TextStyle(color: Colors.red)),
           ),
@@ -203,6 +240,7 @@ class _CachePageState extends State<CachePage> {
 
 class _GroupCard extends StatefulWidget {
   const _GroupCard({
+    super.key,
     required this.group,
     required this.onDelete,
     required this.onPlay,
@@ -331,7 +369,9 @@ class _GroupCardState extends State<_GroupCard> {
                               if (!group.isAllCompleted) ...[
                                 const Spacer(),
                                 Text(
-                                  '${(progress * 100).toInt()}%',
+                                  group.failedCount > 0
+                                      ? '${group.failedCount} 集失败'
+                                      : '${(progress * 100).toInt()}%',
                                   style: const TextStyle(
                                     fontSize: 12,
                                     color: Color(0xFFFF2442),
@@ -385,7 +425,7 @@ class _GroupCardState extends State<_GroupCard> {
                                     ),
                                     const SizedBox(width: 6),
                                     Text(
-                                      isPaused ? '继续下载' : '暂停下载',
+                                      isPaused ? '继续 / 重试' : '暂停下载',
                                       style: const TextStyle(
                                         fontSize: 12,
                                         color: Color(0xFF333333),
@@ -414,9 +454,7 @@ class _GroupCardState extends State<_GroupCard> {
                       (ep) => _EpisodeChip(
                         ep: ep,
                         downloadService: widget.downloadService,
-                        onPlay: ep.status == DownloadStatus.completed
-                            ? () => widget.onPlay(ep)
-                            : null,
+                        onPlay: ep.isPlayable ? () => widget.onPlay(ep) : null,
                       ),
                     )
                     .toList(),
@@ -441,7 +479,7 @@ class _EpisodeChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final status = ep.status;
-    final isCompleted = status == DownloadStatus.completed;
+    final isCompleted = ep.isPlayable;
     final isDownloading = status == DownloadStatus.downloading;
     final isPaused = status == DownloadStatus.paused;
     final isPending = status == DownloadStatus.pending;
@@ -463,15 +501,23 @@ class _EpisodeChip extends StatelessWidget {
     }
 
     return GestureDetector(
+      onLongPress: ep.error == null
+          ? null
+          : () {
+              showAppNotice(context,
+                  message: '第${ep.episode.index}集缓存失败',
+                  detail: ep.error!,
+                  kind: AppNoticeKind.error);
+            },
       onTap: () {
         if (isCompleted) {
           onPlay?.call();
-        } else if (isDownloading) {
+        } else if (isDownloading || isPending) {
           downloadService.pauseEpisode(ep);
         } else if (isPaused) {
           downloadService.resumeEpisode(ep);
-        } else if (status == DownloadStatus.failed) {
-          ep.status = DownloadStatus.paused;
+        } else if (status == DownloadStatus.failed ||
+            status == DownloadStatus.completed) {
           downloadService.resumeEpisode(ep);
         }
       },

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'pages/home_page.dart';
@@ -48,21 +50,23 @@ class _ShortPlayAppState extends State<ShortPlayApp>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
-      widget.downloadService.saveState();
+      // 生命周期回调无法 await，捕获保存错误以免成为未处理的 Future。
+      unawaited(widget.downloadService.saveState().catchError((Object error) {
+        debugPrint('后台保存缓存失败: $error');
+      }));
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme =
-        ColorScheme.fromSeed(
-          seedColor: const Color(0xFFFF2442), // 小红书红
-          brightness: Brightness.light,
-        ).copyWith(
-          primary: const Color(0xFFFF2442),
-          secondary: const Color(0xFFFFD93D),
-          surface: const Color(0xFFFBFBFB), // 稍微带一点点灰的白，更有质感
-        );
+    final colorScheme = ColorScheme.fromSeed(
+      seedColor: const Color(0xFFFF2442), // 小红书红
+      brightness: Brightness.light,
+    ).copyWith(
+      primary: const Color(0xFFFF2442),
+      secondary: const Color(0xFFFFD93D),
+      surface: const Color(0xFFFBFBFB), // 稍微带一点点灰的白，更有质感
+    );
 
     final baseTheme = ThemeData(
       useMaterial3: true,
@@ -78,9 +82,9 @@ class _ShortPlayAppState extends State<ShortPlayApp>
         color: Colors.white,
       ),
       textTheme: ThemeData(brightness: Brightness.light).textTheme.apply(
-        bodyColor: const Color(0xFF1D1D1F),
-        displayColor: const Color(0xFF1D1D1F),
-      ),
+            bodyColor: const Color(0xFF1D1D1F),
+            displayColor: const Color(0xFF1D1D1F),
+          ),
     );
 
     return MaterialApp(

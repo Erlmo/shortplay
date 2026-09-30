@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
 
+import 'player_more_menu.dart';
+
+export 'player_more_menu.dart' show PlayerMenuAction;
+
 class PlayerControlsOverlay extends StatelessWidget {
   const PlayerControlsOverlay({
     super.key,
@@ -22,12 +26,24 @@ class PlayerControlsOverlay extends StatelessWidget {
     required this.onBack,
     required this.onToggleDanmaku,
     required this.onSpeedTap,
+    this.onSpeedChanged,
     required this.onEpisodeTap,
+    required this.onMenuAction,
+    required this.onMenuOpened,
+    required this.onMenuClosed,
+    required this.canDownload,
+    required this.sleepTimerActive,
+    this.currentQuality = '',
+    this.loadQualities,
+    this.onQualityChanged,
+    this.onSleepDurationChanged,
+    this.sleepTimerMinutes,
     required this.onTogglePlay,
     required this.onToggleLandscapeFullScreen,
     required this.onSeekStart,
     required this.onSeekChanged,
     required this.onSeekEnd,
+    this.episodeNumber,
     this.durationMsNotifier,
     this.videoWidth = 0,
     this.videoHeight = 0,
@@ -46,6 +62,7 @@ class PlayerControlsOverlay extends StatelessWidget {
   final bool isSpeedUp;
   final bool userPaused;
   final int currentEpisodeIndex;
+  final int? episodeNumber;
   final double playbackSpeed;
   final ValueNotifier<int> positionMsNotifier;
   final ValueNotifier<bool> playingNotifier;
@@ -54,7 +71,18 @@ class PlayerControlsOverlay extends StatelessWidget {
   final VoidCallback onBack;
   final VoidCallback onToggleDanmaku;
   final VoidCallback onSpeedTap;
+  final ValueChanged<double>? onSpeedChanged;
   final VoidCallback onEpisodeTap;
+  final ValueChanged<PlayerMenuAction> onMenuAction;
+  final VoidCallback onMenuOpened;
+  final VoidCallback onMenuClosed;
+  final bool canDownload;
+  final bool sleepTimerActive;
+  final String currentQuality;
+  final Future<List<String>> Function()? loadQualities;
+  final ValueChanged<String>? onQualityChanged;
+  final ValueChanged<Duration?>? onSleepDurationChanged;
+  final int? sleepTimerMinutes;
   final VoidCallback onTogglePlay;
   final VoidCallback onToggleLandscapeFullScreen;
   final ValueChanged<double> onSeekStart;
@@ -92,7 +120,19 @@ class PlayerControlsOverlay extends StatelessWidget {
             onBack: onBack,
             onToggleDanmaku: onToggleDanmaku,
             onSpeedTap: onSpeedTap,
+            onSpeedChanged: onSpeedChanged,
+            currentQuality: currentQuality,
+            loadQualities: loadQualities,
+            onQualityChanged: onQualityChanged,
+            onSleepDurationChanged: onSleepDurationChanged,
+            sleepTimerMinutes: sleepTimerMinutes,
             onEpisodeTap: onEpisodeTap,
+            episodeNumber: episodeNumber,
+            canDownload: canDownload,
+            sleepTimerActive: sleepTimerActive,
+            onMenuAction: onMenuAction,
+            onMenuOpened: onMenuOpened,
+            onMenuClosed: onMenuClosed,
           ),
         if (isSpeedUp) _SpeedUpHint(textTheme: textTheme),
         if (userPaused) _CenterPlayButton(onTap: onTogglePlay),
@@ -164,7 +204,19 @@ class _TopControls extends StatelessWidget {
     required this.onBack,
     required this.onToggleDanmaku,
     required this.onSpeedTap,
+    this.onSpeedChanged,
     required this.onEpisodeTap,
+    required this.onMenuAction,
+    required this.onMenuOpened,
+    required this.onMenuClosed,
+    required this.canDownload,
+    required this.sleepTimerActive,
+    this.currentQuality = '',
+    this.loadQualities,
+    this.onQualityChanged,
+    this.onSleepDurationChanged,
+    this.sleepTimerMinutes,
+    this.episodeNumber,
   });
 
   final TextTheme textTheme;
@@ -173,15 +225,26 @@ class _TopControls extends StatelessWidget {
   final bool isTheaterResource;
   final bool danmakuEnabled;
   final int currentEpisodeIndex;
+  final int? episodeNumber;
   final double playbackSpeed;
   final VoidCallback onBack;
   final VoidCallback onToggleDanmaku;
   final VoidCallback onSpeedTap;
+  final ValueChanged<double>? onSpeedChanged;
   final VoidCallback onEpisodeTap;
+  final ValueChanged<PlayerMenuAction> onMenuAction;
+  final VoidCallback onMenuOpened;
+  final VoidCallback onMenuClosed;
+  final bool canDownload;
+  final bool sleepTimerActive;
+  final String currentQuality;
+  final Future<List<String>> Function()? loadQualities;
+  final ValueChanged<String>? onQualityChanged;
+  final ValueChanged<Duration?>? onSleepDurationChanged;
+  final int? sleepTimerMinutes;
 
   @override
   Widget build(BuildContext context) {
-    final showDanmakuButton = !isOfflinePlayback && isTheaterResource;
     return Positioned(
       top: 0,
       left: 0,
@@ -203,67 +266,53 @@ class _TopControls extends StatelessWidget {
                   ),
                 ),
               ),
-              const Spacer(),
-              if (showDanmakuButton)
-                GestureDetector(
-                  onTap: onToggleDanmaku,
-                  child: _GlassButton(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 7,
-                    ),
-                    child: Icon(
-                      danmakuEnabled
-                          ? Icons.subtitles_rounded
-                          : Icons.subtitles_off_rounded,
-                      color: Colors.white,
-                      size: 18,
-                    ),
-                  ),
-                ),
-              if (showDanmakuButton) const SizedBox(width: 8),
-              GestureDetector(
-                key: speedButtonKey,
-                onTap: onSpeedTap,
-                child: _GlassButton(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 7,
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(
-                        Icons.speed_rounded,
-                        color: Colors.white,
-                        size: 16,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        '${playbackSpeed}x',
-                        style: textTheme.labelMedium?.copyWith(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600,
+              const SizedBox(width: 8),
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      GestureDetector(
+                        onTap: onEpisodeTap,
+                        child: _GlassButton(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 7,
+                          ),
+                          child: Text(
+                            '第 ${episodeNumber ?? currentEpisodeIndex + 1} 集',
+                            style: textTheme.labelMedium?.copyWith(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                         ),
                       ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              GestureDetector(
-                onTap: onEpisodeTap,
-                child: _GlassButton(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 7,
-                  ),
-                  child: Text(
-                    '第 ${currentEpisodeIndex + 1} 集',
-                    style: textTheme.labelMedium?.copyWith(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w600,
-                    ),
+                      const SizedBox(width: 8),
+                      PlayerMoreMenu(
+                        canDownload: canDownload,
+                        isOfflinePlayback: isOfflinePlayback,
+                        sleepTimerActive: sleepTimerActive,
+                        onOpened: onMenuOpened,
+                        onClosed: onMenuClosed,
+                        onSelected: onMenuAction,
+                        danmakuEnabled: danmakuEnabled,
+                        playbackSpeed: playbackSpeed,
+                        onToggleDanmaku: onToggleDanmaku,
+                        onSpeedChanged: onSpeedChanged,
+                        currentQuality: currentQuality,
+                        loadQualities: loadQualities,
+                        onQualityChanged: onQualityChanged,
+                        onSleepDurationChanged: onSleepDurationChanged,
+                        sleepTimerMinutes: sleepTimerMinutes,
+                        child: const _GlassButton(
+                          padding: EdgeInsets.all(10),
+                          child: Icon(Icons.more_horiz,
+                              color: Colors.white, size: 20),
+                        ),
+                      ),
+                    ]),
                   ),
                 ),
               ),

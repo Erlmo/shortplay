@@ -74,7 +74,8 @@ mixin PlayerPreloadMixin on State<PlayerPage> {
       keyHex = '';
     } else {
       try {
-        final url = await preloadManager.resolvePlayUrl(videoId, episodeIndex: index);
+        final url =
+            await preloadManager.resolvePlayUrl(videoId, episodeIndex: index);
         if (!mounted || prepareId != _prepareId) return;
 
         if (!url.startsWith('crypto://')) return;
@@ -179,6 +180,7 @@ mixin PlayerPreloadMixin on State<PlayerPage> {
   // ─── 窗口清理 ──────────────────────────────────────────────────────────
 
   void dispose3PWindow() {
+    ++_prepareId;
     if (prevPlayer != null) enqueueDispose(prevPlayer!);
     if (nextPlayer != null) enqueueDispose(nextPlayer!);
     prevPlayer = null;

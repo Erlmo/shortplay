@@ -1,17 +1,10 @@
-import 'dart:io';
-
 import '../models/episode.dart';
 import 'download_service.dart';
 
 class OfflinePlaybackCache {
   static List<Episode> completedEpisodesFromGroup(DramaDownloadGroup group) {
     return group.episodes
-        .where(
-          (episode) =>
-              episode.status == DownloadStatus.completed &&
-              episode.localPath != null &&
-              File(episode.localPath!).existsSync(),
-        )
+        .where((episode) => episode.isPlayable)
         .map(
           (episode) => Episode(
             index: episode.episode.index,

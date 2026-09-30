@@ -6,6 +6,7 @@ import 'package:dio/dio.dart';
 import '../config/api_config.dart';
 import '../models/danmaku.dart';
 import '../models/drama.dart';
+import '../models/episode.dart';
 import '../models/fq_video.dart';
 import 'sign_interceptor.dart';
 
@@ -420,7 +421,8 @@ class ApiClient {
     return data.map((e) => e.toString()).where((e) => e.isNotEmpty).toList();
   }
 
-  Map<String, dynamic> _decode(Response response) {    if (response.statusCode == null ||
+  Map<String, dynamic> _decode(Response response) {
+    if (response.statusCode == null ||
         response.statusCode! < 200 ||
         response.statusCode! >= 300) {
       throw ApiException('请求失败 (${response.statusCode})');
@@ -455,6 +457,19 @@ class TheaterEpisodesResult {
 
   final List<String> allItemIds;
   final List<TheaterChapter> chapters;
+
+  /// 播放、预加载和下载共用按目录顺序生成的 1-based 集号。
+  /// 标题可能没有数字，不能用标题解析结果作为缓存唯一键。
+  List<Episode> toEpisodes() => chapters
+      .asMap()
+      .entries
+      .map((entry) => Episode(
+            index: entry.key + 1,
+            name: entry.value.title,
+            size: 0,
+            url: entry.value.itemId,
+          ))
+      .toList();
 
   factory TheaterEpisodesResult.fromJson(Map<String, dynamic> json) {
     final allItemIds =

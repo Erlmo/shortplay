@@ -16,6 +16,43 @@ class TheaterVideoPreloadManager {
 
   final Map<String, String> _preloadedUrls = {};
   final Map<String, String> _sourceUrls = {};
+  String preferredDefinition = '720p';
+  final Map<String, List<FqVideoItem>> _videoItems = {};
+  final Map<String, String> _selectedDefinitions = {};
+
+  String selectedDefinition(String videoId) =>
+      _selectedDefinitions[videoId] ?? '';
+
+  Future<List<String>> availableDefinitions(String videoId) async {
+    final items = _videoItems[videoId] ??
+        await apiClient
+            .fetchFqVideoModel(videoId)
+            .timeout(const Duration(seconds: 10));
+    _videoItems[videoId] = items;
+    return definitionsFor(items);
+  }
+
+  static List<String> definitionsFor(List<FqVideoItem> items) {
+    final definitions = items
+        .where((item) => item.url.trim().isNotEmpty)
+        .map((item) => item.definition.trim().toLowerCase())
+        .where((definition) => definition.isNotEmpty)
+        .toSet()
+        .toList();
+    int resolution(String value) =>
+        int.tryParse(RegExp(r'\d+').firstMatch(value)?.group(0) ?? '') ?? 0;
+    definitions.sort((a, b) {
+      final order = resolution(a).compareTo(resolution(b));
+      return order == 0 ? a.compareTo(b) : order;
+    });
+    return List.unmodifiable(definitions);
+  }
+
+  void setPreferredDefinition(String definition) {
+    if (definition.trim().isNotEmpty) preferredDefinition = definition;
+    clear();
+  }
+
   final Set<int> _preloadingEpisodeIndexes = {};
   int _activePrewarmCount = 0;
   static const _maxConcurrentPrewarms = 1;
@@ -47,7 +84,8 @@ class TheaterVideoPreloadManager {
       return cachedUrl;
     }
 
-    final resolved = await _resolveVideoWithRetry(videoId, maxRetries: maxRetries);
+    final resolved =
+        await _resolveVideoWithRetry(videoId, maxRetries: maxRetries);
     _preloadedUrls[videoId] = resolved.proxyUrl;
     // putIfAbsent：保留第一次存入的 sourceUrl（来自 preloadEpisode /
     // preloadEpisodeHeaderOnly），不让后续 resolvePlayUrl 覆盖它。
@@ -140,7 +178,8 @@ class TheaterVideoPreloadManager {
         final status = await CryptoNativeChannel.instance
             .prewarmHeaderOnly(resolved.sourceUrl, resolved.key);
         if (status != 0) {
-          debugPrint('native prewarmHeaderOnly 返回非零: $status (第${targetIndex + 1}集)');
+          debugPrint(
+              'native prewarmHeaderOnly 返回非零: $status (第${targetIndex + 1}集)');
         }
       } finally {
         _activePrewarmCount--;
@@ -165,10 +204,11 @@ class TheaterVideoPreloadManager {
     if (sourceUrl == null) return;
 
     try {
-      final status = await CryptoNativeChannel.instance
-          .prewarmSeedMdat(sourceUrl);
+      final status =
+          await CryptoNativeChannel.instance.prewarmSeedMdat(sourceUrl);
       if (status != 0) {
-        debugPrint('native prewarmSeedMdat 返回非零: $status (第${targetIndex + 1}集)');
+        debugPrint(
+            'native prewarmSeedMdat 返回非零: $status (第${targetIndex + 1}集)');
       } else {
         debugPrint('剧集mdat种子补充完成: 第${targetIndex + 1}集');
       }
@@ -207,7 +247,9 @@ class TheaterVideoPreloadManager {
       throw Exception('未获取到视频信息');
     }
 
-    final selected = _selectBestVideo(videoItems);
+    _videoItems[videoId] = videoItems;
+    final selected = _selectBestVideo(
+        videoItems.where((item) => item.url.trim().isNotEmpty).toList());
     debugPrint(
       '选择画质: ${selected.definition} ${selected.width}x${selected.height} codec=${selected.codec}',
     );
@@ -221,6 +263,7 @@ class TheaterVideoPreloadManager {
     // (no localhost proxy).
     final playUrl = CryptoNativeChannel.buildCryptoUrl(selected.url, key);
 
+    _selectedDefinitions[videoId] = selected.definition.trim().toLowerCase();
     return _ResolvedTheaterVideo(
       proxyUrl: playUrl,
       sourceUrl: selected.url,
@@ -230,9 +273,11 @@ class TheaterVideoPreloadManager {
 
   FqVideoItem _selectBestVideo(List<FqVideoItem> items) {
     return items.firstWhere(
-      (item) => item.definition == '1080p',
+      (item) =>
+          item.definition.trim().toLowerCase() ==
+          preferredDefinition.trim().toLowerCase(),
       orElse: () => items.firstWhere(
-        (item) => item.definition == '720p',
+        (item) => item.definition == '1080p',
         orElse: () => items.last,
       ),
     );

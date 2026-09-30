@@ -1,7 +1,8 @@
-import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 
 import '../../models/episode.dart';
+import '../../services/download_service.dart';
 import '../episode_selector.dart';
 
 Future<void> showPlayerEpisodeSheet({
@@ -26,8 +27,8 @@ Future<void> showPlayerEpisodeSheet({
               height: media.size.height * 0.7,
               dramaName: dramaName,
               episodes: episodes,
-              episodeNotifier: episodeNotifier,
-              onSelectEpisode: onSelectEpisode,
+              selector: _playbackSelector(
+                  context, episodes, episodeNotifier, onSelectEpisode),
               titleVerticalPadding: 16,
             ),
           ),
@@ -54,8 +55,8 @@ Future<void> showPlayerEpisodeSheet({
           bottomPadding: bottomPadding,
           dramaName: dramaName,
           episodes: episodes,
-          episodeNotifier: episodeNotifier,
-          onSelectEpisode: onSelectEpisode,
+          selector: _playbackSelector(
+              context, episodes, episodeNotifier, onSelectEpisode),
           showHandle: true,
         ),
       );
@@ -68,8 +69,9 @@ class _EpisodeSheetPanel extends StatelessWidget {
     required this.height,
     required this.dramaName,
     required this.episodes,
-    required this.episodeNotifier,
-    required this.onSelectEpisode,
+    required this.selector,
+    this.footer,
+    this.subtitle,
     this.width,
     this.bottomPadding = 0,
     this.titleVerticalPadding = 12,
@@ -83,8 +85,9 @@ class _EpisodeSheetPanel extends StatelessWidget {
   final bool showHandle;
   final String dramaName;
   final List<Episode> episodes;
-  final ValueListenable<int> episodeNotifier;
-  final ValueChanged<int> onSelectEpisode;
+  final Widget selector;
+  final Widget? footer;
+  final String? subtitle;
 
   @override
   Widget build(BuildContext context) {
@@ -122,22 +125,10 @@ class _EpisodeSheetPanel extends StatelessWidget {
               dramaName: dramaName,
               episodeCount: episodes.length,
               verticalPadding: titleVerticalPadding,
+              subtitle: subtitle,
             ),
-            Expanded(
-              child: ValueListenableBuilder<int>(
-                valueListenable: episodeNotifier,
-                builder: (context, currentIndex, _) {
-                  return EpisodeSelector(
-                    episodes: episodes,
-                    activeIndex: currentIndex,
-                    onSelect: (index) {
-                      Navigator.of(context).pop();
-                      onSelectEpisode(index);
-                    },
-                  );
-                },
-              ),
-            ),
+            Expanded(child: selector),
+            if (footer != null) footer!,
           ],
         ),
       ),
@@ -150,11 +141,13 @@ class _EpisodeSheetHeader extends StatelessWidget {
     required this.dramaName,
     required this.episodeCount,
     required this.verticalPadding,
+    this.subtitle,
   });
 
   final String dramaName;
   final int episodeCount;
   final double verticalPadding;
+  final String? subtitle;
 
   @override
   Widget build(BuildContext context) {
@@ -190,7 +183,7 @@ class _EpisodeSheetHeader extends StatelessWidget {
                     const SizedBox(width: 6),
                     Flexible(
                       child: Text(
-                        '更新至 $episodeCount 集',
+                        subtitle ?? '更新至 $episodeCount 集',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
@@ -228,6 +221,159 @@ class _EpisodeSheetHeader extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+Widget _playbackSelector(BuildContext context, List<Episode> episodes,
+    ValueListenable<int> notifier, ValueChanged<int> onSelect) {
+  return ValueListenableBuilder<int>(
+    valueListenable: notifier,
+    builder: (context, index, _) => EpisodeSelector(
+      episodes: episodes,
+      activeIndex: index,
+      onSelect: (index) {
+        Navigator.of(context).pop();
+        onSelect(index);
+      },
+    ),
+  );
+}
+
+Future<List<Episode>?> showPlayerDownloadSheet({
+  required BuildContext context,
+  required bool isLandscapeFullScreen,
+  required String dramaId,
+  required String dramaName,
+  required List<Episode> episodes,
+  required int currentEpisodeIndex,
+  required DownloadService downloadService,
+}) {
+  Widget panel(BuildContext context) => _DownloadEpisodePanel(
+        dramaId: dramaId,
+        dramaName: dramaName,
+        episodes: episodes,
+        currentEpisodeIndex: currentEpisodeIndex,
+        downloadService: downloadService,
+        landscape: isLandscapeFullScreen,
+      );
+  if (isLandscapeFullScreen) {
+    return showDialog<List<Episode>>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.7),
+      builder: (context) => Center(child: panel(context)),
+    );
+  }
+  return showModalBottomSheet<List<Episode>>(
+    context: context,
+    backgroundColor: Colors.transparent,
+    isScrollControlled: true,
+    useSafeArea: true,
+    builder: panel,
+  );
+}
+
+class _DownloadEpisodePanel extends StatefulWidget {
+  const _DownloadEpisodePanel({
+    required this.dramaId,
+    required this.dramaName,
+    required this.episodes,
+    required this.currentEpisodeIndex,
+    required this.downloadService,
+    required this.landscape,
+  });
+
+  final String dramaId;
+  final String dramaName;
+  final List<Episode> episodes;
+  final int currentEpisodeIndex;
+  final DownloadService downloadService;
+  final bool landscape;
+
+  @override
+  State<_DownloadEpisodePanel> createState() => _DownloadEpisodePanelState();
+}
+
+class _DownloadEpisodePanelState extends State<_DownloadEpisodePanel> {
+  final Set<int> _selected = {};
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: widget.downloadService,
+      builder: (context, _) {
+        final downloads =
+            widget.downloadService.groups[widget.dramaId]?.episodes ?? [];
+        final byNumber = {
+          for (final download in downloads) download.episode.index: download
+        };
+        final disabled = <int, String>{};
+        for (int i = 0; i < widget.episodes.length; i++) {
+          final ep = widget.episodes[i];
+          final download = byNumber[ep.index];
+          if (download == null || download.episode.url != ep.url) continue;
+          if (download.isPlayable) {
+            disabled[i] = '已缓存';
+          } else if (download.status == DownloadStatus.pending ||
+              download.status == DownloadStatus.downloading) {
+            disabled[i] = '下载中';
+          }
+        }
+        final available = {
+          for (int i = 0; i < widget.episodes.length; i++)
+            if (!disabled.containsKey(i)) i
+        };
+        final selected = _selected.intersection(available);
+        final allSelected =
+            available.isNotEmpty && selected.length == available.length;
+        final media = MediaQuery.of(context);
+        return Material(
+          color: Colors.transparent,
+          child: _EpisodeSheetPanel(
+            width: widget.landscape ? media.size.width * 0.7 : null,
+            height: media.size.height * (widget.landscape ? 0.85 : 0.6),
+            bottomPadding: widget.landscape ? 8 : media.viewPadding.bottom + 8,
+            dramaName: widget.dramaName,
+            episodes: widget.episodes,
+            subtitle: '下载本地 · 请选择集数',
+            showHandle: !widget.landscape,
+            selector: EpisodeSelector(
+              episodes: widget.episodes,
+              activeIndex: widget.currentEpisodeIndex,
+              selectedIndexes: selected,
+              disabledLabels: disabled,
+              onSelect: (index) => setState(() {
+                if (!_selected.add(index)) _selected.remove(index);
+              }),
+            ),
+            footer: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              child: Row(children: [
+                TextButton(
+                  onPressed: available.isEmpty
+                      ? null
+                      : () => setState(() {
+                            _selected.clear();
+                            if (!allSelected) _selected.addAll(available);
+                          }),
+                  child: Text(allSelected ? '取消全选' : '全选'),
+                ),
+                const Spacer(),
+                FilledButton(
+                  onPressed: selected.isEmpty
+                      ? null
+                      : () {
+                          final indexes = selected.toList()..sort();
+                          Navigator.of(context).pop(
+                              indexes.map((i) => widget.episodes[i]).toList());
+                        },
+                  child: Text('下载（${selected.length} 集）'),
+                ),
+              ]),
+            ),
+          ),
+        );
+      },
     );
   }
 }

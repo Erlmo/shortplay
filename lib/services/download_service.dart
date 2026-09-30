@@ -8,12 +8,14 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/episode.dart';
-import '../services/api_client.dart';
+import 'api_client.dart';
 import 'crypto_native_channel.dart';
 
 enum DownloadStatus { pending, downloading, paused, completed, failed }
 
-/// 下载所需的解析结果：CDN 源地址 + 解密 key
+typedef DownloadResolver = Future<DownloadResolveResult> Function(Episode);
+typedef DecryptFile = Future<int> Function(String, String, String);
+
 class DownloadResolveResult {
   const DownloadResolveResult({required this.cdnUrl, required this.keyHex});
 
@@ -26,498 +28,629 @@ class EpisodeDownload {
     required this.dramaId,
     required this.dramaName,
     required this.episode,
-    this.status = DownloadStatus.pending,
-    this.progress = 0.0,
-    this.localPath,
-    this.error,
-  });
+    DownloadStatus status = DownloadStatus.pending,
+    double progress = 0,
+    String? localPath,
+    String? error,
+    int? fileSize,
+  })  : _status = status,
+        _progress = progress,
+        _localPath = localPath,
+        _error = error,
+        _fileSize = fileSize;
 
   final String dramaId;
   final String dramaName;
   final Episode episode;
-  DownloadStatus status;
-  double progress;
-  String? localPath;
-  String? error;
+  DownloadStatus _status;
+  double _progress;
+  String? _localPath;
+  String? _error;
+  int? _fileSize;
 
+  DownloadStatus get status => _status;
+  double get progress => _progress;
+  String? get localPath => _localPath;
+  String? get error => _error;
   String get key => '${dramaId}_${episode.index}';
+
+  /// 完成标记不等于文件可用；缺失、空文件或大小变化都需要重新下载。
+  bool get isPlayable {
+    final path = _localPath;
+    if (_status != DownloadStatus.completed || path == null) return false;
+    try {
+      final size = File(path).lengthSync();
+      return size > 0 && (_fileSize == null || size == _fileSize);
+    } on FileSystemException {
+      return false;
+    }
+  }
 }
 
 class DramaDownloadGroup {
   DramaDownloadGroup({
     required this.dramaId,
     required this.dramaName,
-    required this.episodes,
+    required List<EpisodeDownload> episodes,
     this.coverUrl,
     this.localCoverPath,
     this.isTheaterResource = false,
-  });
+  }) : _episodes = List.of(episodes);
 
   final String dramaId;
   final String dramaName;
-  final List<EpisodeDownload> episodes;
+  final List<EpisodeDownload> _episodes;
   final String? coverUrl;
   String? localCoverPath;
   final bool isTheaterResource;
 
-  int get completedCount =>
-      episodes.where((e) => e.status == DownloadStatus.completed).length;
-  int get totalCount => episodes.length;
-  bool get isAllCompleted => completedCount == totalCount;
+  List<EpisodeDownload> get episodes => List.unmodifiable(_episodes);
+  int get completedCount => _episodes.where((e) => e.isPlayable).length;
+  int get totalCount => _episodes.length;
+  int get failedCount => _episodes
+      .where((e) =>
+          e.status == DownloadStatus.failed ||
+          (e.status == DownloadStatus.completed && !e.isPlayable))
+      .length;
+  bool get isAllCompleted => totalCount > 0 && completedCount == totalCount;
+  bool get hasQueuedDownloads => _episodes.any((e) =>
+      e.status == DownloadStatus.pending ||
+      e.status == DownloadStatus.downloading);
 }
 
+/// 全局三并发队列。下载先写独立临时文件，成功校验后原子改名。
+/// native 暂不支持取消：暂停/删除立即撤销提交资格，底层返回后清理临时文件。
 class DownloadService extends ChangeNotifier {
-  static const int _concurrency = 3;
-  static const String _prefsGroupsKey = 'download_groups_v2';
-  static const String _prefsCompletedKey = 'download_completed_keys';
+  DownloadService({
+    required this.apiClient,
+    Future<Directory> Function()? documentsDirectory,
+    Future<SharedPreferences> Function()? preferences,
+    DecryptFile? decryptToFile,
+    Duration retryDelay = const Duration(seconds: 2),
+  })  : _documentsDirectory =
+            documentsDirectory ?? getApplicationDocumentsDirectory,
+        _preferences = preferences ?? SharedPreferences.getInstance,
+        _decryptToFile =
+            decryptToFile ?? CryptoNativeChannel.instance.decryptToFile,
+        _retryDelay = retryDelay {
+    _initialization = _loadState();
+  }
 
-  Timer? _saveDebounce;
+  static const int _concurrency = 3;
+  static const String _stateKey = 'download_state_v3';
+  static const String _legacyGroupsKey = 'download_groups_v2';
+  static const String _legacyCompletedKey = 'download_completed_keys';
 
   final ApiClient apiClient;
-  // Dio 仅用于封面图下载
-  final _dio = Dio();
-  SharedPreferences? _prefs;
-
+  final Future<Directory> Function() _documentsDirectory;
+  final Future<SharedPreferences> Function() _preferences;
+  final DecryptFile _decryptToFile;
+  final Duration _retryDelay;
+  final Dio _dio = Dio(BaseOptions(
+    connectTimeout: const Duration(seconds: 15),
+    receiveTimeout: const Duration(seconds: 30),
+    sendTimeout: const Duration(seconds: 15),
+  ));
   final Map<String, DramaDownloadGroup> _groups = {};
-  final Set<String> _activeKeys = {};
-  final Set<String> _completedKeys = {};
-  final Set<String> _pausedKeys = {};
-  DateTime _lastNotify = DateTime.fromMillisecondsSinceEpoch(0);
-  // key -> resolveUrl function（resume 时复用）
-  final Map<String, Future<DownloadResolveResult> Function(Episode)>
-  _resolvers = {};
-
-  DownloadService({required this.apiClient}) {
-    _init();
-  }
-
+  final Map<EpisodeDownload, DownloadResolver> _resolvers = {};
+  final Map<EpisodeDownload, _DownloadRun> _active = {};
+  final Map<DramaDownloadGroup, CancelToken> _covers = {};
+  late final Future<void> _initialization;
+  late SharedPreferences _prefs;
+  late Directory _base;
+  Future<void> _writes = Future<void>.value();
+  int _pendingWrites = 0;
+  int _runId = 0;
+  bool _disposed = false;
   bool _loaded = false;
+  String? _initializationError;
+  String? _lastError;
+
   bool get loaded => _loaded;
-  Completer<void>? _loadCompleter;
-
-  Future<void> _init() async {
-    _loadCompleter = Completer<void>();
-    await _loadState();
-    _loaded = true;
-    _loadCompleter!.complete();
-    notifyListeners();
-  }
-
-  /// 等待初始化完成
-  Future<void> ensureLoaded() async {
-    if (_loaded) return;
-    await _loadCompleter?.future;
-  }
-
-  @override
-  void dispose() {
-    _saveDebounce?.cancel();
-    _dio.close(force: true);
-    super.dispose();
-  }
-
+  String? get lastError => _lastError;
   Map<String, DramaDownloadGroup> get groups => Map.unmodifiable(_groups);
 
-  // ── Persistence ──────────────────────────────────────────────
+  Future<void> ensureLoaded() async {
+    await _initialization;
+    if (_initializationError != null) throw ApiException(_initializationError!);
+    if (_disposed) throw StateError('缓存服务已关闭');
+  }
+
+  void _notify() {
+    if (!_disposed) notifyListeners();
+  }
+
+  Directory _directory(String dramaId) =>
+      Directory('${_base.path}/downloads/${Uri.encodeComponent(dramaId)}');
+
+  String _episodePath(String dramaId, int index) =>
+      '${_directory(dramaId).path}/ep_$index.mp4';
 
   Future<void> _loadState() async {
-    _prefs = await SharedPreferences.getInstance();
-    final prefs = _prefs!;
-
-    final completedKeys = prefs.getStringList(_prefsCompletedKey) ?? [];
-    _completedKeys.addAll(completedKeys);
-
-    final groupsJson = prefs.getStringList(_prefsGroupsKey) ?? [];
-    final base = await getApplicationDocumentsDirectory();
-
-    for (final jsonStr in groupsJson) {
-      try {
-        final map = jsonDecode(jsonStr) as Map<String, dynamic>;
-        final dramaId = map['dramaId'] as String;
-        final dramaName = map['dramaName'] as String;
-        final coverUrl = map['coverUrl'] as String?;
-        final isTheaterResource = map['isTheaterResource'] as bool? ?? false;
-        final dir = Directory('${base.path}/downloads/$dramaId');
-
-        final coverPath = '${dir.path}/cover.jpg';
-        final localCoverPath = File(coverPath).existsSync() ? coverPath : null;
-
-        final episodesList =
-            (map['episodes'] as List).cast<Map<String, dynamic>>();
-        final episodes = <EpisodeDownload>[];
-
-        for (final epMap in episodesList) {
-          final index = epMap['index'] as int;
-          final name = epMap['name'] as String? ?? '';
-          final size = epMap['size'] as int? ?? 0;
-          final url = epMap['url'] as String? ?? '';
-          final ep = Episode(index: index, name: name, size: size, url: url);
-          final epKey = '${dramaId}_$index';
-          final localPath = '${dir.path}/ep_$index.mp4';
-          final fileExists = File(localPath).existsSync();
-          final isCompleted = _completedKeys.contains(epKey) && fileExists;
-
-          episodes.add(
-            EpisodeDownload(
-              dramaId: dramaId,
-              dramaName: dramaName,
-              episode: ep,
-              status:
-                  isCompleted ? DownloadStatus.completed : DownloadStatus.paused,
-              localPath: isCompleted ? localPath : null,
-            ),
-          );
-          if (!isCompleted) _pausedKeys.add(epKey);
-        }
-
-        _groups[dramaId] = DramaDownloadGroup(
-          dramaId: dramaId,
-          dramaName: dramaName,
-          episodes: episodes,
-          coverUrl: coverUrl,
-          localCoverPath: localCoverPath,
-          isTheaterResource: isTheaterResource,
-        );
-      } on Exception catch (e) {
-        debugPrint('DownloadService: failed to parse group: $e');
+    try {
+      _prefs = await _preferences();
+      _base = await _documentsDirectory();
+      final saved = _prefs.getString(_stateKey);
+      final legacy = saved == null;
+      final List<Object?> records;
+      final completed =
+          _prefs.getStringList(_legacyCompletedKey)?.toSet() ?? {};
+      if (legacy) {
+        records = _prefs.getStringList(_legacyGroupsKey) ?? [];
+      } else {
+        final state = jsonDecode(saved) as Map<String, dynamic>;
+        if (state['version'] != 3) throw const FormatException('未知缓存版本');
+        records = state['groups'] as List;
       }
+      bool damaged = false;
+      for (final record in records) {
+        try {
+          final map = (legacy ? jsonDecode(record as String) : record)
+              as Map<String, dynamic>;
+          final id = map['dramaId'] as String;
+          final name = map['dramaName'] as String;
+          if (id.isEmpty || id == '.' || id == '..') {
+            throw const FormatException('无效剧集标识');
+          }
+          final episodes = <EpisodeDownload>[];
+          final indexes = <int>{};
+          for (final value in map['episodes'] as List) {
+            try {
+              final item = value as Map<String, dynamic>;
+              final ep = Episode.fromJson(item);
+              if (ep.index < 0 ||
+                  ep.url.trim().isEmpty ||
+                  !indexes.add(ep.index)) {
+                throw const FormatException('无效缓存集数');
+              }
+              final markedCompleted = legacy
+                  ? completed.contains('${id}_${ep.index}')
+                  : item['status'] == DownloadStatus.completed.name;
+              final download = EpisodeDownload(
+                dramaId: id,
+                dramaName: name,
+                episode: ep,
+                status: markedCompleted
+                    ? DownloadStatus.completed
+                    : item['status'] == DownloadStatus.failed.name
+                        ? DownloadStatus.failed
+                        : DownloadStatus.paused,
+                localPath: markedCompleted ? _episodePath(id, ep.index) : null,
+                fileSize: item['fileSize'] as int?,
+                error: item['error'] as String?,
+              );
+              if (markedCompleted && !download.isPlayable) {
+                _reset(download, DownloadStatus.failed,
+                    error: '本地文件已丢失或损坏，请重试');
+              } else if (download.isPlayable) {
+                download._progress = 1;
+                download._fileSize = File(download.localPath!).lengthSync();
+              }
+              episodes.add(download);
+            } catch (error) {
+              damaged = true;
+              debugPrint('跳过损坏的缓存记录: $error');
+            }
+          }
+          if (episodes.isEmpty) continue;
+          final cover = '${_directory(id).path}/cover.jpg';
+          _groups[id] = DramaDownloadGroup(
+            dramaId: id,
+            dramaName: name,
+            episodes: episodes,
+            coverUrl: map['coverUrl'] as String?,
+            localCoverPath: File(cover).existsSync() ? cover : null,
+            isTheaterResource: map['isTheaterResource'] as bool? ?? false,
+          );
+        } catch (error) {
+          damaged = true;
+          debugPrint('跳过损坏的缓存分组: $error');
+        }
+      }
+      // 启动时没有运行中的 native 任务，可安全清理上次中断的临时文件。
+      final root = Directory('${_base.path}/downloads');
+      if (root.existsSync()) {
+        for (final file in root.listSync(recursive: true, followLinks: false)) {
+          if (file is File && file.path.endsWith('.part')) {
+            _removeFile(file.path);
+          }
+        }
+      }
+      if (!_disposed) await _persist();
+      if (damaged) _lastError = '部分缓存记录损坏，已保留可恢复的剧集；缺失剧集请重新添加';
+    } catch (error) {
+      _initializationError = '读取缓存失败，请重启后重试';
+      _lastError = _initializationError;
+      debugPrint('读取缓存失败: $error');
+    } finally {
+      _loaded = true;
+      _notify();
     }
-
-    notifyListeners();
   }
 
-  Future<void> _saveGroups() async {
-    final prefs = _prefs ?? await SharedPreferences.getInstance();
-    final list = _groups.values.map((g) {
-      return jsonEncode({
-        'dramaId': g.dramaId,
-        'dramaName': g.dramaName,
-        'coverUrl': g.coverUrl,
-        'isTheaterResource': g.isTheaterResource,
-        'episodes': g.episodes
-            .map(
-              (e) => {
-                'index': e.episode.index,
-                'name': e.episode.name,
-                'size': e.episode.size,
-                'url': e.episode.url,
-              },
-            )
-            .toList(),
-      });
-    }).toList();
-    await prefs.setStringList(_prefsGroupsKey, list);
+  /// 单个快照包含任务和完成状态，串行写入以防旧快照覆盖新状态。
+  Future<void> _persist() {
+    final snapshot = jsonEncode({
+      'version': 3,
+      'groups': _groups.values
+          .map((g) => {
+                'dramaId': g.dramaId,
+                'dramaName': g.dramaName,
+                'coverUrl': g.coverUrl,
+                'isTheaterResource': g.isTheaterResource,
+                'episodes': g.episodes
+                    .map((d) => {
+                          'index': d.episode.index,
+                          'name': d.episode.name,
+                          'size': d.episode.size,
+                          'url': d.episode.url,
+                          'status': d.status.name,
+                          'fileSize': d._fileSize,
+                          'error': d.error,
+                        })
+                    .toList(),
+              })
+          .toList(),
+    });
+    _pendingWrites++;
+    final operation = _writes.then((_) async {
+      if (!await _prefs.setString(_stateKey, snapshot)) {
+        throw const FileSystemException('保存缓存状态失败');
+      }
+      _lastError = null;
+    }).whenComplete(() => _pendingWrites--);
+    // 链尾吸收异常保证后续保存仍可重试，当前调用方仍收到原异常。
+    _writes = operation.catchError((Object error) {
+      _lastError = '缓存状态保存失败，请检查存储空间后重试';
+      debugPrint('保存缓存失败: $error');
+      _notify();
+    });
+    return operation;
   }
 
-  void _scheduleSaveGroups() {
-    _saveDebounce?.cancel();
-    _saveDebounce = Timer(const Duration(seconds: 5), _saveGroups);
+  Future<void> saveState() async {
+    await ensureLoaded();
+    await _persist();
+    _schedule();
   }
 
-  Future<void> _saveCompletedKeys() async {
-    final prefs = _prefs ?? await SharedPreferences.getInstance();
-    await prefs.setStringList(_prefsCompletedKey, _completedKeys.toList());
+  Future<void> _saveAndSchedule() async {
+    try {
+      await _persist();
+      _schedule();
+    } catch (_) {
+      // _persist 已记录并展示保存失败，暂停调度直至保存成功。
+    }
   }
 
-  // ── Directory ─────────────────────────────────────────────────
-
-  Future<Directory> _dramaDir(String dramaId) async {
-    final base = await getApplicationDocumentsDirectory();
-    final dir = Directory('${base.path}/downloads/$dramaId');
-    if (!dir.existsSync()) dir.createSync(recursive: true);
-    return dir;
-  }
-
-  // ── Public API ────────────────────────────────────────────────
-
-  Future<void> addDownloads({
+  /// 返回实际新加入或重新排队的集数，重复点击不会创建重复任务。
+  Future<int> addDownloads({
     required String dramaId,
     required String dramaName,
     required List<Episode> episodes,
-    required Future<DownloadResolveResult> Function(Episode) resolveUrl,
+    DownloadResolver? resolveUrl,
     String? coverUrl,
     bool isTheaterResource = false,
   }) async {
     await ensureLoaded();
-    final group = _groups.putIfAbsent(
-      dramaId,
-      () => DramaDownloadGroup(
-        dramaId: dramaId,
-        dramaName: dramaName,
-        episodes: [],
-        coverUrl: coverUrl,
-        isTheaterResource: isTheaterResource,
-      ),
-    );
-
-    if (coverUrl != null &&
-        coverUrl.isNotEmpty &&
-        group.localCoverPath == null) {
-      _downloadCover(group, coverUrl);
+    if (dramaId.isEmpty || dramaId == '.' || dramaId == '..') {
+      throw ApiException('剧集信息无效');
     }
-
+    if (episodes.isEmpty) throw ApiException('暂无可下载的集数');
+    final unique = <int, Episode>{};
     for (final ep in episodes) {
-      final epKey = '${dramaId}_${ep.index}';
-      if (group.episodes.any((e) => e.key == epKey)) continue;
-      final dl = EpisodeDownload(
-        dramaId: dramaId,
-        dramaName: dramaName,
-        episode: ep,
-        status: _completedKeys.contains(epKey)
-            ? DownloadStatus.completed
-            : DownloadStatus.pending,
-      );
-      if (_completedKeys.contains(epKey)) {
-        final dir = await _dramaDir(dramaId);
-        dl.localPath = '${dir.path}/ep_${ep.index}.mp4';
+      if (ep.index <= 0 || ep.url.trim().isEmpty) {
+        throw ApiException('剧集编号或视频标识无效，请刷新后重试');
       }
-      group.episodes.add(dl);
-      _resolvers[epKey] = resolveUrl;
+      if (unique.containsKey(ep.index) && unique[ep.index]!.url != ep.url) {
+        throw ApiException('存在重复集号，请刷新剧集列表后重试');
+      }
+      unique[ep.index] = ep;
     }
-
-    _scheduleSaveGroups();
-    notifyListeners();
-    _scheduleNext(dramaId, resolveUrl);
+    final existing = _groups[dramaId];
+    for (final ep in existing?.episodes ?? <EpisodeDownload>[]) {
+      if (unique.containsKey(ep.episode.index) &&
+          unique[ep.episode.index]!.url != ep.episode.url) {
+        throw ApiException('剧集列表已变化，请删除旧缓存后重新下载');
+      }
+    }
+    final group = existing ??
+        DramaDownloadGroup(
+          dramaId: dramaId,
+          dramaName: dramaName,
+          episodes: [],
+          coverUrl: coverUrl,
+          isTheaterResource: isTheaterResource,
+        );
+    int queued = 0;
+    for (final ep in unique.values) {
+      var dl =
+          group._episodes.where((d) => d.episode.index == ep.index).firstOrNull;
+      if (dl == null) {
+        dl = EpisodeDownload(
+            dramaId: dramaId, dramaName: dramaName, episode: ep);
+        group._episodes.add(dl);
+        queued++;
+      } else if (!dl.isPlayable &&
+          dl.status != DownloadStatus.pending &&
+          dl.status != DownloadStatus.downloading) {
+        _reset(dl, DownloadStatus.pending);
+        queued++;
+      }
+      if (resolveUrl != null) _resolvers[dl] = resolveUrl;
+    }
+    group._episodes.sort((a, b) => a.episode.index.compareTo(b.episode.index));
+    _groups[dramaId] = group;
+    _notify();
+    await _persist();
+    _schedule();
+    if (identical(_groups[dramaId], group) &&
+        group.localCoverPath == null &&
+        coverUrl != null &&
+        coverUrl.isNotEmpty &&
+        !_covers.containsKey(group)) {
+      // 封面独立下载，失败不影响视频任务。
+      unawaited(_downloadCover(group, coverUrl));
+    }
+    return queued;
   }
 
-  /// 暂停某集下载
-  ///
-  /// 注意：[decryptToFile] 不支持取消，若下载已开始则需等当前集完成后才生效。
+  bool _contains(EpisodeDownload dl) =>
+      !_disposed && (_groups[dl.dramaId]?._episodes.contains(dl) ?? false);
+
+  void _reset(EpisodeDownload dl, DownloadStatus status, {String? error}) {
+    dl._status = status;
+    dl._progress = 0;
+    dl._localPath = null;
+    dl._fileSize = null;
+    dl._error = error;
+  }
+
   void pauseEpisode(EpisodeDownload dl) {
-    if (dl.status != DownloadStatus.downloading &&
-        dl.status != DownloadStatus.pending) {
+    if (!_contains(dl) ||
+        (dl.status != DownloadStatus.pending &&
+            dl.status != DownloadStatus.downloading)) {
       return;
     }
-    _pausedKeys.add(dl.key);
-    dl.status = DownloadStatus.paused;
-    notifyListeners();
+    _active[dl]?.cancelled = true;
+    _reset(dl, DownloadStatus.paused);
+    _notify();
+    unawaited(_saveAndSchedule());
   }
 
-  /// 继续某集下载
   void resumeEpisode(EpisodeDownload dl) {
-    if (dl.status != DownloadStatus.paused) return;
-    _pausedKeys.remove(dl.key);
-    dl.status = DownloadStatus.pending;
-    notifyListeners();
-    final group = _groups[dl.dramaId];
-    final resolver =
-        _resolvers[dl.key] ??
-        (group != null
-            ? _buildResolver(group)
-            : (Episode ep) async => throw Exception('无法解析下载地址'));
-    _scheduleNext(dl.dramaId, resolver);
+    if (!_contains(dl) ||
+        dl.isPlayable ||
+        dl.status == DownloadStatus.downloading) {
+      return;
+    }
+    _reset(dl, DownloadStatus.pending);
+    _notify();
+    unawaited(_saveAndSchedule());
   }
 
-  /// 暂停整组下载
   void pauseGroup(String dramaId) {
     final group = _groups[dramaId];
-    if (group == null) return;
-    for (final ep in group.episodes) {
-      if (ep.status == DownloadStatus.downloading ||
-          ep.status == DownloadStatus.pending) {
-        pauseEpisode(ep);
+    if (group == null || _disposed) return;
+    for (final dl in group.episodes) {
+      if (dl.status == DownloadStatus.pending ||
+          dl.status == DownloadStatus.downloading) {
+        _active[dl]?.cancelled = true;
+        _reset(dl, DownloadStatus.paused);
       }
     }
+    _notify();
+    unawaited(_saveAndSchedule());
   }
 
-  /// 继续整组下载
   void resumeGroup(String dramaId) {
     final group = _groups[dramaId];
-    if (group == null) return;
-    for (final ep in group.episodes) {
-      if (ep.status == DownloadStatus.paused) {
-        _pausedKeys.remove(ep.key);
-        ep.status = DownloadStatus.pending;
+    if (group == null || _disposed) return;
+    for (final dl in group.episodes) {
+      if (!dl.isPlayable && dl.status != DownloadStatus.downloading) {
+        _reset(dl, DownloadStatus.pending);
       }
     }
-    notifyListeners();
-    final resolver =
-        group.episodes
-            .map((e) => _resolvers[e.key])
-            .firstWhere((r) => r != null, orElse: () => null) ??
-        _buildResolver(group);
-    _scheduleNext(dramaId, resolver);
+    _notify();
+    unawaited(_saveAndSchedule());
   }
 
-  /// 根据 group 信息构建 resolver（用于 resume 时无缓存 resolver 的兜底）
-  Future<DownloadResolveResult> Function(Episode) _buildResolver(
-    DramaDownloadGroup group,
-  ) {
-    return (Episode ep) async {
-      final videoItems = await apiClient
-          .fetchFqVideoModel(ep.url)
-          .timeout(const Duration(seconds: 10));
-      if (videoItems.isEmpty) throw Exception('未获取到视频信息');
-
-      // 选最高画质
-      final selected = videoItems.firstWhere(
-        (item) => item.definition == '1080p',
-        orElse: () => videoItems.firstWhere(
-          (item) => item.definition == '720p',
-          orElse: () => videoItems.last,
-        ),
-      );
-
-      final keyHex = await apiClient
-          .fetchDecryptKey(selected.spadeA)
-          .timeout(const Duration(seconds: 5));
-
-      return DownloadResolveResult(cdnUrl: selected.url, keyHex: keyHex);
-    };
-  }
-
-  /// 检查整组是否全部暂停或待下载
   bool isGroupPaused(String dramaId) {
     final group = _groups[dramaId];
-    if (group == null) return false;
-    final unfinished = group.episodes.where(
-      (e) => e.status != DownloadStatus.completed,
-    );
-    if (unfinished.isEmpty) return false;
-    return unfinished.every((e) => e.status == DownloadStatus.paused);
+    return group != null && !group.isAllCompleted && !group.hasQueuedDownloads;
   }
 
-  void retryFailed(
-    String dramaId,
-    Future<DownloadResolveResult> Function(Episode) resolveUrl,
-  ) {
+  void retryFailed(String dramaId, DownloadResolver resolveUrl) {
+    final group = _groups[dramaId];
+    if (group == null || _disposed) return;
+    for (final dl in group.episodes) {
+      if (dl.status == DownloadStatus.failed) {
+        _resolvers[dl] = resolveUrl;
+        _reset(dl, DownloadStatus.pending);
+      }
+    }
+    _notify();
+    unawaited(_saveAndSchedule());
+  }
+
+  Future<void> deleteGroup(String dramaId) async {
+    await ensureLoaded();
     final group = _groups[dramaId];
     if (group == null) return;
-    for (final ep in group.episodes) {
-      if (ep.status == DownloadStatus.failed) {
-        ep.status = DownloadStatus.pending;
-        ep.error = null;
-        _resolvers[ep.key] = resolveUrl;
-      }
-    }
-    notifyListeners();
-    _scheduleNext(dramaId, resolveUrl);
-  }
-
-  void deleteGroup(String dramaId) async {
-    final group = _groups.remove(dramaId);
-    if (group == null) return;
-    for (final ep in group.episodes) {
-      _completedKeys.remove(ep.key);
-      _pausedKeys.remove(ep.key);
-      _resolvers.remove(ep.key);
-      if (ep.localPath != null) {
-        final f = File(ep.localPath!);
-        if (f.existsSync()) f.deleteSync();
-      }
-    }
+    // 同步删除目录和移除模型，避免 await 期间重新加入的任务被误删。
+    final dir = _directory(dramaId);
     try {
-      final dir = await _dramaDir(dramaId);
       if (dir.existsSync()) dir.deleteSync(recursive: true);
-    } on Exception catch (_) {}
-    await _saveCompletedKeys();
-    _scheduleSaveGroups();
-    notifyListeners();
+    } on FileSystemException {
+      throw ApiException('删除缓存文件失败，请稍后重试');
+    }
+    _groups.remove(dramaId);
+    _covers.remove(group)?.cancel();
+    for (final dl in group.episodes) {
+      _active[dl]?.cancelled = true;
+      _resolvers.remove(dl);
+    }
+    _notify();
+    await _persist();
+    _schedule();
   }
 
-  // ── Internal ──────────────────────────────────────────────────
+  /// 前台恢复/手动刷新时同步磁盘状态，提供明确的重新下载入口。
+  Future<void> refreshFiles() async {
+    await ensureLoaded();
+    for (final group in _groups.values) {
+      for (final dl in group.episodes) {
+        if (dl.status == DownloadStatus.completed && !dl.isPlayable) {
+          _reset(dl, DownloadStatus.failed, error: '本地文件已丢失或损坏，请重试');
+        }
+      }
+    }
+    _notify();
+    await _persist();
+    _schedule();
+  }
 
-  /// 强制保存当前状态（供 app 进入后台时调用）
-  Future<void> saveState() async {
-    _saveDebounce?.cancel();
-    await _saveGroups();
-    await _saveCompletedKeys();
+  Future<DownloadResolveResult> _resolve(Episode ep) async {
+    final items = await apiClient
+        .fetchFqVideoModel(ep.url)
+        .timeout(const Duration(seconds: 10));
+    if (items.isEmpty) throw ApiException('未获取到视频信息');
+    final selected = items.firstWhere((item) => item.definition == '1080p',
+        orElse: () => items.firstWhere((item) => item.definition == '720p',
+            orElse: () => items.last));
+    final key = await apiClient
+        .fetchDecryptKey(selected.spadeA)
+        .timeout(const Duration(seconds: 5));
+    return DownloadResolveResult(cdnUrl: selected.url, keyHex: key);
+  }
+
+  void _schedule() {
+    if (_disposed || !_loaded || _pendingWrites > 0 || _lastError != null) {
+      return;
+    }
+    for (final group in _groups.values) {
+      for (final dl in group.episodes) {
+        if (_active.length >= _concurrency) {
+          _notify();
+          return;
+        }
+        if (dl.status != DownloadStatus.pending || _active.containsKey(dl)) {
+          continue;
+        }
+        final run = _DownloadRun(
+          '${_episodePath(dl.dramaId, dl.episode.index)}.${DateTime.now().microsecondsSinceEpoch}.${_runId++}.part',
+        );
+        _active[dl] = run;
+        dl._status = DownloadStatus.downloading;
+        dl._progress = -1;
+        // 任务自身处理错误并在 finally 中释放全局并发槽。
+        unawaited(_downloadEpisode(dl, run, _resolvers[dl] ?? _resolve));
+      }
+    }
+    _notify();
+  }
+
+  bool _canCommit(EpisodeDownload dl, _DownloadRun run) =>
+      _contains(dl) && !run.cancelled && identical(_active[dl], run);
+
+  Future<void> _downloadEpisode(
+      EpisodeDownload dl, _DownloadRun run, DownloadResolver resolver) async {
+    try {
+      for (int attempt = 0; attempt < 3; attempt++) {
+        if (!_canCommit(dl, run)) return;
+        try {
+          final result = await resolver(dl.episode);
+          if (!_canCommit(dl, run)) return;
+          if (result.cdnUrl.isEmpty || result.keyHex.isEmpty) {
+            throw ApiException('视频地址或解密密钥为空');
+          }
+          _directory(dl.dramaId).createSync(recursive: true);
+          final status =
+              await _decryptToFile(result.cdnUrl, result.keyHex, run.path);
+          if (!_canCommit(dl, run)) return;
+          final temporary = File(run.path);
+          if (status != 0) throw ApiException('视频下载失败（状态码 $status）');
+          if (!temporary.existsSync() || temporary.lengthSync() == 0) {
+            throw ApiException('下载未生成有效文件，请重试');
+          }
+          final size = temporary.lengthSync();
+          final path = _episodePath(dl.dramaId, dl.episode.index);
+          temporary.renameSync(path);
+          dl._localPath = path;
+          dl._fileSize = size;
+          dl._status = DownloadStatus.completed;
+          dl._progress = 1;
+          dl._error = null;
+          break;
+        } catch (error) {
+          _removeFile(run.path);
+          if (!_canCommit(dl, run)) return;
+          if (attempt == 2) {
+            _reset(dl, DownloadStatus.failed,
+                error: error is ApiException
+                    ? error.message
+                    : '缓存失败，请检查网络或存储空间后重试');
+            debugPrint('缓存第${dl.episode.index}集失败: $error');
+          } else {
+            await Future<void>.delayed(_retryDelay * (attempt + 1));
+          }
+        }
+      }
+    } finally {
+      _removeFile(run.path);
+      _active.remove(dl);
+      if (!_disposed) {
+        _notify();
+        await _saveAndSchedule();
+      }
+    }
   }
 
   Future<void> _downloadCover(DramaDownloadGroup group, String url) async {
+    final token = CancelToken();
+    _covers[group] = token;
+    final path =
+        '${_directory(group.dramaId).path}/cover.${DateTime.now().microsecondsSinceEpoch}.part';
     try {
-      final dir = await _dramaDir(group.dramaId);
-      final path = '${dir.path}/cover.jpg';
-      await _dio.download(url, path);
-      group.localCoverPath = path;
-      notifyListeners();
-    } on Exception catch (_) {}
-  }
-
-  void _scheduleNext(
-    String dramaId,
-    Future<DownloadResolveResult> Function(Episode) resolveUrl,
-  ) {
-    final group = _groups[dramaId];
-    if (group == null) return;
-
-    final pending = group.episodes
-        .where(
-          (e) =>
-              e.status == DownloadStatus.pending &&
-              !_activeKeys.contains(e.key),
-        )
-        .toList();
-
-    final slots = _concurrency - _activeKeys.length;
-    for (var i = 0; i < slots && i < pending.length; i++) {
-      _downloadEpisode(pending[i], resolveUrl);
+      _directory(group.dramaId).createSync(recursive: true);
+      await _dio.download(url, path, cancelToken: token);
+      if (_disposed || !identical(_groups[group.dramaId], group)) return;
+      final file = File(path);
+      if (file.lengthSync() == 0) return;
+      final target = '${_directory(group.dramaId).path}/cover.jpg';
+      file.renameSync(target);
+      group.localCoverPath = target;
+      _notify();
+    } catch (error) {
+      if (!token.isCancelled) debugPrint('缓存封面下载失败: $error');
+    } finally {
+      _removeFile(path);
+      _covers.remove(group);
     }
   }
 
-  Future<void> _downloadEpisode(
-    EpisodeDownload dl,
-    Future<DownloadResolveResult> Function(Episode) resolveUrl,
-  ) async {
-    if (_pausedKeys.contains(dl.key)) return;
-    _activeKeys.add(dl.key);
-    dl.status = DownloadStatus.downloading;
-    dl.progress = -1.0;
-    notifyListeners();
-
-    const maxRetries = 2;
-    int attempt = 0;
-
-    while (attempt <= maxRetries) {
-      // 在每次尝试前检查暂停状态（decryptToFile 不支持取消，只能在开始前拦截）
-      if (_pausedKeys.contains(dl.key)) {
-        dl.status = DownloadStatus.paused;
-        break;
-      }
-
-      try {
-        final resolved = await resolveUrl(dl.episode);
-        final dir = await _dramaDir(dl.dramaId);
-        final path = '${dir.path}/ep_${dl.episode.index}.mp4';
-
-        final now = DateTime.now();
-        if (now.difference(_lastNotify).inMilliseconds >= 300) {
-          _lastNotify = now;
-          notifyListeners();
-        }
-
-        final status = await CryptoNativeChannel.instance.decryptToFile(
-          resolved.cdnUrl,
-          resolved.keyHex,
-          path,
-        );
-
-        if (status != 0) {
-          throw Exception('native decryptToFile 失败: status=$status');
-        }
-
-        dl.status = DownloadStatus.completed;
-        dl.localPath = path;
-        dl.progress = 1.0;
-        _completedKeys.add(dl.key);
-        await _saveCompletedKeys();
-        _scheduleSaveGroups();
-        break;
-      } on Exception catch (e) {
-        attempt++;
-        if (attempt > maxRetries) {
-          dl.status = DownloadStatus.failed;
-          dl.error = e.toString();
-        } else {
-          await Future<void>.delayed(Duration(seconds: attempt * 2));
-        }
-      }
-    }
-
-    _activeKeys.remove(dl.key);
-    notifyListeners();
-    if (dl.status != DownloadStatus.paused) {
-      _scheduleNext(dl.dramaId, resolveUrl);
+  void _removeFile(String path) {
+    try {
+      final file = File(path);
+      if (file.existsSync()) file.deleteSync();
+    } on FileSystemException catch (error) {
+      debugPrint('清理临时文件失败: $error');
     }
   }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    for (final run in _active.values) {
+      run.cancelled = true;
+    }
+    _dio.close(force: true);
+    super.dispose();
+  }
+}
+
+class _DownloadRun {
+  _DownloadRun(this.path);
+  final String path;
+  bool cancelled = false;
 }

@@ -5,11 +5,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../models/drama.dart';
-import '../models/episode.dart';
 import '../services/api_client.dart';
 import '../services/download_service.dart';
 import '../services/playback_history_store.dart';
 import '../services/theater_video_preload_manager.dart';
+import '../widgets/app_notice.dart';
 import 'player_page.dart';
 
 class DramaDetailPage extends StatefulWidget {
@@ -31,6 +31,7 @@ class DramaDetailPage extends StatefulWidget {
 class _DramaDetailPageState extends State<DramaDetailPage> {
   Drama? _detailDrama;
   bool _isLoading = true;
+  bool _addingDownloads = false;
   int? _lastEpisodeIndex;
   int? _lastPositionMs;
 
@@ -76,14 +77,7 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
   ) async {
     try {
       final result = await episodesFuture;
-      final episodes = result.chapters
-          .map((c) => Episode(
-                index: int.tryParse(c.realChapterOrder) ?? 0,
-                name: c.title,
-                size: 0,
-                url: c.itemId,
-              ))
-          .toList();
+      final episodes = result.toEpisodes();
       if (episodes.isEmpty) return;
       await _detailPreloadManager.preloadEpisode(
         episodes: episodes,
@@ -98,9 +92,8 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
 
   Future<void> _loadHistory() async {
     final records = await PlaybackHistoryStore.load();
-    final record = records
-        .where((r) => r.dramaId == widget.drama.id)
-        .firstOrNull;
+    final record =
+        records.where((r) => r.dramaId == widget.drama.id).firstOrNull;
     if (record != null && mounted) {
       setState(() {
         _lastEpisodeIndex = record.episodeIndex;
@@ -121,18 +114,18 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
   void _startPlay(BuildContext context, {bool resume = false}) {
     Navigator.of(context)
         .push(
-          MaterialPageRoute(
-            builder: (_) => PlayerPage(
-              drama: drama,
-              apiClient: apiClient,
-              downloadService: widget.downloadService,
-              initialEpisodeIndex: resume ? _lastEpisodeIndex : null,
-              initialPositionMs: resume ? _lastPositionMs : null,
-              prefetchedEpisodes: _prefetchedEpisodes,
-              preloadManager: _detailPreloadManager,
-            ),
-          ),
-        )
+      MaterialPageRoute(
+        builder: (_) => PlayerPage(
+          drama: drama,
+          apiClient: apiClient,
+          downloadService: widget.downloadService,
+          initialEpisodeIndex: resume ? _lastEpisodeIndex : null,
+          initialPositionMs: resume ? _lastPositionMs : null,
+          prefetchedEpisodes: _prefetchedEpisodes,
+          preloadManager: _detailPreloadManager,
+        ),
+      ),
+    )
         .then((_) async {
       // resolvePlayUrl 命中时 remove 掉了缓存项，返回详情页若不重新预热，再次
       // 播放就会 miss。这里 await 历史加载（拿到最新续播集）后重新预热首集，
@@ -147,59 +140,32 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
 
   Future<void> _downloadAll(BuildContext context) async {
     final ds = widget.downloadService;
-    if (ds == null) return;
+    if (ds == null || _addingDownloads) return;
+    setState(() => _addingDownloads = true);
     try {
       final result = await apiClient.fetchTheaterEpisodes(drama.id.toString());
-      final episodes = result.chapters
-          .map(
-            (c) => Episode(
-              index: int.tryParse(c.realChapterOrder) ?? 0,
-              name: c.title,
-              size: 0,
-              url: c.itemId,
-            ),
-          )
-          .toList();
-      if (episodes.isEmpty) {
-        if (context.mounted)
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('暂无可下载的集数')));
-        return;
-      }
-      await ds.addDownloads(
+      final queued = await ds.addDownloads(
         dramaId: drama.id.toString(),
         dramaName: drama.name,
-        episodes: episodes,
+        episodes: result.toEpisodes(),
         coverUrl: drama.cover.isNotEmpty ? drama.cover : null,
         isTheaterResource: true,
-        resolveUrl: (ep) async {
-          final videoItems = await apiClient
-              .fetchFqVideoModel(ep.url)
-              .timeout(const Duration(seconds: 10));
-          if (videoItems.isEmpty) throw Exception('未获取到视频信息');
-          final selected = videoItems.firstWhere(
-            (item) => item.definition == '1080p',
-            orElse: () => videoItems.firstWhere(
-              (item) => item.definition == '720p',
-              orElse: () => videoItems.last,
-            ),
-          );
-          final keyHex = await apiClient
-              .fetchDecryptKey(selected.spadeA)
-              .timeout(const Duration(seconds: 5));
-          return DownloadResolveResult(cdnUrl: selected.url, keyHex: keyHex);
-        },
       );
-      if (context.mounted)
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('已添加 ${episodes.length} 集到缓存队列')),
-        );
-    } catch (e) {
-      if (context.mounted)
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('获取集数失败，请重试')));
+      if (context.mounted) {
+        showAppNotice(context,
+            message: queued > 0 ? '缓存任务已添加' : '无需重复下载',
+            detail: queued > 0 ? '已加入 $queued 集，可在缓存页查看进度' : '这些剧集已缓存或正在下载',
+            kind: queued > 0 ? AppNoticeKind.success : AppNoticeKind.info);
+      }
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+              error is ApiException ? error.message : '添加缓存失败，请检查网络或存储空间后重试'),
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _addingDownloads = false);
     }
   }
 
@@ -557,13 +523,15 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
             child: Material(
               color: Colors.transparent,
               child: InkWell(
-                onTap: () => _downloadAll(context),
+                onTap: _addingDownloads ? null : () => _downloadAll(context),
                 borderRadius: BorderRadius.circular(12),
-                child: const Icon(
-                  Icons.download_outlined,
-                  color: Color(0xFFFF2E55),
-                  size: 26,
-                ),
+                child: _addingDownloads
+                    ? const Center(child: CupertinoActivityIndicator())
+                    : const Icon(
+                        Icons.download_outlined,
+                        color: Color(0xFFFF2E55),
+                        size: 26,
+                      ),
               ),
             ),
           ),

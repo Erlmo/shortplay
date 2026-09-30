@@ -11,6 +11,7 @@ class PlayerSystemUiController extends ChangeNotifier {
 
   bool? _isPortraitVideoForSystemUi;
   Timer? _hideUITimer;
+  bool _menuOpen = false;
 
   Future<void> setFullScreen() async {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
@@ -93,9 +94,21 @@ class PlayerSystemUiController extends ChangeNotifier {
     _startHideTimer();
   }
 
+  void setMenuOpen(bool open) {
+    _menuOpen = open;
+    if (open) {
+      _hideUITimer?.cancel();
+      showLandscapeUI = true;
+      NativeUi.setHomeIndicatorHidden(false);
+      notifyListeners();
+    } else {
+      showUIAndResetTimer();
+    }
+  }
+
   void _startHideTimer() {
     _hideUITimer?.cancel();
-    if (!isLandscapeFullScreen) return;
+    if (!isLandscapeFullScreen || _menuOpen) return;
     _hideUITimer = Timer(const Duration(seconds: 3), () {
       if (!isLandscapeFullScreen) return;
       showLandscapeUI = false;

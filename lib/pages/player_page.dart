@@ -14,10 +14,13 @@ import '../services/native_player.dart';
 import '../services/playback_history_store.dart';
 import '../services/player_danmaku_controller.dart';
 import '../services/player_system_ui_controller.dart';
+import '../services/player_sleep_timer.dart';
 import '../services/theater_video_preload_manager.dart';
 import '../widgets/player/episode_sheet.dart';
 import '../widgets/player/player_controls_overlay.dart';
 import '../widgets/player/player_loading.dart';
+import '../widgets/player/player_video_surface.dart';
+import '../widgets/app_notice.dart';
 import '../widgets/danmaku_layer.dart';
 import 'player_preload_mixin.dart';
 
@@ -52,6 +55,10 @@ class PlayerPage extends StatefulWidget {
 class _PlayerPageState extends State<PlayerPage>
     with PlayerPreloadMixin, WidgetsBindingObserver, RouteAware {
   NativePlayer? _player;
+  NativePlayer? _preparingPlayer;
+  bool _sleepStopped = false;
+  int _sleepPositionMs = 0;
+  bool _actionSheetOpen = false;
   bool _playerInitialized = false;
   int _currentEpisodeIndex = 0;
   int _requestId = 0;
@@ -70,8 +77,9 @@ class _PlayerPageState extends State<PlayerPage>
   bool _isSpeedUp = false;
   int _activePointers = 0;
   double _playbackSpeed = 1.0;
+  int? _sleepTimerMinutes;
   double? _seekingPositionMs;
-  String _loadingStatusText = '正在准备播放资源';
+  final String _loadingStatusText = '正在准备播放资源';
   List<WorkflowStep> _steps = const [
     WorkflowStep(id: 'episodes', label: '获取剧集列表', status: StepStatus.running),
     WorkflowStep(id: 'resolve', label: '解析播放地址'),
@@ -86,6 +94,7 @@ class _PlayerPageState extends State<PlayerPage>
   List<Episode> _episodes = const [];
 
   late final PlayerSystemUiController _systemUi;
+  late final PlayerSleepTimer _sleepTimer;
   late final PlayerDanmakuController _danmakuController;
   late final TheaterVideoPreloadManager _preloadManager;
   PageController? _pageController;
@@ -112,6 +121,8 @@ class _PlayerPageState extends State<PlayerPage>
     WidgetsBinding.instance.addObserver(this);
     _systemUi = PlayerSystemUiController();
     _systemUi.addListener(_onSystemUiChanged);
+    _sleepTimer = PlayerSleepTimer(onElapsed: _stopForSleep);
+    _sleepTimer.addListener(_onSystemUiChanged);
     _preloadManager = widget.preloadManager ??
         TheaterVideoPreloadManager(apiClient: widget.apiClient);
     _danmakuController = PlayerDanmakuController(apiClient: widget.apiClient);
@@ -148,6 +159,8 @@ class _PlayerPageState extends State<PlayerPage>
   // 上层路由弹出、本页重新可见：恢复之前因覆盖而暂停的播放。
   @override
   void didPopNext() {
+    _sleepTimer.checkDeadline();
+    if (_sleepStopped) return;
     if (_pausedByRoute) {
       _pausedByRoute = false;
       // 用户未手动暂停、也不是被生命周期暂停时才自动续播。
@@ -162,6 +175,9 @@ class _PlayerPageState extends State<PlayerPage>
     NativePlayer.setKeepScreenOn(false);
     _swipeBlockTimer?.cancel();
     _systemUi.removeListener(_onSystemUiChanged);
+    _sleepTimer.removeListener(_onSystemUiChanged);
+    _sleepTimer.dispose();
+    if (_preparingPlayer != null) enqueueDispose(_preparingPlayer!);
     _positionSub?.cancel();
     _playingSub?.cancel();
     _completedSub?.cancel();
@@ -186,7 +202,9 @@ class _PlayerPageState extends State<PlayerPage>
         _player!.pause();
       }
     } else if (state == AppLifecycleState.resumed) {
-      if (_pausedByLifecycle) {
+      _sleepTimer.checkDeadline();
+      if (_sleepStopped) return;
+      if (_pausedByLifecycle && !_userPaused) {
         _pausedByLifecycle = false;
         _player?.play();
       }
@@ -197,7 +215,8 @@ class _PlayerPageState extends State<PlayerPage>
 
   Future<void> _prepare() async {
     _steps = [
-      const WorkflowStep(id: 'episodes', label: '获取剧集列表', status: StepStatus.running),
+      const WorkflowStep(
+          id: 'episodes', label: '获取剧集列表', status: StepStatus.running),
       const WorkflowStep(id: 'resolve', label: '解析播放地址'),
       const WorkflowStep(id: 'player', label: '初始化播放器'),
     ];
@@ -209,12 +228,12 @@ class _PlayerPageState extends State<PlayerPage>
       } else if (widget.prefetchedEpisodes != null) {
         final result = await widget.prefetchedEpisodes!;
         if (!mounted) return;
-        _episodes = _chaptersToEpisodes(result.chapters);
+        _episodes = result.toEpisodes();
       } else {
         final result = await widget.apiClient
             .fetchTheaterEpisodes(widget.drama.id.toString());
         if (!mounted) return;
-        _episodes = _chaptersToEpisodes(result.chapters);
+        _episodes = result.toEpisodes();
       }
 
       _updateStep('episodes', StepStatus.success);
@@ -228,7 +247,9 @@ class _PlayerPageState extends State<PlayerPage>
         return;
       }
       if (widget.initialEpisodeNumber != null) {
-        final idx = widget.initialEpisodeNumber! - 1;
+        final idx = _episodes.indexWhere(
+          (episode) => episode.index == widget.initialEpisodeNumber,
+        );
         if (idx >= 0 && idx < _episodes.length) _currentEpisodeIndex = idx;
       }
       _currentEpisodeIndex =
@@ -248,30 +269,20 @@ class _PlayerPageState extends State<PlayerPage>
   }
 
   void _updateStep(String id, StepStatus status) {
-    _steps = _steps.map((s) => s.id == id ? s.copyWith(status: status) : s).toList();
+    _steps =
+        _steps.map((s) => s.id == id ? s.copyWith(status: status) : s).toList();
     if (mounted) setState(() {});
-  }
-
-  List<Episode> _chaptersToEpisodes(List<TheaterChapter> chapters) {
-    return chapters
-        .asMap()
-        .entries
-        .map((e) => Episode(
-              // e.key 是 0-based 下标；index 字段语义为 1-based 集号
-              //（选集面板/离线页直接显示，下载文件名也用它），故 +1。
-              index: e.key + 1,
-              name: e.value.title,
-              size: 0,
-              url: e.value.itemId,
-            ))
-        .toList();
   }
 
   // ─── 打开剧集 ──────────────────────────────────────────────────────────
 
   Future<void> _openEpisode(int index, {int? initialSeekMs}) async {
-    if (index < 0 || index >= _episodes.length) return;
+    if (_sleepStopped || index < 0 || index >= _episodes.length) return;
     final reqId = ++_requestId;
+    if (_preparingPlayer != null) {
+      enqueueDispose(_preparingPlayer!);
+      _preparingPlayer = null;
+    }
 
     final direction = index - _currentEpisodeIndex;
     _currentEpisodeIndex = index;
@@ -348,8 +359,10 @@ class _PlayerPageState extends State<PlayerPage>
 
     // 新建播放器路径
     _steps = [
-      const WorkflowStep(id: 'episodes', label: '获取剧集列表', status: StepStatus.success),
-      const WorkflowStep(id: 'resolve', label: '解析播放地址', status: StepStatus.running),
+      const WorkflowStep(
+          id: 'episodes', label: '获取剧集列表', status: StepStatus.success),
+      const WorkflowStep(
+          id: 'resolve', label: '解析播放地址', status: StepStatus.running),
       const WorkflowStep(id: 'player', label: '初始化播放器'),
     ];
     setState(() {
@@ -438,6 +451,7 @@ class _PlayerPageState extends State<PlayerPage>
       return;
     }
 
+    _preparingPlayer = player;
     // 先 play，让 AVPlayer 开始缓冲和解码
     unawaited(player.play());
     unawaited(player.setRate(_isSpeedUp ? 2.0 : _playbackSpeed));
@@ -452,7 +466,8 @@ class _PlayerPageState extends State<PlayerPage>
             .firstWhere((v) => v)
             .timeout(const Duration(seconds: 15));
       }
-    } on TimeoutException {
+    } catch (error) {
+      if (identical(_preparingPlayer, player)) _preparingPlayer = null;
       if (!mounted || reqId != _requestId) {
         unawaited(player.dispose());
         return;
@@ -470,6 +485,7 @@ class _PlayerPageState extends State<PlayerPage>
       return;
     }
 
+    if (identical(_preparingPlayer, player)) _preparingPlayer = null;
     _player = player;
     _playerInitialized = true;
     _loading = false;
@@ -530,6 +546,8 @@ class _PlayerPageState extends State<PlayerPage>
   // ─── 自动下一集 ────────────────────────────────────────────────────────
 
   void _onAutoNext() {
+    _sleepTimer.checkDeadline();
+    if (_sleepStopped || _userPaused) return;
     final next = _currentEpisodeIndex + 1;
     if (next >= _episodes.length) return;
     _programmaticJump = true;
@@ -562,6 +580,14 @@ class _PlayerPageState extends State<PlayerPage>
   // ─── 操作回调 ──────────────────────────────────────────────────────────
 
   void _onTogglePlay() {
+    if (_sleepStopped) {
+      _sleepStopped = false;
+      _userPaused = false;
+      unawaited(NativePlayer.setKeepScreenOn(true));
+      unawaited(
+          _openEpisode(_currentEpisodeIndex, initialSeekMs: _sleepPositionMs));
+      return;
+    }
     final player = _player;
     if (player == null || !_playerInitialized) return;
     if (player.playing) {
@@ -610,6 +636,41 @@ class _PlayerPageState extends State<PlayerPage>
     setState(() {});
   }
 
+  void _onSpeedChanged(double value) {
+    _playbackSpeed = value;
+    if (_player != null && _playerInitialized) {
+      unawaited(_player!.setRate(value));
+    }
+    setState(() {});
+  }
+
+  void _onQualityChanged(String value) {
+    if (isOfflinePlayback || _episodes.isEmpty) return;
+    if (value ==
+        _preloadManager
+            .selectedDefinition(_episodes[_currentEpisodeIndex].url.trim())) {
+      return;
+    }
+    _preloadManager.setPreferredDefinition(value);
+    if (_episodes.isNotEmpty && !isOfflinePlayback) {
+      unawaited(_openEpisode(_currentEpisodeIndex,
+          initialSeekMs: positionMsNotifier.value));
+    }
+    setState(() {});
+  }
+
+  void _onSleepDurationChanged(Duration? duration) {
+    _sleepTimerMinutes = duration == null || duration == Duration.zero
+        ? null
+        : duration.inMinutes;
+    if (duration == null || duration == Duration.zero) {
+      _sleepTimer.cancel();
+    } else {
+      _sleepTimer.start(duration);
+    }
+    setState(() {});
+  }
+
   void _onLongPressStart(LongPressStartDetails _) {
     _isSpeedUp = true;
     if (_player != null && _playerInitialized) {
@@ -639,7 +700,8 @@ class _PlayerPageState extends State<PlayerPage>
   void _onToggleDanmaku() {
     unawaited(_danmakuController.toggle(
       isOfflinePlayback: isOfflinePlayback,
-      currentEpisode: _episodes.isNotEmpty ? _episodes[_currentEpisodeIndex] : null,
+      currentEpisode:
+          _episodes.isNotEmpty ? _episodes[_currentEpisodeIndex] : null,
       durationMs: durationMsNotifier.value,
     ));
     setState(() {});
@@ -656,22 +718,111 @@ class _PlayerPageState extends State<PlayerPage>
     ));
   }
 
-  void _onEpisodeTap() {
+  Future<void> _onEpisodeTap() async {
     final episodeNotifier = ValueNotifier<int>(_currentEpisodeIndex);
-    showPlayerEpisodeSheet(
-      context: context,
-      isLandscapeFullScreen: _systemUi.isLandscapeFullScreen,
-      dramaName: widget.drama.name,
-      episodes: _episodes,
-      episodeNotifier: episodeNotifier,
-      onSelectEpisode: (idx) {
-        if (idx == _currentEpisodeIndex) return;
-        _programmaticJump = true;
-        _pageController?.jumpToPage(idx);
-        _programmaticJump = false;
-        unawaited(_openEpisode(idx));
-      },
-    );
+    _systemUi.setMenuOpen(true);
+    try {
+      await showPlayerEpisodeSheet(
+        context: context,
+        isLandscapeFullScreen: _systemUi.isLandscapeFullScreen,
+        dramaName: widget.drama.name,
+        episodes: _episodes,
+        episodeNotifier: episodeNotifier,
+        onSelectEpisode: (idx) {
+          if (!mounted || (idx == _currentEpisodeIndex && !_sleepStopped)) {
+            return;
+          }
+          _sleepStopped = false;
+          _userPaused = false;
+          unawaited(NativePlayer.setKeepScreenOn(true));
+          _programmaticJump = true;
+          _pageController?.jumpToPage(idx);
+          _programmaticJump = false;
+          unawaited(_openEpisode(idx));
+        },
+      );
+    } finally {
+      episodeNotifier.dispose();
+      if (mounted) _systemUi.setMenuOpen(false);
+    }
+  }
+
+  Future<void> _onMenuAction(PlayerMenuAction action) async {
+    if (_actionSheetOpen) return;
+    _actionSheetOpen = true;
+    _systemUi.setMenuOpen(true);
+    try {
+      switch (action) {
+        case PlayerMenuAction.download:
+          final service = widget.downloadService;
+          if (service == null || isOfflinePlayback) return;
+          await service.ensureLoaded();
+          if (!mounted) return;
+          final count = await service.addDownloads(
+            dramaId: widget.drama.id.toString(),
+            dramaName: widget.drama.name,
+            episodes: _episodes,
+            coverUrl: widget.drama.cover.isEmpty ? null : widget.drama.cover,
+            isTheaterResource: widget.drama.isTheaterResource,
+          );
+          if (mounted) {
+            showAppNotice(context,
+                message: count > 0 ? '缓存任务已添加' : '所选剧集无需重复下载',
+                detail: count > 0 ? '已加入 $count 集，可在缓存页查看进度' : '已缓存或正在下载',
+                kind: count > 0 ? AppNoticeKind.success : AppNoticeKind.info,
+                abovePlayerControls: true);
+          }
+      }
+    } catch (error) {
+      if (mounted) {
+        showAppNotice(context,
+            message: '操作未完成',
+            detail: error is ApiException ? error.message : '请稍后重试',
+            kind: AppNoticeKind.error,
+            abovePlayerControls: true);
+      }
+    } finally {
+      _actionSheetOpen = false;
+      if (mounted) _systemUi.setMenuOpen(false);
+    }
+  }
+
+  void _stopForSleep() {
+    if (!mounted) return;
+    if (!_sleepStopped) {
+      _sleepPositionMs = _playerInitialized ? positionMsNotifier.value : 0;
+    }
+    if (_playerInitialized) _saveHistory();
+    _sleepStopped = true;
+    _userPaused = true;
+    _pausedByLifecycle = false;
+    _pausedByRoute = false;
+    _resumeAfterSeek = false;
+    ++_requestId; // 在加载中到期时，禁止旧异步请求重新开始播放。
+    _positionSub?.cancel();
+    _playingSub?.cancel();
+    _completedSub?.cancel();
+    if (_player != null) enqueueDispose(_player!);
+    if (_preparingPlayer != null) enqueueDispose(_preparingPlayer!);
+    _player = null;
+    _preparingPlayer = null;
+    dispose3PWindow();
+    _swipeBlockTimer?.cancel();
+    playingNotifier.value = false;
+    unawaited(NativePlayer.setKeepScreenOn(false));
+    _systemUi.showUIAndResetTimer();
+    setState(() {
+      _playerInitialized = false;
+      _loading = false;
+      _showNextLoading = false;
+      _swipeBlocked = false;
+      _errorMessage = null;
+    });
+    showAppNotice(context,
+        message: '定时已结束',
+        detail: '播放已停止，点击播放按钮可继续',
+        kind: AppNoticeKind.info,
+        abovePlayerControls: true);
   }
 
   void _onToggleLandscapeFullScreen() {
@@ -699,6 +850,7 @@ class _PlayerPageState extends State<PlayerPage>
   }
 
   void _onPageChanged(int index) {
+    if (_sleepStopped) return;
     if (_programmaticJump) return;
     if (index == _currentEpisodeIndex) return;
     final isForward = index > _currentEpisodeIndex;
@@ -794,9 +946,11 @@ class _PlayerPageState extends State<PlayerPage>
       child: PageView.builder(
         controller: _pageController,
         scrollDirection: Axis.vertical,
-        physics: blockForward
-            ? const _BlockForwardScrollPhysics()
-            : const BouncingScrollPhysics(),
+        physics: _sleepStopped
+            ? const NeverScrollableScrollPhysics()
+            : blockForward
+                ? const _BlockForwardScrollPhysics()
+                : const BouncingScrollPhysics(),
         onPageChanged: _onPageChanged,
         itemCount: _episodes.length,
         itemBuilder: (context, index) {
@@ -845,7 +999,28 @@ class _PlayerPageState extends State<PlayerPage>
             onBack: _onBack,
             onToggleDanmaku: _onToggleDanmaku,
             onSpeedTap: _onSpeedTap,
+            onSpeedChanged: _onSpeedChanged,
             onEpisodeTap: _onEpisodeTap,
+            episodeNumber: _episodes[index].index,
+            canDownload: widget.downloadService != null &&
+                !isOfflinePlayback &&
+                widget.drama.isTheaterResource &&
+                _episodes.isNotEmpty,
+            sleepTimerActive: _sleepTimer.isActive,
+            currentQuality: isOfflinePlayback
+                ? ''
+                : _preloadManager
+                    .selectedDefinition(_episodes[index].url.trim()),
+            loadQualities: isOfflinePlayback
+                ? null
+                : () => _preloadManager
+                    .availableDefinitions(_episodes[index].url.trim()),
+            onQualityChanged: _onQualityChanged,
+            onSleepDurationChanged: _onSleepDurationChanged,
+            sleepTimerMinutes: _sleepTimer.isActive ? _sleepTimerMinutes : null,
+            onMenuAction: _onMenuAction,
+            onMenuOpened: () => _systemUi.setMenuOpen(true),
+            onMenuClosed: () => _systemUi.setMenuOpen(false),
             onTogglePlay: _onTogglePlay,
             onToggleLandscapeFullScreen: _onToggleLandscapeFullScreen,
             onSeekStart: _onSeekStart,
@@ -854,36 +1029,15 @@ class _PlayerPageState extends State<PlayerPage>
           )
         : null;
 
-    Widget videoWidget = const SizedBox.shrink();
-    if (hasTexture) {
-      final vw = pagePlayer!.videoWidth > 0 ? pagePlayer.videoWidth.toDouble() : 9.0;
-      final vh = pagePlayer.videoHeight > 0 ? pagePlayer.videoHeight.toDouble() : 16.0;
-      final aspectRatio = vw / vh;
-
-      if (aspectRatio > 1.0 && !_systemUi.isLandscapeFullScreen) {
-        videoWidget = Container(
-          color: Colors.black,
-          child: Center(
-            child: AspectRatio(
-              aspectRatio: aspectRatio,
-              child: Texture(textureId: pagePlayer!.textureId!),
-            ),
-          ),
-        );
-      } else {
-        videoWidget = SizedBox.expand(
-          child: FittedBox(
-            fit: BoxFit.cover,
-            alignment: const Alignment(0, 0.45),
-            child: SizedBox(
-              width: vw,
-              height: vh,
-              child: Texture(textureId: pagePlayer!.textureId!),
-            ),
-          ),
-        );
-      }
-    }
+    final textureId = pagePlayer?.textureId;
+    final videoWidget = textureId == null
+        ? const SizedBox.shrink()
+        : PlayerVideoSurface(
+            textureId: textureId,
+            videoWidth: pagePlayer!.videoWidth,
+            videoHeight: pagePlayer.videoHeight,
+            isLandscapeFullScreen: _systemUi.isLandscapeFullScreen,
+          );
 
     return Stack(
       fit: StackFit.expand,
@@ -1041,7 +1195,8 @@ class _BlockForwardScrollPhysics extends ScrollPhysics {
   @override
   double applyBoundaryConditions(ScrollMetrics position, double value) {
     // 阻止向前滑（向下滚动 = value > position.pixels）
-    if (value > position.pixels && position.pixels >= position.maxScrollExtent - 1) {
+    if (value > position.pixels &&
+        position.pixels >= position.maxScrollExtent - 1) {
       return value - position.pixels;
     }
     return super.applyBoundaryConditions(position, value);
