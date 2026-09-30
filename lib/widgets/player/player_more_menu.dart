@@ -206,6 +206,21 @@ class _PlayerMoreSheetState extends State<_PlayerMoreSheet> {
                                     setState(() => quality = value);
                                     widget.onQualityChanged?.call(value);
                                   })),
+              _SettingRow(
+                icon: CupertinoIcons.timer,
+                title: '定时',
+                child: _ChoiceStrip<int?>(
+                  values: const [15, 30, 60, 90, 120, null],
+                  selected: timerMinutes,
+                  label: (value) => value == null ? '关闭' : '$value分',
+                  onChanged: (value) {
+                    setState(() => timerMinutes = value);
+                    widget.onSleepDurationChanged?.call(value == null
+                        ? Duration.zero
+                        : Duration(minutes: value));
+                  },
+                ),
+              ),
               _ActionRow(
                   icon: CupertinoIcons.chat_bubble_text,
                   title: '弹幕',
@@ -224,21 +239,6 @@ class _PlayerMoreSheetState extends State<_PlayerMoreSheet> {
                   onTap: widget.canDownload
                       ? () => widget.onSelected(PlayerMenuAction.download)
                       : null),
-              _SettingRow(
-                icon: CupertinoIcons.timer,
-                title: '定时',
-                child: _ChoiceStrip<int?>(
-                  values: const [15, 30, 60, 90, 120, null],
-                  selected: timerMinutes,
-                  label: (value) => value == null ? '关闭' : '$value分',
-                  onChanged: (value) {
-                    setState(() => timerMinutes = value);
-                    widget.onSleepDurationChanged?.call(value == null
-                        ? Duration.zero
-                        : Duration(minutes: value));
-                  },
-                ),
-              ),
             ]),
           ),
         ),

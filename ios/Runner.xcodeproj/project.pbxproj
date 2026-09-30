@@ -477,7 +477,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 3.1.0;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = SJZXJRQYDJ;
 				ENABLE_BITCODE = NO;
 				EXPORTED_SYMBOLS_FILE = "$(PROJECT_DIR)/Frameworks/exported_symbols.txt";
@@ -486,7 +486,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.1.0;
+				MARKETING_VERSION = 3.1.8;
 				PRODUCT_BUNDLE_IDENTIFIER = com.monika.longlong;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRIP_STYLE = "non-global";
@@ -666,7 +666,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 3.1.0;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = SJZXJRQYDJ;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
@@ -674,7 +674,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.1.0;
+				MARKETING_VERSION = 3.1.8;
 				PRODUCT_BUNDLE_IDENTIFIER = com.monika.longlong;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -690,7 +690,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 3.1.0;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = SJZXJRQYDJ;
 				ENABLE_BITCODE = NO;
 				EXPORTED_SYMBOLS_FILE = "$(PROJECT_DIR)/Frameworks/exported_symbols.txt";
@@ -699,7 +699,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.1.0;
+				MARKETING_VERSION = 3.1.8;
 				PRODUCT_BUNDLE_IDENTIFIER = com.monika.longlong;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRIP_STYLE = "non-global";
