@@ -78,6 +78,15 @@ class PlayerSystemUiController extends ChangeNotifier {
     }
   }
 
+  void toggleLandscapeUi() {
+    if (!isLandscapeFullScreen || _menuOpen) return;
+    if (showLandscapeUI) {
+      hideLandscapeUi();
+    } else {
+      showUIAndResetTimer();
+    }
+  }
+
   void hideLandscapeUi() {
     if (!isLandscapeFullScreen) return;
     showLandscapeUI = false;

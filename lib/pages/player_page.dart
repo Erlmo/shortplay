@@ -839,10 +839,7 @@ class _PlayerPageState extends State<PlayerPage>
   }
 
   void _onTapVideo() {
-    if (_systemUi.isLandscapeFullScreen) {
-      _systemUi.showUIAndResetTimer();
-      setState(() {});
-    }
+    _systemUi.toggleLandscapeUi();
   }
 
   void _onDoubleTapVideo() {
