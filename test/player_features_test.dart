@@ -94,27 +94,45 @@ void main() {
     });
   }
 
-  for (final video in [const Size(1920, 1080), const Size(1080, 1920)]) {
-    testWidgets('竖屏页面 ${video.width}x${video.height} 铺满屏幕', (tester) async {
-      const screen = Size(390, 844);
-      await tester.binding.setSurfaceSize(screen);
-      addTearDown(() => tester.binding.setSurfaceSize(null));
-      await tester.pumpWidget(MaterialApp(
-          home: Scaffold(
-              body: PlayerVideoSurface(
-        textureId: 1,
-        videoWidth: video.width.toInt(),
-        videoHeight: video.height.toInt(),
-        isLandscapeFullScreen: false,
-      ))));
-      final rect = tester.getRect(find.byType(Texture));
-      expect(rect.left, lessThanOrEqualTo(0.001));
-      expect(rect.top, lessThanOrEqualTo(0.001));
-      expect(rect.right, greaterThanOrEqualTo(screen.width - 0.001));
-      expect(rect.bottom, greaterThanOrEqualTo(screen.height - 0.001));
-      expect(tester.takeException(), isNull);
-    });
-  }
+  testWidgets('竖屏页面横向视频保持原比例并居中', (tester) async {
+    const screen = Size(390, 844);
+    await tester.binding.setSurfaceSize(screen);
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+            body: PlayerVideoSurface(
+      textureId: 1,
+      videoWidth: 1920,
+      videoHeight: 1080,
+      isLandscapeFullScreen: false,
+    ))));
+    final rect = tester.getRect(find.byType(Texture));
+    expect(rect.width / rect.height, closeTo(16 / 9, 0.001));
+    expect(rect.width, closeTo(screen.width, 0.001));
+    expect(rect.center.dx, closeTo(screen.width / 2, 0.001));
+    expect(rect.center.dy, closeTo(screen.height / 2, 0.001));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('竖屏页面竖向视频仍铺满屏幕', (tester) async {
+    const screen = Size(390, 844);
+    await tester.binding.setSurfaceSize(screen);
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+            body: PlayerVideoSurface(
+      textureId: 1,
+      videoWidth: 1080,
+      videoHeight: 1920,
+      isLandscapeFullScreen: false,
+    ))));
+    final rect = tester.getRect(find.byType(Texture));
+    expect(rect.left, lessThanOrEqualTo(0.001));
+    expect(rect.top, lessThanOrEqualTo(0.001));
+    expect(rect.right, greaterThanOrEqualTo(screen.width - 0.001));
+    expect(rect.bottom, greaterThanOrEqualTo(screen.height - 0.001));
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('三点位于集数右侧，小屏菜单提供下载和定时关闭', (tester) async {
     await tester.binding.setSurfaceSize(const Size(320, 568));
