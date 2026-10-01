@@ -1,3 +1,5 @@
+IOS体验地址：https://testflight.apple.com/join/bZEAapYp
+
 # ShortPlay
 
 Flutter 短剧播放器，**核心做两件事：原生 DRM 解密 + 像红果短剧一样丝滑的滑动体验**。
