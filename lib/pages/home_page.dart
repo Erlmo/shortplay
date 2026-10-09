@@ -1,19 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
-import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 import '../models/drama.dart';
 import '../services/api_client.dart';
 import '../services/download_service.dart';
-import '../services/share_link_resolver.dart';
 import '../widgets/notice_bar.dart';
 import 'cache_page.dart';
 import 'drama_detail_page.dart';
 import 'global_search_page.dart';
 import 'play_history_page.dart';
-import 'player_page.dart';
+import 'settings_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({
@@ -29,7 +27,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
+class _HomePageState extends State<HomePage> {
   int _currentIndex = 0;
 
   late final List<Widget> _pages;
@@ -37,21 +35,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   // GlobalKey用于访问PlayHistoryPage的state，实现tab切换时刷新
   final _playHistoryKey = GlobalKey<PlayHistoryPageState>();
 
-  // ─── 剪贴板分享口令 ────────────────────────────────────────────────────
-  late final ShareLinkResolver _shareLinkResolver =
-      ShareLinkResolver(apiClient: widget.apiClient);
-
-  /// 最近一次「已成功打开播放」的口令文本。仅用它去重：避免播放返回后又对
-  /// 同一段口令重复弹窗。用户取消/解析失败的口令不记入，下次回前台仍会再弹。
-  String? _openedClipboardText;
-
-  /// 正在解析/弹窗中，避免并发触发。
-  bool _handlingShareLink = false;
-
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     _pages = [
       _HomeFeedPage(
         apiClient: widget.apiClient,
@@ -66,234 +52,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         downloadService: widget.downloadService,
         apiClient: widget.apiClient,
       ),
+      SettingsPage(
+        apiClient: widget.apiClient,
+        downloadService: widget.downloadService,
+      ),
     ];
-    // 冷启动时也查一次：用户常在打开 App 前就复制好了口令。iOS 上 UIPasteboard
-    // 在首帧可能尚未就绪，读到空，故 600ms 后再补一次。
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _checkClipboardForShareLink();
-      Future.delayed(const Duration(milliseconds: 600), () {
-        if (mounted) _checkClipboardForShareLink();
-      });
-    });
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    // 从后台切回前台时检查剪贴板，捕获用户刚从别处复制的分享口令。
-    if (state == AppLifecycleState.resumed) {
-      _checkClipboardForShareLink();
-    }
-  }
-
-  // ─── 剪贴板分享口令处理 ────────────────────────────────────────────────
-
-  Future<void> _checkClipboardForShareLink() async {
-    if (_handlingShareLink) return;
-    final data = await Clipboard.getData(Clipboard.kTextPlain);
-    final text = data?.text?.trim();
-    if (text == null || text.isEmpty) return;
-    // 已成功打开过的同一段口令不再重复弹窗（播放返回首页的常见场景）。
-    if (text == _openedClipboardText) return;
-
-    // 设置标志防止重复触发（即使还没真正开始处理）
-    _handlingShareLink = true;
-
-    // 直接调用 resolve，由 API 判断是否是分享链接并解析
-    final result = await _shareLinkResolver.resolve(text);
-    if (result == null) {
-      _handlingShareLink = false;
-      return; // 不是分享链接或解析失败，静默忽略
-    }
-
-    if (!mounted) {
-      _handlingShareLink = false;
-      return;
-    }
-
-    final confirmed = await _showShareConfirmDialog(result.title);
-    if (confirmed != true || !mounted) {
-      _handlingShareLink = false;
-      return;
-    }
-
-    // 弹窗确认后记录该口令，避免播放返回首页后又对同一段重复弹窗
-    _openedClipboardText = text;
-    await _resolveAndOpen(result);
-    _handlingShareLink = false;
-  }
-
-  Future<bool?> _showShareConfirmDialog(String? title) {
-    return showGeneralDialog<bool>(
-      context: context,
-      barrierDismissible: true,
-      barrierLabel: '关闭',
-      barrierColor: Colors.black.withValues(alpha: 0.45),
-      transitionDuration: const Duration(milliseconds: 240),
-      pageBuilder: (ctx, _, __) => const SizedBox.shrink(),
-      transitionBuilder: (ctx, anim, _, __) {
-        final t = anim.value.clamp(0.0, 1.0);
-        // easeOutBack 带轻微回弹，比线性缩放更有“弹出”手感。
-        final scale = 0.85 + 0.15 * Curves.easeOutBack.transform(t);
-        return Opacity(
-          opacity: t,
-          child: Transform.scale(scale: scale, child: _buildShareDialog(ctx, title)),
-        );
-      },
-    );
-  }
-
-  Widget _buildShareDialog(BuildContext ctx, String? title) {
-    final hasTitle = title != null && title.isNotEmpty;
-    return Center(
-      child: Material(
-        color: Colors.transparent,
-        child: Container(
-          margin: const EdgeInsets.symmetric(horizontal: 40),
-          padding: const EdgeInsets.fromLTRB(24, 28, 24, 20),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(24),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.12),
-                blurRadius: 30,
-                offset: const Offset(0, 12),
-              ),
-            ],
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _buildShareDialogIcon(),
-              const SizedBox(height: 16),
-              const Text(
-                '发现短剧口令',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF1D1D1F),
-                ),
-              ),
-              const SizedBox(height: 10),
-              _buildShareDialogDesc(hasTitle, title),
-              const SizedBox(height: 22),
-              _buildShareDialogButtons(ctx),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildShareDialogIcon() {
-    return Container(
-      width: 60,
-      height: 60,
-      decoration: const BoxDecoration(
-        shape: BoxShape.circle,
-        gradient: LinearGradient(
-          colors: [Color(0xFFFF2E55), Color(0xFFFF5656)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-      ),
-      child: const Icon(
-        Icons.play_circle_fill_rounded,
-        color: Colors.white,
-        size: 34,
-      ),
-    );
-  }
-
-  Widget _buildShareDialogDesc(bool hasTitle, String? title) {
-    if (!hasTitle) {
-      return Text(
-        '检测到一个短剧分享链接，是否立即打开播放？',
-        textAlign: TextAlign.center,
-        style: TextStyle(fontSize: 14, color: Colors.grey[600], height: 1.5),
-      );
-    }
-    // 把剧名做成红底胶囊高亮，比夹在句子里的《》更醒目。
-    return Column(
-      children: [
-        Text(
-          '检测到这部短剧的分享口令',
-          textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 14, color: Colors.grey[600], height: 1.5),
-        ),
-        const SizedBox(height: 10),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-          decoration: BoxDecoration(
-            color: const Color(0xFFFFF0F2),
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Text(
-            title!,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontSize: 15,
-              fontWeight: FontWeight.w600,
-              color: Color(0xFFFF2E55),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildShareDialogButtons(BuildContext ctx) {
-    return _ShareDialogActions(
-      onCancel: () => Navigator.of(ctx).pop(false),
-      onConfirm: () => Navigator.of(ctx).pop(true),
-    );
-  }
-
-  Future<void> _resolveAndOpen(ShareLinkResult result) async {
-    _handlingShareLink = true;
-    final seriesId = int.tryParse(result.videoId);
-    if (seriesId == null) {
-      _handlingShareLink = false;
-      _showSnack('链接解析失败');
-      return;
-    }
-    // 仅需 id 驱动播放页拉剧集；name 用于顶部展示，优先用服务端返回的剧名。
-    final drama = Drama(
-      id: seriesId,
-      name: result.title ?? '分享短剧',
-      actors: '',
-      cover: '',
-      intro: '',
-      tags: const [],
-      status: '',
-      updateTime: '',
-      isTheaterResource: true,
-    );
-    // 成功解析并跳转
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => PlayerPage(
-          drama: drama,
-          apiClient: widget.apiClient,
-          downloadService: widget.downloadService,
-        ),
-      ),
-    );
-    _handlingShareLink = false;
-  }
-
-  void _showSnack(String message) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -363,16 +126,29 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             ),
             BottomNavigationBarItem(
               icon: const Icon(
-                Icons.download_outlined,
+                Icons.video_library_outlined,
                 size: 28,
                 color: Color(0xFF999999),
               ),
               activeIcon: const Icon(
-                Icons.download_rounded,
+                Icons.video_library_rounded,
                 size: 28,
                 color: Colors.black,
               ),
               label: '缓存',
+            ),
+            const BottomNavigationBarItem(
+              icon: Icon(
+                Icons.settings_outlined,
+                size: 28,
+                color: Color(0xFF999999),
+              ),
+              activeIcon: Icon(
+                Icons.settings_rounded,
+                size: 28,
+                color: Colors.black,
+              ),
+              label: '设置',
             ),
           ],
         ),
@@ -609,8 +385,7 @@ class _DramaListTab extends StatefulWidget {
     int? offset,
     String? sessionId,
     String type,
-  )
-  fetchFunction;
+  ) fetchFunction;
 
   @override
   State<_DramaListTab> createState() => _DramaListTabState();
@@ -764,9 +539,8 @@ class _DramaListTabState extends State<_DramaListTab>
                         filter,
                         style: TextStyle(
                           fontSize: 12,
-                          fontWeight: isSelected
-                              ? FontWeight.w600
-                              : FontWeight.w500,
+                          fontWeight:
+                              isSelected ? FontWeight.w600 : FontWeight.w500,
                           color: isSelected
                               ? Colors.white
                               : const Color(0xFF666666),
@@ -809,11 +583,11 @@ class _DramaListTabState extends State<_DramaListTab>
                             ? SliverGrid(
                                 gridDelegate:
                                     const SliverGridDelegateWithFixedCrossAxisCount(
-                                      crossAxisCount: 2,
-                                      childAspectRatio: 0.68,
-                                      crossAxisSpacing: 8,
-                                      mainAxisSpacing: 8,
-                                    ),
+                                  crossAxisCount: 2,
+                                  childAspectRatio: 0.68,
+                                  crossAxisSpacing: 8,
+                                  mainAxisSpacing: 8,
+                                ),
                                 delegate: SliverChildBuilderDelegate((
                                   context,
                                   index,
@@ -1135,7 +909,7 @@ class _XHSCard extends StatelessWidget {
                         vertical: 2,
                       ),
                       decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha:0.6),
+                        color: Colors.black.withValues(alpha: 0.6),
                         borderRadius: BorderRadius.circular(4),
                       ),
                       child: Text(
@@ -1207,7 +981,7 @@ class _XHSCard extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
         decoration: BoxDecoration(
-          color: color.withValues(alpha:0.9), // 稍微透明一点更有质感
+          color: color.withValues(alpha: 0.9), // 稍微透明一点更有质感
           borderRadius: const BorderRadius.all(
             Radius.circular(4),
           ), // 小红书风格倾向于圆角矩形
@@ -1221,79 +995,6 @@ class _XHSCard extends StatelessWidget {
           ),
         ),
       ),
-    );
-  }
-}
-
-// 分享口令弹窗的底部双按钮：左“取消”描边，右“立即播放”红色渐变填充。
-class _ShareDialogActions extends StatelessWidget {
-  const _ShareDialogActions({required this.onCancel, required this.onConfirm});
-
-  final VoidCallback onCancel;
-  final VoidCallback onConfirm;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: SizedBox(
-            height: 46,
-            child: OutlinedButton(
-              onPressed: onCancel,
-              style: OutlinedButton.styleFrom(
-                foregroundColor: const Color(0xFF666666),
-                side: const BorderSide(color: Color(0xFFE5E5EA)),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-              child: const Text(
-                '取消',
-                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Container(
-            height: 46,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(12),
-              boxShadow: [
-                BoxShadow(
-                  color: const Color(0xFFFF2E55).withValues(alpha: 0.3),
-                  blurRadius: 16,
-                  offset: const Offset(0, 6),
-                ),
-              ],
-              gradient: const LinearGradient(
-                colors: [Color(0xFFFF2E55), Color(0xFFFF5656)],
-                begin: Alignment.centerLeft,
-                end: Alignment.centerRight,
-              ),
-            ),
-            child: Material(
-              color: Colors.transparent,
-              child: InkWell(
-                onTap: onConfirm,
-                borderRadius: BorderRadius.circular(12),
-                child: const Center(
-                  child: Text(
-                    '立即播放',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 15,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
     );
   }
 }
