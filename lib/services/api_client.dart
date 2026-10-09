@@ -120,7 +120,8 @@ class ApiClient {
     // 同一组值同时用于签名请求与番茄请求，保证服务端签名的 URL 与实际请求逐字一致。
     // 以下 9 个参数为实测的最小必需集：缺签名服务强制项(iid/device_id/aid/
     // version_code/version_name/device_brand/os_version/cdid)会签名失败；
-    // 缺 device_platform 番茄返回空。其余参数实测可省。
+    // 缺 device_platform 番茄返回空；update_version_code 缺失时服务端不下发
+    // 1080p 档位。
     final iid = _randomNumericId(19);
     final deviceId = _randomNumericId(16);
     final queryString = 'iid=$iid'
@@ -128,6 +129,7 @@ class ApiClient {
         '&aid=${ApiConfig.fqAid}'
         '&version_code=72132'
         '&version_name=7.2.1.32'
+        '&update_version_code=72132'
         '&device_brand=Xiaomi'
         '&os_version=13'
         '&device_platform=android'
