@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../models/drama.dart';
 import '../services/api_client.dart';
 import '../services/download_service.dart';
 import '../services/share_link_resolver.dart';
-import 'drama_detail_page.dart';
+import 'player_page.dart';
 
 class ShareLinkPage extends StatefulWidget {
   const ShareLinkPage({
@@ -81,18 +82,25 @@ class _ShareLinkPageState extends State<ShareLinkPage> {
         throw ApiException('未识别到有效短剧，请检查分享内容后重试');
       }
       final title = info.title?.trim();
-      final drama = await widget.apiClient.fetchSharedDramaDetail(
-        id.toString(),
-        title: title != null && title.isNotEmpty
+      final drama = Drama(
+        id: id,
+        name: title != null && title.isNotEmpty
             ? title
-            : ShareLinkResolver.extractTitle(text) ?? '',
+            : ShareLinkResolver.extractTitle(text) ?? '分享短剧',
+        actors: '',
+        cover: '',
+        intro: '',
+        tags: const [],
+        status: '',
+        updateTime: '',
+        isTheaterResource: true,
       );
-      if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
       await Navigator.of(context).push<void>(MaterialPageRoute(
-        builder: (_) => DramaDetailPage(
+        builder: (_) => PlayerPage(
           drama: drama,
           apiClient: widget.apiClient,
           downloadService: widget.downloadService,
+          initialEpisodeIndex: 0,
         ),
       ));
     } on ApiException catch (error) {
@@ -133,7 +141,7 @@ class _ShareLinkPageState extends State<ShareLinkPage> {
                 style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
             const SizedBox(height: 10),
             const Text(
-              '支持红果短剧、红果漫剧、番茄小说。\n粘贴分享链接或口令，即可识别并打开。',
+              '支持红果短剧、红果漫剧、番茄小说。\n粘贴分享链接或口令，识别后播放第一集。',
               style: TextStyle(
                   fontSize: 14, color: Color(0xFF999999), height: 1.7),
             ),

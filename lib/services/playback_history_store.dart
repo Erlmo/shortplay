@@ -30,8 +30,24 @@ class PlaybackHistoryStore {
 
   static Future<void> upsert(PlaybackRecord record) async {
     final items = (await load()).toList(growable: true);
+    final existing = items
+        .where((r) => r.dramaId != 0 && r.dramaId == record.dramaId)
+        .firstOrNull;
     items.removeWhere((r) => r.dramaId != 0 && r.dramaId == record.dramaId);
-    items.insert(0, record);
+    items.insert(
+      0,
+      PlaybackRecord(
+        dramaId: record.dramaId,
+        dramaName: record.dramaName == '分享短剧' && existing != null
+            ? existing.dramaName
+            : record.dramaName,
+        cover: record.cover.isEmpty ? existing?.cover ?? '' : record.cover,
+        episodeIndex: record.episodeIndex,
+        episodeNumber: record.episodeNumber,
+        positionMs: record.positionMs,
+        updatedAtMs: record.updatedAtMs,
+      ),
+    );
     if (items.length > _maxItems) {
       items.removeRange(_maxItems, items.length);
     }

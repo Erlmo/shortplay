@@ -115,28 +115,6 @@ class ApiClient {
     return (dramas: dramas, hasMore: hasMore);
   }
 
-  /// 分享接口只提供作品 ID 和标题，通过搜索补齐详情并严格核对作品 ID。
-  Future<Drama> fetchSharedDramaDetail(String dramaId,
-      {required String title}) async {
-    final id = int.tryParse(dramaId, radix: 10);
-    if (id == null || id <= 0) throw ApiException('未获取到有效的短剧ID');
-    final keyword = title.trim();
-    if (keyword.isEmpty) {
-      throw ApiException('未获取到剧名，请复制包含剧名的完整分享内容');
-    }
-
-    var offset = 0;
-    for (var page = 0; page < 3; page++) {
-      final result = await search(keyword, offset: offset);
-      for (final drama in result.dramas) {
-        if (drama.id == id && drama.isTheaterResource) return drama;
-      }
-      if (!result.hasMore || result.dramas.isEmpty) break;
-      offset += result.dramas.length;
-    }
-    throw ApiException('已识别到短剧，但暂未找到详情，请稍后重试');
-  }
-
   /// 请求番茄官方API获取加密视频信息
   Future<List<FqVideoItem>> fetchFqVideoModel(String videoId) async {
     final requestTimer = Stopwatch()..start();
