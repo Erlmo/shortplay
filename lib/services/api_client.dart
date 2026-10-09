@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
@@ -116,6 +117,7 @@ class ApiClient {
 
   /// 请求番茄官方API获取加密视频信息
   Future<List<FqVideoItem>> fetchFqVideoModel(String videoId) async {
+    final requestTimer = Stopwatch()..start();
     // iid / device_id 每次随机生成（番茄风控按设备维度限流，固定值易被封）。
     // 同一组值同时用于签名请求与番茄请求，保证服务端签名的 URL 与实际请求逐字一致。
     // 以下 9 个参数为实测的最小必需集：缺签名服务强制项(iid/device_id/aid/
@@ -137,10 +139,63 @@ class ApiClient {
     final fullUrl =
         'https://${ApiConfig.fqVideoHost}${ApiConfig.fqVideoPath}?$queryString';
 
+    final candidates = await _requestFqVideoModel(videoId, fullUrl);
+    final items = candidates.where((item) => !_isByteVc2(item)).toList();
+    if (items.length == candidates.length) return items;
+
+    // 新版参数可能把低清晰度换成 ByteVC2，当前原生播放器不能解码。
+    // 保留兼容的 1080p，再用旧参数补回低清晰度，供播放、菜单及下载共用。
+    final uri = Uri.parse(fullUrl);
+    final legacyQuery = Map<String, String>.of(uri.queryParameters)
+      ..remove('update_version_code');
+    final legacyUrl = uri.replace(queryParameters: legacyQuery).toString();
+    // 调用方的总超时为 10 秒；可选补充最多等 3 秒，并给总预算留出余量。
+    final remainingMs = 9000 - requestTimer.elapsedMilliseconds;
+    if (items.isNotEmpty && remainingMs <= 0) return items;
+    final legacyTimeout = Duration(milliseconds: remainingMs.clamp(1, 3000));
+    final legacyCancel = CancelToken();
+    try {
+      final legacyItems = await _requestFqVideoModel(
+        videoId,
+        legacyUrl,
+        cancelToken: legacyCancel,
+      ).timeout(legacyTimeout, onTimeout: () {
+        legacyCancel.cancel('兼容视频补充请求超时');
+        throw TimeoutException('兼容视频补充请求超时', legacyTimeout);
+      });
+      final definitions =
+          items.map((item) => item.definition.trim().toLowerCase()).toSet();
+      for (final item in legacyItems) {
+        if (!_isByteVc2(item) &&
+            definitions.add(item.definition.trim().toLowerCase())) {
+          items.add(item);
+        }
+      }
+    } catch (_) {
+      // 补充请求失败时仍可使用首次请求已获得的兼容流。
+      if (items.isEmpty) rethrow;
+    }
+    if (items.isEmpty) {
+      throw ApiException('当前视频暂无播放器支持的编码');
+    }
+    return items;
+  }
+
+  static bool _isByteVc2(FqVideoItem item) {
+    final codec = item.codec.trim().toLowerCase();
+    return codec == 'bytevc2' || codec == 'bvc2';
+  }
+
+  Future<List<FqVideoItem>> _requestFqVideoModel(
+    String videoId,
+    String fullUrl, {
+    CancelToken? cancelToken,
+  }) async {
     // 1. 获取算法签名
     final signResponse = await _dio.post(
       '${ApiConfig.noveBaseUrl}${ApiConfig.algorithmSign}',
       data: {'url': fullUrl},
+      cancelToken: cancelToken,
       options: Options(headers: {'Content-Type': 'application/json'}),
     );
     final signDecoded = _asJsonMap(signResponse.data);
@@ -183,6 +238,7 @@ class ApiClient {
     final fqResponse = await _dio.post(
       fullUrl,
       data: body,
+      cancelToken: cancelToken,
       options: Options(headers: fqHeaders),
     );
     final fqDecoded = _asJsonMap(fqResponse.data);
