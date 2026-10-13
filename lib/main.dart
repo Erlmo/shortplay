@@ -10,15 +10,6 @@ import 'services/device_profile.dart';
 import 'services/download_service.dart';
 
 void main() async {
-  // 弹幕表情图片来自 Twemoji，按 CC-BY 4.0 要求注明出处
-  LicenseRegistry.addLicense(() async* {
-    yield const LicenseEntryWithLineBreaks(['Twemoji'], '''
-弹幕表情图片：Twemoji
-Copyright 2019 Twitter, Inc and other contributors
-Copyright 2024 Twemoji contributors (https://github.com/jdecked/twemoji)
-Graphics licensed under CC-BY 4.0: https://creativecommons.org/licenses/by/4.0/
-''');
-  });
   WidgetsFlutterBinding.ensureInitialized();
   await DeviceProfile.init();
   final apiClient = ApiClient();

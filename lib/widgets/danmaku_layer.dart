@@ -49,7 +49,7 @@ class _DanmakuItem {
   }
 }
 
-/// 53 个弹幕表情（Twemoji）的解码图片，全局只加载一次。
+/// 53 个弹幕表情（assets/danmaku_emoji）的解码图片，全局只加载一次。
 class _EmojiImages {
   static final Map<String, ui.Image> cache = {};
   static Future<void>? _loading;
@@ -57,7 +57,7 @@ class _EmojiImages {
   static Future<void> load() => _loading ??= _loadAll();
 
   static Future<void> _loadAll() async {
-    final assets = kDanmakuEmojiMap.values.map(danmakuEmojiAsset).toSet();
+    final assets = danmakuEmojiAssets.toSet();
     await Future.wait(assets.map((asset) async {
       try {
         final data = await rootBundle.load(asset);
