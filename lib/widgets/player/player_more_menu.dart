@@ -555,12 +555,9 @@ class _SettingsIcon extends StatelessWidget {
 // 顶部两个大开关：弹幕、离线缓存。竖屏从底部弹出（画面缩到上方），
 // 横屏 / 宽窗口从右侧 390 宽侧栏滑出。
 const _pnBg = Color(0xFF1B1B1F); // 面板底
-const _pnGroup = Color(0xFF26262B); // 分组卡片 / 选项轨道
 const _pnLine = Color(0x14FFFFFF); // 发丝线
 const _pnText = Color(0xFFEDEDF0); // 主文字
 const _pnMuted = Color(0xFF8E8E95); // 次要文字
-const _pnThumb = Color(0xFFEDEDF0); // 选中块（浅色实底）
-const _pnThumbText = Color(0xFF1B1B1F); // 选中块上的文字
 const _pnAccent = Color(0xFFFF2442); // 只用于“已开启”的开关
 
 class _HgMoreSheet extends StatefulWidget {
@@ -642,7 +639,7 @@ class _HgMoreSheetState extends State<_HgMoreSheet> {
   String _speedLabel(double v) =>
       v == v.roundToDouble() ? '${v.toStringAsFixed(1)}x' : '${v}x';
 
-  String _timerLabel(int? v) => v == null ? '不开启' : '$v分钟';
+  String _timerLabel(int? v) => v == null ? '关闭' : '$v分钟';
 
   @override
   Widget build(BuildContext context) {
@@ -660,7 +657,7 @@ class _HgMoreSheetState extends State<_HgMoreSheet> {
               child: Text('播放设置',
                   style: TextStyle(
                       color: _pnText,
-                      fontSize: 17,
+                      fontSize: 16,
                       fontWeight: FontWeight.w600)),
             ),
             Semantics(
@@ -676,12 +673,12 @@ class _HgMoreSheetState extends State<_HgMoreSheet> {
                   child: Align(
                     alignment: Alignment.centerRight,
                     child: Container(
-                      width: 28,
-                      height: 28,
+                      width: 26,
+                      height: 26,
                       decoration: const BoxDecoration(
-                          color: _pnGroup, shape: BoxShape.circle),
+                          color: Color(0x14FFFFFF), shape: BoxShape.circle),
                       child: const Icon(Icons.close_rounded,
-                          size: 16, color: _pnMuted),
+                          size: 15, color: Color(0xFF9A9AA0)),
                     ),
                   ),
                 ),
@@ -689,39 +686,40 @@ class _HgMoreSheetState extends State<_HgMoreSheet> {
             ),
           ]),
         ),
-        const SizedBox(height: 8),
-        // 开关组：弹幕 / 离线缓存（/ 选集）
-        _PanelGroup(children: [
+        const SizedBox(height: 4),
+        // 开关 / 入口：图标 + 名称 + 右侧控件，不加底色
+        _PanelRow(
+          icon: Icons.subtitles_outlined,
+          title: '弹幕',
+          onTap: widget.onToggleDanmaku == null ? null : _toggleDanmaku,
+          trailing: _PanelSwitch(on: _danmaku),
+          semanticsValue: _danmaku ? '已开启' : '已关闭',
+        ),
+        _PanelRow(
+          icon: Icons.file_download_outlined,
+          title: '离线缓存',
+          onTap: widget.canDownload
+              ? () => widget.onSelected(PlayerMenuAction.download)
+              : null,
+          // 点一下就缓存全集，没有下一级，所以右边不放“选择集数”和箭头
+          value: widget.isOfflinePlayback
+              ? '本地播放中'
+              : widget.canDownload
+                  ? null
+                  : '暂不可用',
+        ),
+        if (widget.showEpisodes)
           _PanelRow(
-            icon: Icons.subtitles_outlined,
-            title: '弹幕',
-            onTap: widget.onToggleDanmaku == null ? null : _toggleDanmaku,
-            trailing: _PanelSwitch(on: _danmaku),
-            semanticsValue: _danmaku ? '已开启' : '已关闭',
+            icon: Icons.format_list_bulleted_rounded,
+            title: '选集',
+            onTap: () => widget.onSelected(PlayerMenuAction.episodes),
+            chevron: true,
           ),
-          _PanelRow(
-            icon: Icons.download_outlined,
-            title: '离线缓存',
-            onTap: widget.canDownload
-                ? () => widget.onSelected(PlayerMenuAction.download)
-                : null,
-            value: widget.isOfflinePlayback
-                ? '本地播放中'
-                : widget.canDownload
-                    ? '选择集数'
-                    : '暂不可用',
-            chevron: widget.canDownload,
-          ),
-          if (widget.showEpisodes)
-            _PanelRow(
-              icon: Icons.grid_view_outlined,
-              title: '选集',
-              onTap: () => widget.onSelected(PlayerMenuAction.episodes),
-              chevron: true,
-            ),
-        ]),
-        const SizedBox(height: 20),
-        _PanelSegmentRow<double>(
+        const Padding(
+          padding: EdgeInsets.only(top: 6),
+          child: Divider(height: 0.5, thickness: 0.5, color: _pnLine),
+        ),
+        _PanelTextScale<double>(
           label: '倍速',
           values: const [0.75, 1.0, 1.25, 1.5, 2.0, 3.0],
           selected: _speed,
@@ -733,9 +731,8 @@ class _HgMoreSheetState extends State<_HgMoreSheet> {
                   widget.onSpeedChanged!(v);
                 },
         ),
-        if (_qualities.isNotEmpty) ...[
-          const SizedBox(height: 16),
-          _PanelSegmentRow<String>(
+        if (_qualities.isNotEmpty)
+          _PanelTextScale<String>(
             label: '清晰度',
             values: _qualities,
             selected: _quality,
@@ -747,9 +744,7 @@ class _HgMoreSheetState extends State<_HgMoreSheet> {
                     widget.onQualityChanged!(v);
                   },
           ),
-        ],
-        const SizedBox(height: 16),
-        _PanelSegmentRow<int?>(
+        _PanelTextScale<int?>(
           label: '定时关闭',
           values: const [null, 15, 30, 60, 90],
           selected: _timer,
@@ -791,14 +786,14 @@ class _HgMoreSheetState extends State<_HgMoreSheet> {
           type: MaterialType.transparency,
           child: SingleChildScrollView(
             padding:
-                EdgeInsets.fromLTRB(16, 8, 16, 20 + media.viewPadding.bottom),
+                EdgeInsets.fromLTRB(20, 8, 20, 22 + media.viewPadding.bottom),
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               Container(
-                width: 36,
+                width: 32,
                 height: 4,
-                margin: const EdgeInsets.only(bottom: 4),
+                margin: const EdgeInsets.only(bottom: 6),
                 decoration: BoxDecoration(
-                  color: const Color(0x2EFFFFFF),
+                  color: const Color(0x29FFFFFF),
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -811,31 +806,7 @@ class _HgMoreSheetState extends State<_HgMoreSheet> {
   }
 }
 
-/// 分组卡片：圆角底 + 行与行之间的发丝线（从图标后开始）
-class _PanelGroup extends StatelessWidget {
-  const _PanelGroup({required this.children});
-  final List<Widget> children;
-  @override
-  Widget build(BuildContext context) => Container(
-        clipBehavior: Clip.antiAlias,
-        decoration: BoxDecoration(
-          color: _pnGroup,
-          borderRadius: BorderRadius.circular(14),
-        ),
-        child: Column(children: [
-          for (var i = 0; i < children.length; i++) ...[
-            if (i > 0)
-              const Padding(
-                padding: EdgeInsets.only(left: 48),
-                child: Divider(height: 0.5, thickness: 0.5, color: _pnLine),
-              ),
-            children[i],
-          ],
-        ]),
-      );
-}
-
-/// 分组里的一行：图标 + 名称 + 右侧（值 / 箭头 / 开关）
+/// 一行入口：图标 + 名称 + 右侧（值 / 箭头 / 开关），不加底色
 class _PanelRow extends StatelessWidget {
   const _PanelRow({
     required this.icon,
@@ -863,35 +834,31 @@ class _PanelRow extends StatelessWidget {
       label: title,
       value: semanticsValue ?? value,
       excludeSemantics: true,
-      child: InkWell(
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
         onTap: onTap,
-        splashColor: Colors.transparent,
-        highlightColor: const Color(0x0DFFFFFF),
         child: Opacity(
           opacity: enabled ? 1 : 0.4,
           child: ConstrainedBox(
-            constraints: const BoxConstraints(minHeight: 52),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 8, 12, 8),
-              child: Row(children: [
-                Icon(icon, size: 20, color: _pnText),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Text(title,
-                      style: const TextStyle(color: _pnText, fontSize: 15)),
+            constraints: const BoxConstraints(minHeight: 50),
+            child: Row(children: [
+              Icon(icon, size: 20, color: _pnText),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(title,
+                    style: const TextStyle(color: _pnText, fontSize: 15)),
+              ),
+              if (value != null)
+                Text(value!,
+                    style: const TextStyle(color: _pnMuted, fontSize: 13.5)),
+              if (chevron)
+                const Padding(
+                  padding: EdgeInsets.only(left: 2),
+                  child: Icon(Icons.chevron_right_rounded,
+                      size: 18, color: Color(0xFF6E6E75)),
                 ),
-                if (value != null)
-                  Text(value!,
-                      style: const TextStyle(color: _pnMuted, fontSize: 14)),
-                if (chevron)
-                  const Padding(
-                    padding: EdgeInsets.only(left: 2),
-                    child: Icon(Icons.chevron_right_rounded,
-                        size: 20, color: _pnMuted),
-                  ),
-                if (trailing != null) trailing!,
-              ]),
-            ),
+              if (trailing != null) trailing!,
+            ]),
           ),
         ),
       ),
@@ -907,36 +874,34 @@ class _PanelSwitch extends StatelessWidget {
   Widget build(BuildContext context) => AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         curve: Curves.easeOut,
-        width: 44,
-        height: 26,
-        padding: const EdgeInsets.all(3),
+        width: 36,
+        height: 21,
+        padding: const EdgeInsets.all(2),
         decoration: BoxDecoration(
           color: on ? _pnAccent : const Color(0xFF3A3A40),
-          borderRadius: BorderRadius.circular(13),
+          borderRadius: BorderRadius.circular(10.5),
         ),
         child: AnimatedAlign(
           duration: const Duration(milliseconds: 180),
           curve: Curves.easeOut,
           alignment: on ? Alignment.centerRight : Alignment.centerLeft,
           child: Container(
-            width: 20,
-            height: 20,
+            width: 17,
+            height: 17,
             decoration: const BoxDecoration(
               color: Colors.white,
               shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(color: Color(0x40000000), blurRadius: 2),
-              ],
             ),
           ),
         ),
       );
 }
 
-/// 一项设置：上面是名称，下面一条分段轨道。
-/// 选中块是浅色实底（深色文字），未选中的格子之间有细分隔线，选中时平滑滑动。
-class _PanelSegmentRow<T> extends StatelessWidget {
-  const _PanelSegmentRow({
+/// 一项设置：小标题 + 一排文字刻度。
+/// 选中项白色加粗，下方一个红色小圆点；其余是灰色文字，没有底色和边框。
+/// 选项 ≥5 个时两端对齐铺满一行，少的时候从左往右排。
+class _PanelTextScale<T> extends StatelessWidget {
+  const _PanelTextScale({
     required this.label,
     required this.values,
     required this.selected,
@@ -951,100 +916,70 @@ class _PanelSegmentRow<T> extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final index = values.indexOf(selected);
-    final scaler = MediaQuery.textScalerOf(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4),
-          child: Text(label,
-              style: const TextStyle(
-                  color: _pnText, fontSize: 15, fontWeight: FontWeight.w500)),
-        ),
-        const SizedBox(height: 10),
-        Container(
-          height: scaler.scale(13) + 23,
-          padding: const EdgeInsets.all(2),
-          decoration: BoxDecoration(
-            color: _pnGroup,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: LayoutBuilder(builder: (context, constraints) {
-            final w = constraints.maxWidth / values.length;
-            return Stack(children: [
-              // 未选中格子之间的分隔线（紧挨选中块的两条不画）
-              for (var i = 1; i < values.length; i++)
-                if (i != index && i != index + 1)
-                  Positioned(
-                    left: w * i - 0.25,
-                    top: 8,
-                    bottom: 8,
-                    width: 0.5,
-                    child: const ColoredBox(color: _pnLine),
-                  ),
-              if (index >= 0)
-                AnimatedPositioned(
-                  duration: const Duration(milliseconds: 220),
-                  curve: Curves.easeOutCubic,
-                  left: w * index,
-                  top: 0,
-                  bottom: 0,
-                  width: w,
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: _pnThumb,
-                      borderRadius: BorderRadius.circular(8),
-                      boxShadow: const [
-                        BoxShadow(
-                            color: Color(0x33000000),
-                            blurRadius: 4,
-                            offset: Offset(0, 1)),
-                      ],
-                    ),
-                  ),
+    final spread = values.length >= 5;
+    Widget item(T v) {
+      final sel = v == selected;
+      return Semantics(
+        button: true,
+        selected: sel,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: onChanged == null ? null : () => onChanged!(v),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Text(
+                display(v),
+                style: TextStyle(
+                  color: sel ? Colors.white : _pnMuted,
+                  fontSize: 14,
+                  fontWeight: sel ? FontWeight.w600 : FontWeight.w400,
+                  fontFeatures: const [FontFeature.tabularFigures()],
                 ),
-              Row(children: [
-                for (var i = 0; i < values.length; i++)
-                  Expanded(
-                    child: Semantics(
-                      button: true,
-                      selected: i == index,
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: onChanged == null
-                            ? null
-                            : () => onChanged!(values[i]),
-                        child: Center(
-                          child: FittedBox(
-                            fit: BoxFit.scaleDown,
-                            child: Padding(
-                              padding:
-                                  const EdgeInsets.symmetric(horizontal: 2),
-                              child: Text(
-                                display(values[i]),
-                                style: TextStyle(
-                                  color: i == index ? _pnThumbText : _pnText,
-                                  fontSize: 13,
-                                  fontWeight: i == index
-                                      ? FontWeight.w600
-                                      : FontWeight.w400,
-                                  fontFeatures: const [
-                                    FontFeature.tabularFigures()
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-              ]),
-            ]);
-          }),
+              ),
+              const SizedBox(height: 5),
+              AnimatedOpacity(
+                duration: const Duration(milliseconds: 150),
+                opacity: sel ? 1 : 0,
+                child: Container(
+                  width: 4,
+                  height: 4,
+                  decoration: const BoxDecoration(
+                      color: _pnAccent, shape: BoxShape.circle),
+                ),
+              ),
+            ]),
+          ),
         ),
-      ],
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(label,
+              style: const TextStyle(color: _pnMuted, fontSize: 13)),
+          const SizedBox(height: 6),
+          if (spread)
+            // Flexible + scaleDown：窄屏 / 大字号时整排等比缩小，不会溢出
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                for (final v in values)
+                  Flexible(
+                    child: FittedBox(fit: BoxFit.scaleDown, child: item(v)),
+                  ),
+              ],
+            )
+          else
+            Wrap(
+              spacing: 26,
+              children: [for (final v in values) item(v)],
+            ),
+        ],
+      ),
     );
   }
 }

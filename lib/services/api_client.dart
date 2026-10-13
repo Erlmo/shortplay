@@ -377,7 +377,28 @@ class ApiClient {
     return DanmakuResponse.fromJson(decoded);
   }
 
-  Future<TheaterEpisodesResult> fetchTheaterEpisodes(String seriesId) async {
+  /// 目录结果短暂缓存：分享识别时先取一次详情，紧接着播放页又取一次目录，
+  /// 两分钟内同一部剧复用同一份结果，不重复请求。
+  final Map<String, ({DateTime at, Future<TheaterEpisodesResult> result})>
+      _directoryCache = {};
+
+  Future<TheaterEpisodesResult> fetchTheaterEpisodes(String seriesId) {
+    final cached = _directoryCache[seriesId];
+    if (cached != null &&
+        DateTime.now().difference(cached.at) < const Duration(minutes: 2)) {
+      return cached.result;
+    }
+    final future = _fetchTheaterEpisodes(seriesId);
+    _directoryCache[seriesId] = (at: DateTime.now(), result: future);
+    // 失败不缓存，下次重新请求
+    future.catchError((Object _) {
+      _directoryCache.remove(seriesId);
+      return TheaterEpisodesResult(allItemIds: const [], chapters: const []);
+    });
+    return future;
+  }
+
+  Future<TheaterEpisodesResult> _fetchTheaterEpisodes(String seriesId) async {
     final uri = Uri.http(
       Uri.parse(ApiConfig.noveBaseUrl).host,
       ApiConfig.noveDirectory,
@@ -397,11 +418,23 @@ class ApiClient {
         realChapterOrder: index,
       );
     }).toList(growable: false);
+    final rawInfo = data['book_info'];
+    Drama? bookInfo;
+    if (rawInfo is Map) {
+      final info = Drama.fromTheaterDetailJson(rawInfo.cast<String, dynamic>());
+      if (info.id > 0 && info.name.isNotEmpty) bookInfo = info;
+    }
     return TheaterEpisodesResult(
       allItemIds: chapters.map((c) => c.itemId).toList(),
       chapters: chapters,
+      bookInfo: bookInfo,
     );
   }
+
+  /// 按短剧 ID 取详情（封面 / 简介 / 标签 / 评分 / 集数等）。
+  /// 详情跟着剧集列表接口 /nove/directory 一起返回；取不到时返回 null。
+  Future<Drama?> fetchBookInfo(String bookId) async =>
+      (await fetchTheaterEpisodes(bookId)).bookInfo;
 
   Future<HomePageResult> fetchHomePage({int? offset, String? sessionId}) async {
     final params = <String, String>{};
@@ -511,10 +544,17 @@ class ApiClient {
 }
 
 class TheaterEpisodesResult {
-  TheaterEpisodesResult({required this.allItemIds, required this.chapters});
+  TheaterEpisodesResult({
+    required this.allItemIds,
+    required this.chapters,
+    this.bookInfo,
+  });
 
   final List<String> allItemIds;
   final List<TheaterChapter> chapters;
+
+  /// 服务端随目录一起返回的短剧信息（旧版服务端没有这个字段时为 null）
+  final Drama? bookInfo;
 
   /// 播放、预加载和下载共用按目录顺序生成的 1-based 集号。
   /// 标题可能没有数字，不能用标题解析结果作为缓存唯一键。

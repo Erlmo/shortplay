@@ -182,9 +182,9 @@ void main() {
       expect(timer, const Duration(minutes: 30));
       expect(tester.widget<Text>(find.text('30分钟')).style!.fontWeight,
           FontWeight.w600);
-      await tester.ensureVisible(find.text('不开启'));
+      await tester.ensureVisible(find.text('关闭'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('不开启'));
+      await tester.tap(find.text('关闭'));
       await tester.pumpAndSettle();
       expect(timer, Duration.zero);
       // 点遮罩关闭

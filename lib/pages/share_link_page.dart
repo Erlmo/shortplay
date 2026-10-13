@@ -82,19 +82,32 @@ class _ShareLinkPageState extends State<ShareLinkPage> {
         throw ApiException('未识别到有效短剧，请检查分享内容后重试');
       }
       final title = info.title?.trim();
-      final drama = Drama(
-        id: id,
-        name: title != null && title.isNotEmpty
-            ? title
-            : ShareLinkResolver.extractTitle(text) ?? '分享短剧',
-        actors: '',
-        cover: '',
-        intro: '',
-        tags: const [],
-        status: '',
-        updateTime: '',
-        isTheaterResource: true,
-      );
+      // 顺便取一次详情：封面、简介、标签等，播放页 / 选集面板 / 观看历史 /
+      // 离线缓存都会用到。取不到（超时、旧版服务端、漫剧等）就退回只有剧名的壳。
+      Drama? detail;
+      try {
+        detail = await widget.apiClient
+            .fetchBookInfo(info.videoId)
+            .timeout(const Duration(seconds: 6));
+      } catch (_) {
+        detail = null;
+      }
+      if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
+      final drama = detail != null && detail.id == id
+          ? detail
+          : Drama(
+              id: id,
+              name: title != null && title.isNotEmpty
+                  ? title
+                  : ShareLinkResolver.extractTitle(text) ?? '分享短剧',
+              actors: '',
+              cover: '',
+              intro: '',
+              tags: const [],
+              status: '',
+              updateTime: '',
+              isTheaterResource: true,
+            );
       await Navigator.of(context).push<void>(MaterialPageRoute(
         builder: (_) => PlayerPage(
           drama: drama,

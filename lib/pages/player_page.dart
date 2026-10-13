@@ -715,6 +715,8 @@ class _PlayerPageState extends State<PlayerPage>
       return;
     }
     _preloadManager.setPreferredDefinition(value);
+    // 换清晰度会重新打开本集并自动播放，清掉“用户已暂停”，否则播放图标会挂着
+    _userPaused = false;
     if (_episodes.isNotEmpty && !isOfflinePlayback) {
       unawaited(_openEpisode(_currentEpisodeIndex,
           initialSeekMs: positionMsNotifier.value));
@@ -1144,9 +1146,13 @@ class _PlayerPageState extends State<PlayerPage>
       return;
     }
 
-    // 正常翻页
+    // 正常翻页：新的一集会自动播放，清掉上一集的“用户已暂停”状态，
+    // 否则中间的播放图标会一直挂着
     _swipeBlockTimer?.cancel();
-    setState(() => _swipeBlocked = false);
+    setState(() {
+      _swipeBlocked = false;
+      _userPaused = false;
+    });
     unawaited(_openEpisode(index));
   }
 

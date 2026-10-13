@@ -115,34 +115,15 @@ extension _HgLayouts on PlayerControlsOverlay {
             right: 0,
             top: media.size.height / 2 +
                 media.size.width * videoHeight / videoWidth / 2 +
-                16,
+                8, // 按钮外圈有 8 的透明点击留白，视觉上仍距画面 16
             child: Center(
               child: _HgPillButton(
-                icon: Icons.fullscreen_rounded,
                 label: '全屏观看',
                 onTap: onToggleLandscapeFullScreen,
               ),
             ),
           ),
         if (!isPageTransitioning) ...[
-          // 底部信息区垫渐变
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: barH,
-            height: 220,
-            child: const IgnorePointer(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.bottomCenter,
-                    end: Alignment.topCenter,
-                    colors: [Color(0x99000000), Colors.transparent],
-                  ),
-                ),
-              ),
-            ),
-          ),
           // 左下：剧名 / 标签（底部选集栏最右侧的“全屏”可隐藏）
           Positioned(
             left: 16,
@@ -263,32 +244,89 @@ class _HgSpeedUpHint extends StatelessWidget {
       );
 }
 
+/// 横版片源画面下方的“全屏观看”按钮：小号、细边、小圆角，配横屏手机图标
 class _HgPillButton extends StatelessWidget {
-  const _HgPillButton({required this.icon, required this.label, this.onTap});
-  final IconData icon;
+  const _HgPillButton({required this.label, this.onTap});
   final String label;
   final VoidCallback? onTap;
   @override
-  Widget build(BuildContext context) => GestureDetector(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.14),
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
+  Widget build(BuildContext context) => Semantics(
+        button: true,
+        label: label,
+        excludeSemantics: true,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: onTap,
+          // 外圈透明留白，扩大点击区域，按钮本身保持小巧
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: Container(
+              height: 26,
+              padding: const EdgeInsets.symmetric(horizontal: 9),
+              decoration: BoxDecoration(
+                color: const Color(0x59000000),
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: const Color(0x33FFFFFF), width: 0.5),
+              ),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                const SizedBox(
+                  width: 15,
+                  height: 15,
+                  child: CustomPaint(painter: _HgLandscapeIconPainter()),
+                ),
+                const SizedBox(width: 5),
+                Text(label,
+                    style: const TextStyle(
+                        color: Color(0xF2FFFFFF),
+                        fontSize: 12,
+                        height: 1.0,
+                        leadingDistribution: TextLeadingDistribution.even,
+                        fontWeight: FontWeight.w500)),
+              ]),
+            ),
           ),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Icon(icon, color: Colors.white, size: 18),
-            const SizedBox(width: 4),
-            Text(label,
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600)),
-          ]),
         ),
       );
+}
+
+/// 横屏图标：横放的手机外框（右侧一个小听筒点），左上一段带箭头的旋转弧线
+class _HgLandscapeIconPainter extends CustomPainter {
+  const _HgLandscapeIconPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final k = size.width / 15;
+    final stroke = Paint()
+      ..color = const Color(0xF2FFFFFF)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2 * k
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+
+    // 横放的手机
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromLTWH(1.2 * k, 6 * k, 12.6 * k, 7.6 * k),
+          Radius.circular(1.6 * k)),
+      stroke,
+    );
+    canvas.drawCircle(Offset(11.6 * k, 9.8 * k), 0.55 * k,
+        Paint()..color = const Color(0xF2FFFFFF));
+
+    // 旋转弧线 + 箭头
+    final arc = Path()
+      ..moveTo(2.2 * k, 4.2 * k)
+      ..quadraticBezierTo(4 * k, 1.2 * k, 7.6 * k, 1.6 * k);
+    canvas.drawPath(arc, stroke);
+    final head = Path()
+      ..moveTo(6.2 * k, 0.4 * k)
+      ..lineTo(7.8 * k, 1.6 * k)
+      ..lineTo(6.4 * k, 3.0 * k);
+    canvas.drawPath(head, stroke);
+  }
+
+  @override
+  bool shouldRepaint(covariant _HgLandscapeIconPainter oldDelegate) => false;
 }
 
 /// 清屏状态：放在顶层，翻到下一集时保持不变。
@@ -444,24 +482,54 @@ class _HgEpisodeBar extends StatelessWidget {
           color: PlayerVideoSurface.phoneBarColor,
           padding: EdgeInsets.fromLTRB(16, 0, 4, bottomInset),
           child: Row(children: [
-            const Icon(Icons.video_library_rounded,
-                color: Colors.white, size: 18),
+            const SizedBox(
+              width: 18,
+              height: 18,
+              child: CustomPaint(painter: _HgEpisodeIconPainter()),
+            ),
             const SizedBox(width: 8),
-            const Text('选集',
-                style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600)),
-            Text(
-              totalEpisodes > 0
-                  ? ' · 第$episodeNumber集 / 全$totalEpisodes集'
-                  : ' · 第$episodeNumber集',
-              style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.6), fontSize: 14),
+            // 放在同一段文字里：字号不同的两部分共用一条基线，不会一高一低；
+            // 分隔竖线用 WidgetSpan 按行中线放
+            Text.rich(
+              TextSpan(children: [
+                const TextSpan(
+                  text: '选集',
+                  style: TextStyle(
+                    color: Color(0xF2FFFFFF),
+                    fontSize: 14,
+                    letterSpacing: 0.3,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                WidgetSpan(
+                  alignment: PlaceholderAlignment.middle,
+                  child: Container(
+                    width: 1,
+                    height: 10,
+                    margin: const EdgeInsets.symmetric(horizontal: 9),
+                    color: const Color(0x2EFFFFFF),
+                  ),
+                ),
+                TextSpan(
+                  text: '第$episodeNumber集',
+                  style: const TextStyle(color: Color(0xCCFFFFFF)),
+                ),
+                if (totalEpisodes > 0)
+                  TextSpan(
+                    text: '  共$totalEpisodes集',
+                    style: const TextStyle(color: Color(0x66FFFFFF)),
+                  ),
+              ]),
+              style: const TextStyle(
+                fontSize: 13,
+                height: 1.0,
+                leadingDistribution: TextLeadingDistribution.even,
+                fontFeatures: [FontFeature.tabularFigures()],
+              ),
             ),
             const SizedBox(width: 2),
-            Icon(Icons.chevron_right_rounded,
-                color: Colors.white.withValues(alpha: 0.6), size: 22),
+            const Icon(Icons.chevron_right_rounded,
+                color: Color(0x66FFFFFF), size: 16),
             const Spacer(),
             if (time != null) IgnorePointer(child: time!),
             // 最右侧：全屏（清屏，只隐藏剧名和标签）
@@ -479,8 +547,8 @@ class _HgEpisodeBar extends StatelessWidget {
                       hidden
                           ? Icons.fullscreen_exit_rounded
                           : Icons.fullscreen_rounded,
-                      color: Colors.white,
-                      size: 26,
+                      color: const Color(0xE6FFFFFF),
+                      size: 22,
                     ),
                   ),
                 ),
@@ -891,4 +959,47 @@ class _HgOptionList<T> extends StatelessWidget {
           ),
         ],
       );
+}
+
+/// 选集图标：两张叠放的圆角卡片，前面一张里有个小播放三角。
+/// 线宽 1.4、和文字同色，比系统的 video_library 图标更轻、更精致。
+class _HgEpisodeIconPainter extends CustomPainter {
+  const _HgEpisodeIconPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width / 18;
+    final stroke = Paint()
+      ..color = const Color(0xF2FFFFFF)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4 * s
+      ..strokeJoin = StrokeJoin.round
+      ..strokeCap = StrokeCap.round;
+
+    // 后面那张卡片只露出上沿
+    final back = Path()
+      ..moveTo(4.5 * s, 3 * s)
+      ..lineTo(13.5 * s, 3 * s);
+    canvas.drawPath(back, stroke..color = const Color(0x8CFFFFFF));
+
+    // 前面的卡片
+    stroke.color = const Color(0xF2FFFFFF);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromLTWH(2 * s, 5.5 * s, 14 * s, 10.5 * s),
+          Radius.circular(2.6 * s)),
+      stroke,
+    );
+
+    // 小播放三角
+    final tri = Path()
+      ..moveTo(7.6 * s, 8.4 * s)
+      ..lineTo(11.6 * s, 10.75 * s)
+      ..lineTo(7.6 * s, 13.1 * s)
+      ..close();
+    canvas.drawPath(tri, Paint()..color = const Color(0xF2FFFFFF));
+  }
+
+  @override
+  bool shouldRepaint(covariant _HgEpisodeIconPainter oldDelegate) => false;
 }

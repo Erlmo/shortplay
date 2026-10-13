@@ -143,7 +143,9 @@ void main() {
     expect(player.drama.isTheaterResource, isTrue);
     expect(player.apiClient, same(apiClient));
     expect(player.initialEpisodeIndex, 0);
-    expect(apiClient.directoryIds, ['7679367796244892696']);
+    // 识别时取一次详情 + 播放页取一次目录（真机上两次共用缓存，只发一次请求）
+    expect(
+        apiClient.directoryIds, ['7679367796244892696', '7679367796244892696']);
     expect(apiClient.videoIds, isNotEmpty);
     expect(apiClient.videoIds, everyElement('7679385177390337048'));
     expect(apiClient.searchRequests, 0);
@@ -158,7 +160,8 @@ void main() {
     final player = tester.widget<PlayerPage>(find.byType(PlayerPage));
     expect(player.drama.id, 123);
     expect(player.drama.name, '口令剧名');
-    expect(apiClient.directoryIds, ['123']);
+    // 识别时取一次详情 + 播放页取一次目录（真机上两次共用缓存，只发一次请求）
+    expect(apiClient.directoryIds, ['123', '123']);
   });
 
   testWidgets('纯分享链接没有剧名也能进入播放页', (tester) async {
@@ -169,7 +172,8 @@ void main() {
 
     final player = tester.widget<PlayerPage>(find.byType(PlayerPage));
     expect(player.drama.name, '分享短剧');
-    expect(apiClient.directoryIds, ['123']);
+    // 识别时取一次详情 + 播放页取一次目录（真机上两次共用缓存，只发一次请求）
+    expect(apiClient.directoryIds, ['123', '123']);
   });
 
   testWidgets('识别失败显示错误并保留输入，随后可以重试', (tester) async {
@@ -190,7 +194,8 @@ void main() {
     apiClient.requests.last.result.complete((videoId: '456', title: '重试成功'));
     await tester.pumpAndSettle();
     expect(find.byType(PlayerPage), findsOneWidget);
-    expect(apiClient.directoryIds, ['456']);
+    // 识别时取一次详情 + 播放页取一次目录（真机上两次共用缓存，只发一次请求）
+    expect(apiClient.directoryIds, ['456', '456']);
   });
 
   for (final invalidId in ['not-an-id', '0', '-1']) {

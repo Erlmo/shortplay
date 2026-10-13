@@ -583,12 +583,14 @@ class _PlaybackProgressBarState extends State<_PlaybackProgressBar> {
     final thin = widget.sliderOnly;
     return SliderTheme(
       data: SliderTheme.of(ctx).copyWith(
-        trackHeight: thin ? (_dragging ? 4 : 2) : 3,
+        trackHeight: thin
+            ? (widget.edgeToEdge ? (_dragging ? 3 : 1) : (_dragging ? 4 : 2))
+            : 3,
         trackShape: widget.edgeToEdge ? const _EdgeToEdgeTrackShape() : null,
         thumbShape: RoundSliderThumbShape(
           enabledThumbRadius: thin
               ? (widget.edgeToEdge
-                  ? (_dragging ? 5 : 2.5)
+                  ? (_dragging ? 4 : 1.75)
                   : (_dragging ? 7 : 4))
               : PlayerControlsOverlay._seekThumbRadius,
         ),
@@ -709,7 +711,18 @@ class _EdgeToEdgeTrackShape extends RoundedRectSliderTrackShape {
     return Rect.fromLTWH(offset.dx, top, parentBox.size.width, trackHeight);
   }
 
-  /// 已播放部分和未播放部分同样粗（默认已播放会再粗 2px）
+  /// 已播放部分和未播放部分同样粗；两段颜色在左右两端都很淡、往中间渐变到
+  /// 正常色，让进度条两头柔和地融进画面边缘。
+  static const double _fadeStop = 0.35;
+
+  Shader _fade(Rect track, Color c) {
+    final faint = c.withValues(alpha: c.a * 0.08);
+    return LinearGradient(
+      colors: [faint, c, c, faint],
+      stops: const [0, _fadeStop, 1 - _fadeStop, 1],
+    ).createShader(track);
+  }
+
   @override
   void paint(
     PaintingContext context,
@@ -724,18 +737,30 @@ class _EdgeToEdgeTrackShape extends RoundedRectSliderTrackShape {
     bool isEnabled = false,
     double additionalActiveTrackHeight = 2,
   }) {
-    super.paint(
-      context,
-      offset,
+    final track = getPreferredRect(
       parentBox: parentBox,
+      offset: offset,
       sliderTheme: sliderTheme,
-      enableAnimation: enableAnimation,
-      textDirection: textDirection,
-      thumbCenter: thumbCenter,
-      secondaryOffset: secondaryOffset,
-      isDiscrete: isDiscrete,
       isEnabled: isEnabled,
-      additionalActiveTrackHeight: 0,
+      isDiscrete: isDiscrete,
     );
+    if (track.width <= 0) return;
+    final radius = Radius.circular(track.height / 2);
+    final canvas = context.canvas;
+    final inactive = sliderTheme.inactiveTrackColor ?? const Color(0x33FFFFFF);
+    final active = sliderTheme.activeTrackColor ?? const Color(0x99FFFFFF);
+
+    canvas.drawRRect(RRect.fromRectAndRadius(track, radius),
+        Paint()..shader = _fade(track, inactive));
+
+    final playedRight = thumbCenter.dx.clamp(track.left, track.right);
+    if (playedRight > track.left) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+            Rect.fromLTRB(track.left, track.top, playedRight, track.bottom),
+            radius),
+        Paint()..shader = _fade(track, active),
+      );
+    }
   }
 }
