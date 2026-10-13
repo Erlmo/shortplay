@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart';
 
 import '../models/drama.dart';
 import '../models/episode.dart';
@@ -10,6 +12,7 @@ import '../models/playback_record.dart';
 import '../services/app_route_observer.dart';
 import '../services/download_service.dart';
 import '../services/crypto_native_channel.dart';
+import '../services/device_profile.dart';
 import '../services/native_player.dart';
 import '../services/playback_history_store.dart';
 import '../services/player_danmaku_controller.dart';
@@ -17,8 +20,10 @@ import '../services/player_system_ui_controller.dart';
 import '../services/player_sleep_timer.dart';
 import '../services/theater_video_preload_manager.dart';
 import '../widgets/player/episode_sheet.dart';
+import '../widgets/player/hg_episode_panel.dart';
 import '../widgets/player/player_controls_overlay.dart';
 import '../widgets/player/player_loading.dart';
+import '../widgets/player/player_more_menu.dart';
 import '../widgets/player/player_video_surface.dart';
 import '../widgets/app_notice.dart';
 import '../widgets/danmaku_layer.dart';
@@ -53,7 +58,31 @@ class PlayerPage extends StatefulWidget {
 }
 
 class _PlayerPageState extends State<PlayerPage>
-    with PlayerPreloadMixin, WidgetsBindingObserver, RouteAware {
+    with
+        PlayerPreloadMixin,
+        WidgetsBindingObserver,
+        RouteAware,
+        SingleTickerProviderStateMixin {
+  // 红果：竖屏打开选集面板时，画面缩到面板上方（0 = 全屏，1 = 缩小）
+  late final AnimationController _episodeShrink;
+
+  /// 当前缩放目标对应的底部面板高度（选集面板 = 屏高 50%，“…”面板按实测高度）
+  double? _shrinkPanelHeight;
+
+  void _onBottomPanelHeight(double height) {
+    if (DeviceProfile.isTv) return;
+    if (height <= 0) {
+      unawaited(_episodeShrink.reverse());
+      return;
+    }
+    if (!PlayerVideoSurface.usesPhoneLayout(
+        MediaQuery.of(context).size, _systemUi.isLandscapeFullScreen)) {
+      return;
+    }
+    setState(() => _shrinkPanelHeight = height);
+    unawaited(_episodeShrink.forward());
+  }
+
   NativePlayer? _player;
   NativePlayer? _preparingPlayer;
   bool _sleepStopped = false;
@@ -70,6 +99,13 @@ class _PlayerPageState extends State<PlayerPage>
   bool _swipeBlocked = false;
   Timer? _swipeBlockTimer;
   bool _userPaused = false;
+
+  // ─── 遥控器 / 键盘 ─────────────────────────────────────────────────────
+  final FocusNode _keyFocus = FocusNode(debugLabel: 'player-keys');
+  bool _showKeyHint = false;
+  Timer? _keyHintTimer;
+  // 长按 OK 呼出菜单：按下时起计时，松开前到点就打开菜单，否则当作单击暂停
+  Timer? _okHoldTimer;
   bool _pausedByLifecycle = false;
   // 本页被新路由（如再次打开的播放页）覆盖时暂停，新路由弹出回到本页时恢复，
   // 与 _pausedByLifecycle 分开记，避免两套恢复逻辑互相误触发。
@@ -118,6 +154,10 @@ class _PlayerPageState extends State<PlayerPage>
   @override
   void initState() {
     super.initState();
+    _episodeShrink = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 260),
+    );
     WidgetsBinding.instance.addObserver(this);
     _systemUi = PlayerSystemUiController();
     _systemUi.addListener(_onSystemUiChanged);
@@ -129,6 +169,7 @@ class _PlayerPageState extends State<PlayerPage>
     _currentEpisodeIndex = widget.initialEpisodeIndex ?? 0;
     unawaited(_systemUi.setFullScreen());
     NativePlayer.setKeepScreenOn(true);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _flashKeyHint());
     _prepare();
   }
 
@@ -170,10 +211,14 @@ class _PlayerPageState extends State<PlayerPage>
 
   @override
   void dispose() {
+    _episodeShrink.dispose();
     appRouteObserver.unsubscribe(this);
     WidgetsBinding.instance.removeObserver(this);
     NativePlayer.setKeepScreenOn(false);
     _swipeBlockTimer?.cancel();
+    _keyHintTimer?.cancel();
+    _okHoldTimer?.cancel();
+    _keyFocus.dispose();
     _systemUi.removeListener(_onSystemUiChanged);
     _sleepTimer.removeListener(_onSystemUiChanged);
     _sleepTimer.dispose();
@@ -202,6 +247,7 @@ class _PlayerPageState extends State<PlayerPage>
         _player!.pause();
       }
     } else if (state == AppLifecycleState.resumed) {
+      unawaited(_systemUi.reapplyBottomBar());
       _sleepTimer.checkDeadline();
       if (_sleepStopped) return;
       if (_pausedByLifecycle && !_userPaused) {
@@ -299,6 +345,8 @@ class _PlayerPageState extends State<PlayerPage>
       if (_player != null) {
         unawaited(_player!.pause());
         unawaited(_player!.setVolume(0));
+        // 降级为上一集：停放加密流，不再和新的当前集抢带宽
+        unawaited(_player!.setActive(false));
         if (prevPlayer != null) enqueueDispose(prevPlayer!);
         prevPlayer = _player;
         prevEpisodeIndex = index - 1;
@@ -314,6 +362,8 @@ class _PlayerPageState extends State<PlayerPage>
       if (_player != null) {
         unawaited(_player!.pause());
         unawaited(_player!.setVolume(0));
+        // 降级为下一集：停放加密流
+        unawaited(_player!.setActive(false));
         if (nextPlayer != null) enqueueDispose(nextPlayer!);
         nextPlayer = _player;
         nextEpisodeIndex = index + 1;
@@ -343,6 +393,8 @@ class _PlayerPageState extends State<PlayerPage>
       durationMsNotifier.value = reusedPlayer.duration.inMilliseconds;
       playingNotifier.value = reusedPlayer.playing;
       setState(() {});
+      // 升为当前集：恢复正常预读
+      unawaited(reusedPlayer.setActive(true));
       unawaited(reusedPlayer.setVolume(1.0));
       unawaited(reusedPlayer.setRate(_isSpeedUp ? 2.0 : _playbackSpeed));
       unawaited(reusedPlayer.play());
@@ -607,11 +659,12 @@ class _PlayerPageState extends State<PlayerPage>
     if (player == null || !_playerInitialized) return;
     _resumeAfterSeek = player.playing;
     player.pause();
-    _seekingPositionMs = ms;
+    setState(() => _seekingPositionMs = ms);
   }
 
+  // 拖动时刷新屏幕中间的大号时间
   void _onSeekChanged(double ms) {
-    _seekingPositionMs = ms;
+    setState(() => _seekingPositionMs = ms);
   }
 
   void _onSeekEnd(double ms) {
@@ -622,7 +675,17 @@ class _PlayerPageState extends State<PlayerPage>
         player.play();
       }
     }
-    _seekingPositionMs = null;
+    // 横竖屏切换/翻页时 Slider 被卸载也会触发 dragEnd，此时框架处于锁定阶段，
+    // 不能直接 setState。
+    if (!mounted) return;
+    if (SchedulerBinding.instance.schedulerPhase ==
+        SchedulerPhase.persistentCallbacks) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() => _seekingPositionMs = null);
+      });
+    } else {
+      setState(() => _seekingPositionMs = null);
+    }
   }
 
   void _onSpeedTap() {
@@ -718,9 +781,212 @@ class _PlayerPageState extends State<PlayerPage>
     ));
   }
 
+  void _jumpToEpisode(int idx) {
+    if (!mounted || (idx == _currentEpisodeIndex && !_sleepStopped)) {
+      return;
+    }
+    _sleepStopped = false;
+    _userPaused = false;
+    unawaited(NativePlayer.setKeepScreenOn(true));
+    _programmaticJump = true;
+    _pageController?.jumpToPage(idx);
+    _programmaticJump = false;
+    unawaited(_openEpisode(idx));
+  }
+
+  // 遥控器/键盘：上下切集，左右快退/快进 10 秒，OK/回车/空格 暂停播放，
+  // 长按 OK 或菜单键（M）打开播放菜单（选集/倍速/清晰度/定时/弹幕/下载），
+  // E 直接打开选集。返回键由系统处理（退出播放页）。
+  static final _okKeys = {
+    LogicalKeyboardKey.select,
+    LogicalKeyboardKey.enter,
+    LogicalKeyboardKey.numpadEnter,
+    LogicalKeyboardKey.space,
+    LogicalKeyboardKey.gameButtonA,
+  };
+
+  KeyEventResult _onPlayerKey(FocusNode node, KeyEvent event) {
+    final key = event.logicalKey;
+    if (_okKeys.contains(key)) {
+      if (event is KeyDownEvent) {
+        _okHoldTimer?.cancel();
+        _okHoldTimer = Timer(const Duration(milliseconds: 600), () {
+          _okHoldTimer = null;
+          unawaited(_openMoreMenu());
+        });
+      } else if (event is KeyRepeatEvent) {
+        // 系统按住约 0.5 秒后开始发重复事件：这就是长按，立即打开菜单
+        if (_okHoldTimer != null) {
+          _okHoldTimer!.cancel();
+          _okHoldTimer = null;
+          unawaited(_openMoreMenu());
+        }
+      } else if (event is KeyUpEvent) {
+        if (_okHoldTimer != null) {
+          _okHoldTimer!.cancel();
+          _okHoldTimer = null;
+          _onTogglePlay();
+        }
+      }
+      return KeyEventResult.handled;
+    }
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final isDown = event is KeyDownEvent;
+    if (key == LogicalKeyboardKey.arrowUp ||
+        key == LogicalKeyboardKey.channelUp ||
+        key == LogicalKeyboardKey.pageUp) {
+      if (isDown) _stepEpisode(-1);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowDown ||
+        key == LogicalKeyboardKey.channelDown ||
+        key == LogicalKeyboardKey.pageDown) {
+      if (isDown) _stepEpisode(1);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowLeft ||
+        key == LogicalKeyboardKey.mediaRewind) {
+      _seekBy(-10000);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowRight ||
+        key == LogicalKeyboardKey.mediaFastForward) {
+      _seekBy(10000);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.mediaPlayPause) {
+      if (isDown) _onTogglePlay();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.mediaPlay ||
+        key == LogicalKeyboardKey.mediaPause) {
+      final wantPlay = key == LogicalKeyboardKey.mediaPlay;
+      if (isDown && playingNotifier.value != wantPlay) _onTogglePlay();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.contextMenu ||
+        key == LogicalKeyboardKey.info ||
+        key == LogicalKeyboardKey.keyM) {
+      if (isDown) unawaited(_openMoreMenu());
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.keyE) {
+      if (isDown) unawaited(_onEpisodeTap());
+      return KeyEventResult.handled;
+    }
+    // F：横屏全屏 / 退出（桌面键盘、外接键盘）
+    if (key == LogicalKeyboardKey.keyF && !DeviceProfile.isTv) {
+      if (isDown) _onToggleLandscapeFullScreen();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  void _stepEpisode(int delta) {
+    final target = _currentEpisodeIndex + delta;
+    if (target < 0 || target >= _episodes.length) return;
+    _jumpToEpisode(target);
+  }
+
+  void _seekBy(int deltaMs) {
+    final player = _player;
+    if (player == null || !_playerInitialized) return;
+    final duration = durationMsNotifier.value;
+    var target = positionMsNotifier.value + deltaMs;
+    if (target < 0) target = 0;
+    if (duration > 0 && target > duration - 500) target = duration - 500;
+    unawaited(player.seek(Duration(milliseconds: target)));
+    positionMsNotifier.value = target;
+  }
+
+  void _flashKeyHint() {
+    if (!DeviceProfile.isTv) return;
+    setState(() => _showKeyHint = true);
+    _keyHintTimer?.cancel();
+    _keyHintTimer = Timer(const Duration(seconds: 5), () {
+      if (mounted) setState(() => _showKeyHint = false);
+    });
+  }
+
+  Widget _buildKeyHint() {
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 96,
+      child: IgnorePointer(
+        child: Center(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.black.withAlpha(170),
+              borderRadius: BorderRadius.circular(22),
+            ),
+            child: const Text(
+              '↑↓ 切集   ←→ 快退/快进   OK 暂停   长按 OK / 菜单键 选集·倍速·清晰度',
+              style: TextStyle(color: Colors.white, fontSize: 14),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  bool _moreMenuOpen = false;
+
+  /// 遥控器 / 键盘呼出的播放菜单（与右上角“…”同一套设置，外加“选集”入口）。
+  Future<void> _openMoreMenu() async {
+    if (_moreMenuOpen || !mounted || _episodes.isEmpty) return;
+    _moreMenuOpen = true;
+    _systemUi.setMenuOpen(true);
+    final url = _episodes[_currentEpisodeIndex].url.trim();
+    PlayerMenuAction? action;
+    try {
+      action = await showPlayerMoreSheet(
+        context: context,
+        canDownload: widget.downloadService != null &&
+            !isOfflinePlayback &&
+            widget.drama.isTheaterResource,
+        isOfflinePlayback: isOfflinePlayback,
+        sleepTimerActive: _sleepTimer.isActive,
+        danmakuEnabled: _danmakuController.enabled,
+        playbackSpeed: _playbackSpeed,
+        currentQuality:
+            isOfflinePlayback ? '' : _preloadManager.selectedDefinition(url),
+        loadQualities: isOfflinePlayback
+            ? null
+            : () => _preloadManager.availableDefinitions(url),
+        onToggleDanmaku: _onToggleDanmaku,
+        onSpeedChanged: _onSpeedChanged,
+        onQualityChanged: _onQualityChanged,
+        onSleepDurationChanged: _onSleepDurationChanged,
+        sleepTimerMinutes: _sleepTimer.isActive ? _sleepTimerMinutes : null,
+        showEpisodes: true,
+        onSheetLayout: _onBottomPanelHeight,
+      );
+      _onBottomPanelHeight(0);
+    } finally {
+      _moreMenuOpen = false;
+      if (mounted) _systemUi.setMenuOpen(false);
+    }
+    if (!mounted || action == null) return;
+    if (action == PlayerMenuAction.episodes) {
+      await _onEpisodeTap();
+    } else {
+      await _onMenuAction(action);
+    }
+  }
+
   Future<void> _onEpisodeTap() async {
     final episodeNotifier = ValueNotifier<int>(_currentEpisodeIndex);
     _systemUi.setMenuOpen(true);
+    _shrinkPanelHeight = null; // 选集面板：屏高 50%
+    final shrink = !DeviceProfile.isTv &&
+        PlayerVideoSurface.usesPhoneLayout(
+            MediaQuery.of(context).size, _systemUi.isLandscapeFullScreen);
+    if (shrink) unawaited(_episodeShrink.forward());
+    final status = widget.drama.status.trim();
     try {
       await showPlayerEpisodeSheet(
         context: context,
@@ -728,22 +994,19 @@ class _PlayerPageState extends State<PlayerPage>
         dramaName: widget.drama.name,
         episodes: _episodes,
         episodeNotifier: episodeNotifier,
-        onSelectEpisode: (idx) {
-          if (!mounted || (idx == _currentEpisodeIndex && !_sleepStopped)) {
-            return;
-          }
-          _sleepStopped = false;
-          _userPaused = false;
-          unawaited(NativePlayer.setKeepScreenOn(true));
-          _programmaticJump = true;
-          _pageController?.jumpToPage(idx);
-          _programmaticJump = false;
-          unawaited(_openEpisode(idx));
-        },
+        onSelectEpisode: _jumpToEpisode,
+        cover: widget.drama.cover,
+        intro: widget.drama.intro,
+        status: status.isEmpty
+            ? '共${_episodes.length}集'
+            : '$status · 共${_episodes.length}集',
       );
     } finally {
       episodeNotifier.dispose();
-      if (mounted) _systemUi.setMenuOpen(false);
+      if (mounted) {
+        if (shrink) unawaited(_episodeShrink.reverse());
+        _systemUi.setMenuOpen(false);
+      }
     }
   }
 
@@ -753,6 +1016,8 @@ class _PlayerPageState extends State<PlayerPage>
     _systemUi.setMenuOpen(true);
     try {
       switch (action) {
+        case PlayerMenuAction.episodes:
+          break; // 由 _openMoreMenu 处理
         case PlayerMenuAction.download:
           final service = widget.downloadService;
           if (service == null || isOfflinePlayback) return;
@@ -838,8 +1103,13 @@ class _PlayerPageState extends State<PlayerPage>
     Navigator.of(context).pop();
   }
 
+  // 红果：竖屏单击暂停/播放；横屏单击显示/隐藏控件，双击暂停/播放。
   void _onTapVideo() {
-    _systemUi.toggleLandscapeUi();
+    if (_systemUi.isLandscapeFullScreen || DeviceProfile.usesFocusUi) {
+      _systemUi.toggleLandscapeUi();
+    } else {
+      _onTogglePlay();
+    }
   }
 
   void _onDoubleTapVideo() {
@@ -890,27 +1160,44 @@ class _PlayerPageState extends State<PlayerPage>
       _swipeBlockTimer?.cancel();
     }
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Listener(
-        behavior: HitTestBehavior.translucent,
-        onPointerDown: (_) => _activePointers++,
-        onPointerUp: (_) {
-          _activePointers--;
-          _endSpeedUp();
-        },
-        onPointerCancel: (_) {
-          _activePointers--;
-          _endSpeedUp();
-        },
-        child: Stack(
-          children: [
-            if (_pageController != null) _buildPageView(),
-            if (_loading) _buildLoading(),
-            if (!_loading && _errorMessage != null) _buildError(),
-            if (_swipeBlocked) _buildSwipeBlockedHint(),
-            if (_showNextLoading) _buildNextLoading(),
-          ],
+    // 红果：横屏全屏时系统返回键先退回竖屏，而不是直接离开播放页
+    return PopScope(
+      canPop: !_systemUi.isLandscapeFullScreen,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _systemUi.isLandscapeFullScreen) {
+          _onToggleLandscapeFullScreen();
+        }
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: Focus(
+          focusNode: _keyFocus,
+          autofocus: true,
+          onKeyEvent: _onPlayerKey,
+          child: Listener(
+            behavior: HitTestBehavior.translucent,
+            onPointerDown: (_) => _activePointers++,
+            onPointerUp: (_) {
+              _activePointers--;
+              _endSpeedUp();
+            },
+            onPointerCancel: (_) {
+              _activePointers--;
+              _endSpeedUp();
+            },
+            child: Stack(
+              children: [
+                if (_pageController != null) _buildPageView(),
+                if (_pageController != null && !DeviceProfile.usesFocusUi)
+                  _buildBottomEdgeGuard(),
+                if (_loading) _buildLoading(),
+                if (!_loading && _errorMessage != null) _buildError(),
+                if (_swipeBlocked) _buildSwipeBlockedHint(),
+                if (_showNextLoading) _buildNextLoading(),
+                if (_showKeyHint) _buildKeyHint(),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -957,7 +1244,70 @@ class _PlayerPageState extends State<PlayerPage>
     );
   }
 
+  NativePlayer? _pagePlayerFor(int index) {
+    if (index == _currentEpisodeIndex) return _player;
+    if (index == nextEpisodeIndex && nextPlayer != null) return nextPlayer;
+    if (index == prevEpisodeIndex && prevPlayer != null) return prevPlayer;
+    return null;
+  }
+
+  // 视频尺寸由原生异步上报：尺寸一到就重建这一页（画面缩放 + 横屏按钮），
+  // 不等下一次无关的 setState，避免横屏片源先按 9:16 被拉伸一会儿。
   Widget _buildEpisodePage(int index) {
+    final pagePlayer = _pagePlayerFor(index);
+    if (pagePlayer == null) return _buildEpisodePageContent(index);
+    return ValueListenableBuilder<Size>(
+      valueListenable: pagePlayer.videoSizeNotifier,
+      builder: (context, _, __) => _buildEpisodePageContent(index),
+    );
+  }
+
+  /// 选集面板打开时把画面（竖屏可见区域）等比缩到面板上方、贴着状态栏下沿。
+  Widget _shrinkable(Widget video, NativePlayer? player) {
+    return AnimatedBuilder(
+      animation: _episodeShrink,
+      child: video,
+      builder: (context, child) {
+        final t = Curves.easeOutCubic.transform(_episodeShrink.value);
+        if (t == 0) return child!;
+        final media = MediaQuery.of(context);
+        final size = media.size;
+        final top = media.viewPadding.top;
+        final fills = PlayerVideoSurface.usesPhoneLayout(size, false);
+        // 竖屏时画面可见区域在底部选集栏之上
+        final areaH = fills
+            ? size.height - PlayerVideoSurface.phoneBottomBarHeight(media)
+            : size.height;
+        final panelH =
+            _shrinkPanelHeight ?? size.height * kHgEpisodePanelHeightFactor;
+        final targetH = size.height - panelH - top - 8;
+        final scale = (targetH / areaH).clamp(0.2, 1.0);
+        final s = 1 - (1 - scale) * t;
+        return Transform(
+          alignment: Alignment.topCenter,
+          transform: Matrix4.identity()
+            ..translateByDouble(0.0, top * t, 0.0, 1.0)
+            ..scaleByDouble(s, s, 1.0, 1.0),
+          child: child,
+        );
+      },
+    );
+  }
+
+  /// 红果：选集面板打开时隐藏弹幕和控件，只留缩小的画面。
+  Widget _hideWhileShrunk(Widget child) => AnimatedBuilder(
+        animation: _episodeShrink,
+        child: child,
+        builder: (context, child) {
+          final v = _episodeShrink.value;
+          if (v == 0) return child!;
+          return IgnorePointer(
+            child: Opacity(opacity: (1 - v * 2).clamp(0.0, 1.0), child: child),
+          );
+        },
+      );
+
+  Widget _buildEpisodePageContent(int index) {
     final isActive = index == _currentEpisodeIndex;
 
     // 根据 index 决定使用哪个 player 的 texture
@@ -999,6 +1349,13 @@ class _PlayerPageState extends State<PlayerPage>
             onSpeedChanged: _onSpeedChanged,
             onEpisodeTap: _onEpisodeTap,
             episodeNumber: _episodes[index].index,
+            dramaName: widget.drama.name,
+            totalEpisodes: _episodes.length,
+            dramaTags: widget.drama.tags,
+            dramaIntro: widget.drama.intro,
+            onNextEpisode: _currentEpisodeIndex < _episodes.length - 1
+                ? () => _stepEpisode(1)
+                : null,
             canDownload: widget.downloadService != null &&
                 !isOfflinePlayback &&
                 widget.drama.isTheaterResource &&
@@ -1018,6 +1375,7 @@ class _PlayerPageState extends State<PlayerPage>
             onMenuAction: _onMenuAction,
             onMenuOpened: () => _systemUi.setMenuOpen(true),
             onMenuClosed: () => _systemUi.setMenuOpen(false),
+            onBottomPanelHeight: _onBottomPanelHeight,
             onTogglePlay: _onTogglePlay,
             onToggleLandscapeFullScreen: _onToggleLandscapeFullScreen,
             onSeekStart: _onSeekStart,
@@ -1040,9 +1398,10 @@ class _PlayerPageState extends State<PlayerPage>
       fit: StackFit.expand,
       children: [
         Container(color: Colors.black),
-        if (hasTexture) videoWidget,
+        if (hasTexture)
+          isActive ? _shrinkable(videoWidget, pagePlayer) : videoWidget,
         if (isActive && hasTexture)
-          ListenableBuilder(
+          _hideWhileShrunk(ListenableBuilder(
             listenable: Listenable.merge([_danmakuController, playingNotifier]),
             builder: (context, _) => DanmakuLayer(
               comments: _danmakuController.comments,
@@ -1050,9 +1409,12 @@ class _PlayerPageState extends State<PlayerPage>
               isPlaying: playingNotifier.value,
               visible: _danmakuController.enabled,
               playbackSpeed: _isSpeedUp ? 2.0 : _playbackSpeed,
+              // 红果：竖屏 10 秒、横屏 12 秒滚完一屏；横屏多一行
+              durationMs: _systemUi.isLandscapeFullScreen ? 12000 : 10000,
+              maxTracks: _systemUi.isLandscapeFullScreen ? 4 : 3,
               topOffset: MediaQuery.of(context).viewPadding.top + 64,
             ),
-          ),
+          )),
         if (isActive && _loading)
           const Center(
             child: CircularProgressIndicator(
@@ -1075,14 +1437,46 @@ class _PlayerPageState extends State<PlayerPage>
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: _onTapVideo,
-            onDoubleTap: _onDoubleTapVideo,
+            // 竖屏不挂双击：否则单击要等双击判定（约 300ms）才响应
+            onDoubleTap:
+                _systemUi.isLandscapeFullScreen ? _onDoubleTapVideo : null,
             onLongPressStart: _onLongPressStart,
             onLongPressEnd: _onLongPressEnd,
             child: Container(color: Colors.transparent),
           ),
         ),
-        if (isActive && overlay != null) overlay,
+        // 电视 / 桌面：叠加层按钮不参与焦点，遥控器按键统一由播放页处理
+        // （否则焦点落到倍速/更多按钮上，OK 会直接点它们）。鼠标点击不受影响。
+        if (isActive && overlay != null)
+          _hideWhileShrunk(DeviceProfile.usesFocusUi
+              ? ExcludeFocus(child: overlay)
+              : overlay),
       ],
+    );
+  }
+
+  /// 屏幕底边是系统“上滑回桌面 / 呼出导航栏”的手势区。从这里起手的上滑
+  /// 交给系统，不让播放页的 PageView 接住（否则回桌面时会误翻到下一集）。
+  /// 只吞竖向拖动，点击照常落到下面的选集栏。
+  Widget _buildBottomEdgeGuard() {
+    final media = MediaQuery.of(context);
+    final zone = [
+          media.systemGestureInsets.bottom,
+          media.viewPadding.bottom,
+          32.0,
+        ].reduce((a, b) => a > b ? a : b) +
+        8;
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 0,
+      height: zone,
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onVerticalDragStart: (_) {},
+        onVerticalDragUpdate: (_) {},
+        onVerticalDragEnd: (_) {},
+      ),
     );
   }
 

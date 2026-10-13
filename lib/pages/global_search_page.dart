@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../services/api_client.dart';
 import '../services/download_service.dart';
 import 'search_results_page.dart';
+import '../widgets/tv_tap.dart';
 
 class GlobalSearchPage extends StatefulWidget {
   const GlobalSearchPage({
@@ -159,7 +160,8 @@ class _GlobalSearchPageState extends State<GlobalSearchPage> {
           Padding(
             padding: const EdgeInsets.only(right: 16),
             child: Center(
-              child: GestureDetector(
+              child: TvTap(
+                borderRadius: 6,
                 onTap: () {
                   if (_searchController.text.isNotEmpty) {
                     _onSearch(_searchController.text);
@@ -197,7 +199,8 @@ class _GlobalSearchPageState extends State<GlobalSearchPage> {
                       color: Color(0xFF333333),
                     ),
                   ),
-                  GestureDetector(
+                  TvTap(
+                    borderRadius: 9,
                     onTap: _clearHistory,
                     child: const Icon(
                       Icons.delete_outline,
@@ -215,7 +218,8 @@ class _GlobalSearchPageState extends State<GlobalSearchPage> {
                   spacing: 8,
                   runSpacing: 8,
                   children: _history.map((keyword) {
-                    return GestureDetector(
+                    return TvTap(
+                      borderRadius: 16,
                       onTap: () => _onSearch(keyword),
                       child: Container(
                         padding: const EdgeInsets.symmetric(

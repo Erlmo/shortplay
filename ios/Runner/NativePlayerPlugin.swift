@@ -50,6 +50,8 @@ final class NativePlayerPlugin: NSObject, FlutterPlugin {
             handlePause(args: args, result: result)
         case "seek":
             handleSeek(args: args, result: result)
+        case "setActive":
+            handleSetActive(args: args, result: result)
         case "setVolume":
             handleSetVolume(args: args, result: result)
         case "setRate":
@@ -168,6 +170,15 @@ final class NativePlayerPlugin: NSObject, FlutterPlugin {
         result(nil)
     }
 
+    private func handleSetActive(args: [String: Any]?, result: @escaping FlutterResult) {
+        guard let id = args?["id"] as? Int, let player = getPlayer(id) else {
+            result(FlutterError(code: "not_found", message: "Player not found", details: nil))
+            return
+        }
+        player.setActive(args?["active"] as? Bool ?? true)
+        result(nil)
+    }
+
     private func handleSetVolume(args: [String: Any]?, result: @escaping FlutterResult) {
         guard let id = args?["id"] as? Int, let player = getPlayer(id) else {
             result(FlutterError(code: "not_found", message: "Player not found", details: nil))
@@ -257,6 +268,8 @@ private final class PlayerInstance: NSObject, FlutterTexture {
     private var durationObservation: NSKeyValueObservation?
     private var bufferingObservation: NSKeyValueObservation?
     private var rateObservation: NSKeyValueObservation?
+    private var presentationSizeObservation: NSKeyValueObservation?
+    private var lastSentVideoSize = CGSize.zero
 
     private let resourceLoaderQueue = DispatchQueue(label: "com.shortplay.resourceloader", qos: .userInitiated)
     private var resourceLoaderDelegate: CryptoResourceLoaderDelegate?
@@ -343,15 +356,7 @@ private final class PlayerInstance: NSObject, FlutterTexture {
                     "type": "duration",
                     "value": durationMs
                 ])
-                let size = item.presentationSize
-                if size.width > 0 && size.height > 0 {
-                    self.eventCallback([
-                        "playerId": self.playerId,
-                        "type": "videoSize",
-                        "width": Int(size.width),
-                        "height": Int(size.height)
-                    ])
-                }
+                self.sendVideoSize(item.presentationSize)
             }
         }
 
@@ -374,6 +379,12 @@ private final class PlayerInstance: NSObject, FlutterTexture {
                 "type": "buffering",
                 "value": item.isPlaybackBufferEmpty
             ])
+        }
+
+        // readyToPlay 时 presentationSize 可能还是 0，之后才变成真实尺寸；
+        // 只在 readyToPlay 上报会导致 Dart 侧一直按默认 9:16 画面（横屏片源被拉伸）。
+        presentationSizeObservation = item.observe(\.presentationSize, options: [.new]) { [weak self] item, _ in
+            self?.sendVideoSize(item.presentationSize)
         }
 
         rateObservation = avPlayer.observe(\.rate, options: [.new]) { [weak self] player, _ in
@@ -402,6 +413,18 @@ private final class PlayerInstance: NSObject, FlutterTexture {
             name: .AVPlayerItemDidPlayToEndTime,
             object: item
         )
+    }
+
+    /// 视频尺寸有效且变化时上报（KVO / 首帧都可能调用，去重）。
+    private func sendVideoSize(_ size: CGSize) {
+        guard size.width > 0, size.height > 0, size != lastSentVideoSize else { return }
+        lastSentVideoSize = size
+        eventCallback([
+            "playerId": playerId,
+            "type": "videoSize",
+            "width": Int(size.width),
+            "height": Int(size.height)
+        ])
     }
 
     @objc private func playerDidFinishPlaying(_ notification: Notification) {
@@ -439,6 +462,11 @@ private final class PlayerInstance: NSObject, FlutterTexture {
 
         if !firstFrameSent {
             firstFrameSent = true
+            // 兜底：首帧时还没拿到 presentationSize，就用像素缓冲的宽高
+            if lastSentVideoSize == .zero {
+                sendVideoSize(CGSize(width: CVPixelBufferGetWidth(pixelBuffer),
+                                     height: CVPixelBufferGetHeight(pixelBuffer)))
+            }
             eventCallback([
                 "playerId": playerId,
                 "type": "firstFrame",
@@ -478,6 +506,14 @@ private final class PlayerInstance: NSObject, FlutterTexture {
         player?.volume = volume
     }
 
+    /// Park (false) / unpark (true) the crypto stream. A parked stream stops
+    /// fetching ~1MB past its read position so a paused prev/next player does
+    /// not compete for bandwidth with the on-screen episode.
+    func setActive(_ active: Bool) {
+        guard !disposed, let handle = streamHandle else { return }
+        sp_stream_set_active(handle, active ? 1 : 0)
+    }
+
     func setRate(_ rate: Float) {
         currentRate = rate
         player?.rate = rate
@@ -505,6 +541,8 @@ private final class PlayerInstance: NSObject, FlutterTexture {
         bufferingObservation = nil
         rateObservation?.invalidate()
         rateObservation = nil
+        presentationSizeObservation?.invalidate()
+        presentationSizeObservation = nil
 
         NotificationCenter.default.removeObserver(self)
 
@@ -519,6 +557,12 @@ private final class PlayerInstance: NSObject, FlutterTexture {
         bufferLock.lock()
         latestPixelBuffer = nil
         bufferLock.unlock()
+
+        // Abort before invalidating: a loader-queue read blocked on a parked
+        // stream must return, or the sp_stream_close queued below never runs.
+        if let handle = streamHandle {
+            sp_stream_abort(handle)
+        }
 
         resourceLoaderDelegate?.invalidate()
 

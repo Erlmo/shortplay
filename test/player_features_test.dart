@@ -114,24 +114,51 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('竖屏页面竖向视频仍铺满屏幕', (tester) async {
-    const screen = Size(390, 844);
+  Future<Rect> pumpSurface(WidgetTester tester, Size screen,
+      {int videoWidth = 1080, int videoHeight = 1920}) async {
     await tester.binding.setSurfaceSize(screen);
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(MaterialApp(
         home: Scaffold(
             body: PlayerVideoSurface(
       textureId: 1,
-      videoWidth: 1080,
-      videoHeight: 1920,
+      videoWidth: videoWidth,
+      videoHeight: videoHeight,
       isLandscapeFullScreen: false,
     ))));
-    final rect = tester.getRect(find.byType(Texture));
-    expect(rect.left, lessThanOrEqualTo(0.001));
-    expect(rect.top, lessThanOrEqualTo(0.001));
-    expect(rect.right, greaterThanOrEqualTo(screen.width - 0.001));
-    expect(rect.bottom, greaterThanOrEqualTo(screen.height - 0.001));
     expect(tester.takeException(), isNull);
+    return tester.getRect(find.byType(Texture));
+  }
+
+  // 竖屏手机底部固定控件栏 56（+系统手势条，测试里为 0），与红果一致
+  const bar = 56.0;
+
+  testWidgets('竖屏手机竖版片源铺满控件栏以上区域，与控件栏无缝衔接', (tester) async {
+    const screen = Size(390, 844); // 9:19.5 全面屏
+    final rect = await pumpSurface(tester, screen);
+    // 区域比片源更细长：高度正好撑满区域，贴顶、下沿贴着控件栏
+    expect(rect.top, closeTo(0, 0.001));
+    expect(rect.bottom, closeTo(screen.height - bar, 0.001));
+    // 宽度溢出，左右对称裁切
+    expect(rect.width, greaterThan(screen.width));
+    expect(-rect.left, closeTo(rect.right - screen.width, 0.001));
+  });
+
+  testWidgets('横版片源在竖屏手机上完整显示', (tester) async {
+    const screen = Size(390, 844);
+    final rect =
+        await pumpSurface(tester, screen, videoWidth: 1920, videoHeight: 1080);
+    expect(rect.left, closeTo(0, 0.001));
+    expect(rect.right, closeTo(screen.width, 0.001));
+    expect(rect.height, closeTo(screen.width * 1080 / 1920, 0.001));
+  });
+
+  testWidgets('宽屏设备（宽/高 > 0.8）竖版片源完整显示', (tester) async {
+    const screen = Size(800, 900); // 折叠屏展开
+    final rect = await pumpSurface(tester, screen);
+    expect(rect.top, closeTo(0, 0.001));
+    expect(rect.bottom, closeTo(screen.height, 0.001));
+    expect(rect.width, closeTo(screen.height * 1080 / 1920, 0.001));
   });
 
   testWidgets('三点位于集数右侧，小屏菜单提供下载和定时关闭', (tester) async {
@@ -189,19 +216,21 @@ void main() {
     expect(tester.takeException(), isNull);
     await tester.tap(find.byTooltip('更多功能'));
     await tester.pumpAndSettle();
-    expect(find.text('下载本地'), findsOneWidget);
-    expect(find.text('定时'), findsOneWidget);
-    await tester.tap(find.text('下载本地'));
+    expect(find.text('离线缓存'), findsOneWidget);
+    expect(find.text('定时关闭'), findsOneWidget);
+    await tester.tap(find.text('离线缓存'));
     await tester.pumpAndSettle();
     expect(selected, PlayerMenuAction.download);
     expect(opened, 1);
     expect(closed, 1);
     await tester.tap(find.byTooltip('更多功能'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('30分'));
+    await tester.ensureVisible(find.text('30分钟'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('30分钟'));
     await tester.pumpAndSettle();
     expect(timer, const Duration(minutes: 30));
-    expect(find.text('播放设置'), findsOneWidget);
+    expect(find.text('倍速'), findsOneWidget);
   });
 
   testWidgets('定时弹窗返回选定时长并可取消已有定时', (tester) async {

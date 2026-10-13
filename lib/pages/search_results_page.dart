@@ -4,6 +4,8 @@ import '../models/drama.dart';
 import '../services/api_client.dart';
 import '../services/download_service.dart';
 import 'drama_detail_page.dart';
+import '../widgets/tv_tap.dart';
+import '../services/device_profile.dart';
 
 class SearchResultsPage extends StatefulWidget {
   const SearchResultsPage({
@@ -172,12 +174,19 @@ class _SearchResultsPageState extends State<SearchResultsPage> {
                   vertical: 12,
                 ),
                 sliver: SliverGrid(
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 2,
-                    childAspectRatio: 0.65,
-                    crossAxisSpacing: 10,
-                    mainAxisSpacing: 16,
-                  ),
+                  gridDelegate: DeviceProfile.usesFocusUi
+                      ? const SliverGridDelegateWithMaxCrossAxisExtent(
+                          maxCrossAxisExtent: 200,
+                          childAspectRatio: 0.65,
+                          crossAxisSpacing: 16,
+                          mainAxisSpacing: 16,
+                        )
+                      : const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 2,
+                          childAspectRatio: 0.65,
+                          crossAxisSpacing: 10,
+                          mainAxisSpacing: 16,
+                        ),
                   delegate: SliverChildBuilderDelegate(
                     (_, i) => _buildGridItem(_results[i]),
                     childCount: _results.length,
@@ -220,7 +229,8 @@ class _SearchResultsPageState extends State<SearchResultsPage> {
           ),
           if (_hadError) ...[
             const SizedBox(height: 20),
-            GestureDetector(
+            TvTap(
+              borderRadius: 20,
               onTap: _fetch,
               child: Container(
                 padding: const EdgeInsets.symmetric(
@@ -244,7 +254,8 @@ class _SearchResultsPageState extends State<SearchResultsPage> {
   }
 
   Widget _buildGridItem(Drama drama) {
-    return GestureDetector(
+    return TvTap(
+      borderRadius: 8,
       onTap: () => _openDrama(drama),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

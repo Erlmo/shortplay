@@ -8,6 +8,7 @@ import '../services/download_service.dart';
 import '../services/offline_playback_cache.dart';
 import '../services/playback_history_store.dart';
 import 'player_page.dart';
+import '../widgets/tv_tap.dart';
 
 class PlayHistoryPage extends StatefulWidget {
   const PlayHistoryPage({
@@ -301,7 +302,10 @@ class PlayHistoryPageState extends State<PlayHistoryPage> {
         // 异步删除持久化数据
         PlaybackHistoryStore.removeByKey(record.dramaId);
       },
-      child: InkWell(
+      child: TvTap(
+        ink: true,
+        borderRadius: 0,
+        focusScale: 1.0,
         onTap: () => _openRecord(record),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),

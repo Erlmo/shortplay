@@ -9,6 +9,7 @@ import '../services/download_service.dart';
 import '../services/offline_playback_cache.dart';
 import '../widgets/app_notice.dart';
 import 'player_page.dart';
+import '../widgets/tv_tap.dart';
 
 class CachePage extends StatefulWidget {
   const CachePage({
@@ -106,6 +107,34 @@ class _CachePageState extends State<CachePage> with WidgetsBindingObserver {
     );
   }
 
+  // 全部暂停 / 全部开始（红果下载页 DownloadingHeader）
+  void _toggleAll(List<DramaDownloadGroup> unfinished, bool anyRunning) {
+    final ds = widget.downloadService;
+    for (final g in unfinished) {
+      if (anyRunning) {
+        if (!ds.isGroupPaused(g.dramaId)) ds.pauseGroup(g.dramaId);
+      } else {
+        if (ds.isGroupPaused(g.dramaId)) ds.resumeGroup(g.dramaId);
+      }
+    }
+  }
+
+  PreferredSizeWidget _appBar() => AppBar(
+        title: const Text(
+          '缓存',
+          style: TextStyle(
+            fontSize: 17,
+            fontWeight: FontWeight.w600,
+            color: _Hg.black,
+          ),
+        ),
+        centerTitle: true,
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        foregroundColor: _Hg.black,
+      );
+
   @override
   Widget build(BuildContext context) {
     final ds = widget.downloadService;
@@ -114,88 +143,106 @@ class _CachePageState extends State<CachePage> with WidgetsBindingObserver {
     if (!ds.loaded) {
       return Scaffold(
         backgroundColor: Colors.white,
-        appBar: AppBar(
-          title: const Text(
-            '缓存',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: Color(0xFF1D1D1F),
-            ),
-          ),
-          centerTitle: false,
-          backgroundColor: Colors.white,
-          surfaceTintColor: Colors.transparent,
-          elevation: 0,
-        ),
-        body: const Center(child: CircularProgressIndicator()),
+        appBar: _appBar(),
+        body: const Center(
+            child: CircularProgressIndicator(color: _Hg.brand, strokeWidth: 2)),
       );
     }
 
     final groups = ds.groups.values.toList();
+    final unfinished = groups.where((g) => !g.isAllCompleted).toList();
+    final anyRunning = unfinished.any((g) => !ds.isGroupPaused(g.dramaId));
 
     return Scaffold(
       backgroundColor: Colors.white,
+      appBar: _appBar(),
       body: CustomScrollView(
         physics: const BouncingScrollPhysics(),
         slivers: [
-          SliverAppBar(
-            title: const Text(
-              '缓存',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFF1D1D1F),
-              ),
-            ),
-            centerTitle: false,
-            pinned: true,
-            backgroundColor: Colors.white,
-            surfaceTintColor: Colors.transparent,
-            elevation: 0,
-            foregroundColor: const Color(0xFF1D1D1F),
-          ),
           if (ds.lastError != null)
             SliverToBoxAdapter(
-              child: ListTile(
-                leading: const Icon(Icons.error_outline, color: Colors.red),
-                title: Text(ds.lastError!),
-                trailing: TextButton(
-                  onPressed: _refreshFiles,
-                  child: const Text('重试'),
+              child: Container(
+                margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                padding: const EdgeInsets.fromLTRB(12, 4, 4, 4),
+                decoration: BoxDecoration(
+                  color: const Color(0x0FF54A45),
+                  borderRadius: BorderRadius.circular(8),
                 ),
+                child: Row(children: [
+                  const Icon(Icons.error_outline_rounded,
+                      color: _Hg.red, size: 16),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(ds.lastError!,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: _Hg.red, fontSize: 12)),
+                  ),
+                  TextButton(
+                    onPressed: _refreshFiles,
+                    style: TextButton.styleFrom(foregroundColor: _Hg.red),
+                    child: const Text('重试', style: TextStyle(fontSize: 12)),
+                  ),
+                ]),
               ),
             ),
           if (groups.isEmpty)
-            SliverToBoxAdapter(
+            SliverFillRemaining(
+              hasScrollBody: false,
               child: Padding(
-                padding: const EdgeInsets.only(top: 100),
+                padding: const EdgeInsets.only(bottom: 80),
                 child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Icon(
-                      Icons.download_rounded,
-                      size: 80,
-                      color: Colors.grey[200],
+                    Container(
+                      width: 64,
+                      height: 64,
+                      decoration: const BoxDecoration(
+                          color: _Hg.fill, shape: BoxShape.circle),
+                      child: const Icon(Icons.download_rounded,
+                          size: 30, color: _Hg.gray40),
                     ),
-                    const SizedBox(height: 24),
-                    Text(
-                      '暂无缓存',
-                      style: TextStyle(
-                        color: Colors.grey[400],
-                        fontSize: 16,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '在详情页点击下载按钮即可缓存剧集',
-                      style: TextStyle(color: Colors.grey[300], fontSize: 13),
-                    ),
+                    const SizedBox(height: 16),
+                    const Text('暂无缓存',
+                        style: TextStyle(
+                            color: _Hg.gray70,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w500)),
+                    const SizedBox(height: 6),
+                    const Text('在播放页右上角「…」或详情页找到下载入口',
+                        style: TextStyle(color: _Hg.gray40, fontSize: 13)),
                   ],
                 ),
               ),
             )
-          else
+          else ...[
+            // 红果下载页头部：左侧“共N个”，右侧“全部暂停/全部开始”
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
+                child: Row(children: [
+                  Text('共${groups.length}个',
+                      style: const TextStyle(color: _Hg.gray40, fontSize: 12)),
+                  const Spacer(),
+                  if (unfinished.isNotEmpty)
+                    TvTap(
+                      borderRadius: 18,
+                      onTap: () => _toggleAll(unfinished, anyRunning),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: const Color(0x0A000000),
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                        child: Text(anyRunning ? '全部暂停' : '全部开始',
+                            style: const TextStyle(
+                                color: Color(0xBF000000), fontSize: 12)),
+                      ),
+                    ),
+                ]),
+              ),
+            ),
             SliverList(
               delegate: SliverChildBuilderDelegate(
                 (context, i) => _GroupCard(
@@ -208,34 +255,56 @@ class _CachePageState extends State<CachePage> with WidgetsBindingObserver {
                 childCount: groups.length,
               ),
             ),
+          ],
           const SliverToBoxAdapter(child: SizedBox(height: 48)),
         ],
       ),
     );
   }
 
-  void _confirmDelete(BuildContext context, DramaDownloadGroup group) {
-    showDialog(
+  /// 弹确认框；确认后删除。返回是否已确认（左滑删除据此决定是否把这一行滑走）。
+  Future<bool> _confirmDelete(
+      BuildContext context, DramaDownloadGroup group) async {
+    final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('删除缓存'),
-        content: Text('确定删除《${group.dramaName}》的所有缓存？'),
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Text('删除缓存',
+            style: TextStyle(
+                fontSize: 17, fontWeight: FontWeight.w600, color: _Hg.black)),
+        content: Text('确定删除《${group.dramaName}》的所有缓存？',
+            style: const TextStyle(fontSize: 14, color: _Hg.gray70)),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(context, false),
+            style: TextButton.styleFrom(foregroundColor: _Hg.gray70),
             child: const Text('取消'),
           ),
           TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              unawaited(_deleteGroup(group));
-            },
-            child: const Text('删除', style: TextStyle(color: Colors.red)),
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: _Hg.red),
+            child: const Text('删除'),
           ),
         ],
       ),
     );
+    if (ok != true) return false;
+    unawaited(_deleteGroup(group));
+    return true;
   }
+}
+
+/// 红果浅色配色（skin_color_*_light）与品牌橙
+class _Hg {
+  static const black = Color(0xFF000000);
+  static const gray70 = Color(0xB2000000);
+  static const gray40 = Color(0x66000000);
+  static const fill = Color(0x08000000);
+  static const brand = Color(0xFFFA6725);
+  static const brandBg = Color(0x1AFA6725);
+  static const red = Color(0xFFF54A45);
 }
 
 class _GroupCard extends StatefulWidget {
@@ -247,7 +316,7 @@ class _GroupCard extends StatefulWidget {
     required this.downloadService,
   });
   final DramaDownloadGroup group;
-  final VoidCallback onDelete;
+  final Future<bool> Function() onDelete;
   final void Function(EpisodeDownload) onPlay;
   final DownloadService downloadService;
 
@@ -264,8 +333,23 @@ class _GroupCardState extends State<_GroupCard> {
     final sortedEps = group.episodes.toList()
       ..sort((a, b) => a.episode.index.compareTo(b.episode.index));
     final isPaused = widget.downloadService.isGroupPaused(group.dramaId);
+    final done = group.isAllCompleted;
     final progress =
         group.totalCount > 0 ? group.completedCount / group.totalCount : 0.0;
+
+    // 状态文字：下载中 xx% / 已暂停 / N集失败
+    String statusText;
+    Color statusColor;
+    if (group.failedCount > 0) {
+      statusText = '${group.failedCount}集失败';
+      statusColor = _Hg.red;
+    } else if (isPaused) {
+      statusText = '已暂停 · ${(progress * 100).toInt()}%';
+      statusColor = _Hg.gray40;
+    } else {
+      statusText = '下载中 · ${(progress * 100).toInt()}%';
+      statusColor = _Hg.brand;
+    }
 
     return Dismissible(
       key: ValueKey(group.dramaId),
@@ -273,14 +357,18 @@ class _GroupCardState extends State<_GroupCard> {
       background: Container(
         alignment: Alignment.centerRight,
         padding: const EdgeInsets.only(right: 24),
-        color: const Color(0xFFFF2442),
-        child: const Icon(
-          Icons.delete_forever_rounded,
-          color: Colors.white,
-          size: 26,
-        ),
+        color: _Hg.red,
+        child: const Text('删除',
+            style: TextStyle(
+                color: Colors.white,
+                fontSize: 15,
+                fontWeight: FontWeight.w500)),
       ),
-      onDismissed: (_) => widget.onDelete(),
+      // 先确认再滑走：不滑走时 Dismissible 会回弹，确认后由删除结果把这一行移出列表
+      confirmDismiss: (_) async {
+        await widget.onDelete();
+        return false;
+      },
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -289,153 +377,100 @@ class _GroupCardState extends State<_GroupCard> {
             splashColor: Colors.transparent,
             highlightColor: Colors.transparent,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
               child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   ClipRRect(
-                    borderRadius: BorderRadius.circular(6),
+                    borderRadius: BorderRadius.circular(8),
                     child: SizedBox(
-                      width: 72,
-                      height: 96,
+                      width: 70,
+                      height: 98,
                       child: group.localCoverPath != null
                           ? Image.file(
                               File(group.localCoverPath!),
                               fit: BoxFit.cover,
                             )
                           : Container(
-                              color: const Color(0xFFF0F0F0),
-                              child: const Icon(
-                                Icons.movie_outlined,
-                                color: Color(0xFFCCCCCC),
-                                size: 28,
-                              ),
+                              color: _Hg.fill,
+                              child: const Icon(Icons.movie_outlined,
+                                  color: _Hg.gray40, size: 26),
                             ),
                     ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
-                    child: SizedBox(
-                      height: 96,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    group.dramaName,
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w600,
-                                      color: Color(0xFF1D1D1F),
-                                      height: 1.4,
-                                    ),
-                                  ),
-                                ),
-                                GestureDetector(
-                                  onTap: () =>
-                                      setState(() => _expanded = !_expanded),
-                                  child: Padding(
-                                    padding: const EdgeInsets.only(left: 4),
-                                    child: Icon(
-                                      _expanded
-                                          ? Icons.keyboard_arrow_up_rounded
-                                          : Icons.keyboard_arrow_down_rounded,
-                                      size: 20,
-                                      color: const Color(0xFFCCCCCC),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          group.dramaName,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w500,
+                            color: _Hg.black,
+                            height: 1.35,
                           ),
-                          const SizedBox(height: 4),
-                          Row(
-                            children: [
-                              Text(
-                                group.isAllCompleted
-                                    ? '共 ${group.completedCount} 集'
-                                    : '已缓存 ${group.completedCount} / ${group.totalCount} 集',
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: Color(0xFF999999),
-                                ),
-                              ),
-                              if (!group.isAllCompleted) ...[
-                                const Spacer(),
-                                Text(
-                                  group.failedCount > 0
-                                      ? '${group.failedCount} 集失败'
-                                      : '${(progress * 100).toInt()}%',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: Color(0xFFFF2442),
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ],
-                            ],
-                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          done
+                              ? '已下载${group.completedCount}集'
+                              : '共${group.totalCount}集 · 已下载${group.completedCount}集',
+                          style:
+                              const TextStyle(fontSize: 12, color: _Hg.gray40),
+                        ),
+                        if (!done) ...[
                           const SizedBox(height: 10),
-                          if (group.isAllCompleted)
-                            const Text(
-                              '已完成',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Color(0xFF34C759),
-                                fontWeight: FontWeight.w500,
-                              ),
-                            )
-                          else
-                            GestureDetector(
-                              behavior: HitTestBehavior.opaque,
-                              onTap: () => isPaused
-                                  ? widget.downloadService.resumeGroup(
-                                      group.dramaId,
-                                    )
-                                  : widget.downloadService.pauseGroup(
-                                      group.dramaId,
-                                    ),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 6,
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Container(
-                                      width: 22,
-                                      height: 22,
-                                      decoration: BoxDecoration(
-                                        color: const Color(0xFFFF2442),
-                                        shape: BoxShape.circle,
-                                      ),
-                                      child: Icon(
-                                        isPaused
-                                            ? Icons.play_arrow_rounded
-                                            : Icons.pause_rounded,
-                                        size: 14,
-                                        color: Colors.white,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 6),
-                                    Text(
-                                      isPaused ? '继续 / 重试' : '暂停下载',
-                                      style: const TextStyle(
-                                        fontSize: 12,
-                                        color: Color(0xFF333333),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(1),
+                            child: LinearProgressIndicator(
+                              value: progress,
+                              minHeight: 2,
+                              color: isPaused ? _Hg.gray40 : _Hg.brand,
+                              backgroundColor: const Color(0x0F000000),
                             ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(statusText,
+                              style:
+                                  TextStyle(fontSize: 12, color: statusColor)),
                         ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  if (!done)
+                    TvTap(
+                      borderRadius: 16,
+                      onTap: () => isPaused
+                          ? widget.downloadService.resumeGroup(group.dramaId)
+                          : widget.downloadService.pauseGroup(group.dramaId),
+                      child: Container(
+                        width: 32,
+                        height: 32,
+                        decoration: const BoxDecoration(
+                            color: _Hg.fill, shape: BoxShape.circle),
+                        child: Icon(
+                          isPaused
+                              ? Icons.play_arrow_rounded
+                              : Icons.pause_rounded,
+                          size: 18,
+                          color: _Hg.gray70,
+                        ),
+                      ),
+                    ),
+                  TvTap(
+                    onTap: () => setState(() => _expanded = !_expanded),
+                    child: Padding(
+                      padding: const EdgeInsets.only(left: 4),
+                      child: Icon(
+                        _expanded
+                            ? Icons.keyboard_arrow_up_rounded
+                            : Icons.keyboard_arrow_down_rounded,
+                        size: 20,
+                        color: _Hg.gray40,
                       ),
                     ),
                   ),
@@ -445,7 +480,7 @@ class _GroupCardState extends State<_GroupCard> {
           ),
           if (_expanded)
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
               child: Wrap(
                 spacing: 8,
                 runSpacing: 8,
@@ -483,21 +518,22 @@ class _EpisodeChip extends StatelessWidget {
     final isDownloading = status == DownloadStatus.downloading;
     final isPaused = status == DownloadStatus.paused;
     final isPending = status == DownloadStatus.pending;
+    final isFailed = status == DownloadStatus.failed;
 
     Color bgColor;
     Color textColor;
     if (isCompleted) {
-      bgColor = Colors.white;
-      textColor = const Color(0xFF1D1D1F);
+      bgColor = _Hg.fill;
+      textColor = _Hg.black;
     } else if (isDownloading) {
-      bgColor = const Color(0xFFFF2442).withValues(alpha: 0.08);
-      textColor = const Color(0xFFFF2442);
-    } else if (isPaused) {
-      bgColor = const Color(0xFFFFF3E0);
-      textColor = const Color(0xFFFF9800);
+      bgColor = _Hg.brandBg;
+      textColor = _Hg.brand;
+    } else if (isFailed) {
+      bgColor = const Color(0x0FF54A45);
+      textColor = _Hg.red;
     } else {
-      bgColor = const Color(0xFFEEEEEE);
-      textColor = const Color(0xFF999999);
+      bgColor = _Hg.fill;
+      textColor = _Hg.gray40;
     }
 
     return GestureDetector(
@@ -526,32 +562,24 @@ class _EpisodeChip extends StatelessWidget {
         height: 36,
         decoration: BoxDecoration(
           color: bgColor,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: isCompleted
-                ? const Color(0xFFFF2442).withValues(alpha: 0.3)
-                : Colors.transparent,
-          ),
+          borderRadius: BorderRadius.circular(6),
         ),
         child: isDownloading
             ? Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
+                  Text(
+                    ep.progress < 0 ? '下载中' : '${(ep.progress * 100).toInt()}%',
+                    style: const TextStyle(fontSize: 11, color: _Hg.brand),
+                  ),
+                  const SizedBox(height: 3),
                   SizedBox(
                     width: 32,
                     child: LinearProgressIndicator(
                       value: ep.progress < 0 ? null : ep.progress,
                       minHeight: 2,
-                      color: const Color(0xFFFF2442),
-                      backgroundColor: Colors.grey[200],
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    ep.progress < 0 ? '下载中' : '${(ep.progress * 100).toInt()}%',
-                    style: const TextStyle(
-                      fontSize: 9,
-                      color: Color(0xFFFF2442),
+                      color: _Hg.brand,
+                      backgroundColor: const Color(0x1AFA6725),
                     ),
                   ),
                 ],
@@ -563,7 +591,8 @@ class _EpisodeChip extends StatelessWidget {
                     '第${ep.episode.index}集',
                     style: TextStyle(
                       fontSize: 12,
-                      fontWeight: FontWeight.w600,
+                      fontWeight:
+                          isCompleted ? FontWeight.w500 : FontWeight.w400,
                       color: textColor,
                     ),
                   ),
@@ -571,31 +600,22 @@ class _EpisodeChip extends StatelessWidget {
                     const Positioned(
                       right: 3,
                       top: 3,
-                      child: Icon(
-                        Icons.pause_circle_outline,
-                        size: 10,
-                        color: Color(0xFFFF9800),
-                      ),
+                      child: Icon(Icons.pause_rounded,
+                          size: 10, color: _Hg.gray40),
                     ),
-                  if (status == DownloadStatus.failed)
+                  if (isFailed)
                     const Positioned(
                       right: 3,
                       top: 3,
-                      child: Icon(
-                        Icons.error_outline,
-                        size: 10,
-                        color: Colors.red,
-                      ),
+                      child: Icon(Icons.error_outline_rounded,
+                          size: 10, color: _Hg.red),
                     ),
                   if (isPending)
                     const Positioned(
                       right: 3,
                       top: 3,
-                      child: Icon(
-                        Icons.schedule,
-                        size: 10,
-                        color: Color(0xFF999999),
-                      ),
+                      child: Icon(Icons.schedule_rounded,
+                          size: 10, color: _Hg.gray40),
                     ),
                 ],
               ),

@@ -45,9 +45,79 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         val id: Int,
         val player: ExoPlayer,
         val textureEntry: TextureRegistry.SurfaceTextureEntry,
-        val streamHandle: Long,
+        val streams: StreamSlot?,
         val surface: Surface
     )
+
+    /**
+     * Owns every native crypto stream of one player.
+     *
+     * - The handle pre-opened in handleCreate (validation + layout build) is
+     *   handed to the first CryptoDataSource.open() instead of being left idle.
+     *   Previously it was never read, yet its producer thread streamed up to
+     *   16MB in parallel with the DataSource's own stream (double download).
+     * - setActive() parks/unparks every live handle so a paused prev/next
+     *   player stops competing for bandwidth with the on-screen episode.
+     * - release() aborts live handles so a reader blocked on a parked stream
+     *   returns and ExoPlayer can close its DataSource.
+     */
+    private class StreamSlot(pending: Long) {
+        private val lock = Any()
+        private var pending: Long = pending
+        private val live = HashSet<Long>()
+        private var active = true
+        private var released = false
+
+        /** Returns a handle for a DataSource; opens a new one if none pending. */
+        fun acquire(cdnUrl: String, keyHex: String): Long {
+            var h: Long
+            synchronized(lock) {
+                if (released) throw java.io.IOException("player released")
+                h = pending
+                pending = 0L
+            }
+            if (h == 0L) {
+                // Network work: never under the lock (setActive runs on main).
+                h = CryptoNative.nativePlayerStreamOpen(cdnUrl, keyHex)
+                if (h == 0L) throw java.io.IOException("Failed to open crypto stream")
+            }
+            synchronized(lock) {
+                if (released) {
+                    CryptoNative.nativePlayerStreamClose(h)
+                    throw java.io.IOException("player released")
+                }
+                live.add(h)
+                if (!active) CryptoNative.nativePlayerStreamSetActive(h, false)
+            }
+            return h
+        }
+
+        /** Called by DataSource.close(); closes the handle outside the lock. */
+        fun closeHandle(h: Long) {
+            synchronized(lock) { live.remove(h) }
+            CryptoNative.nativePlayerStreamClose(h)
+        }
+
+        fun setActive(on: Boolean) {
+            synchronized(lock) {
+                if (released || active == on) return
+                active = on
+                for (h in live) CryptoNative.nativePlayerStreamSetActive(h, on)
+                if (pending != 0L) CryptoNative.nativePlayerStreamSetActive(pending, on)
+            }
+        }
+
+        /** Abort live handles; returns an unused pending handle for the caller to close. */
+        fun release(): Long {
+            synchronized(lock) {
+                released = true
+                for (h in live) CryptoNative.nativePlayerStreamAbort(h)
+                val p = pending
+                pending = 0L
+                return p
+            }
+        }
+    }
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         flutterBinding = binding
@@ -101,6 +171,12 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
                 val id = call.argument<Int>("id")!!
                 val positionMs = call.argument<Number>("positionMs")!!.toLong()
                 players[id]?.player?.seekTo(positionMs)
+                result.success(null)
+            }
+            "setActive" -> {
+                val id = call.argument<Int>("id")!!
+                val active = call.argument<Boolean>("active") ?: true
+                players[id]?.streams?.setActive(active)
                 result.success(null)
             }
             "setVolume" -> {
@@ -166,7 +242,7 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
 
         setupPlayerListener(playerId, player)
 
-        val instance = PlayerInstance(playerId, player, textureEntry, 0L, surface)
+        val instance = PlayerInstance(playerId, player, textureEntry, null, surface)
         players[playerId] = instance
         sendEvent(playerId, "created", textureEntry.id())
     }
@@ -180,8 +256,9 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         val player = ExoPlayer.Builder(flutterBinding.applicationContext).build()
         player.setVideoSurface(surface)
 
+        val slot = StreamSlot(streamHandle)
         val dataSourceFactory = DataSource.Factory {
-            CryptoDataSource(cdnUrl, keyHex)
+            CryptoDataSource(cdnUrl, keyHex, slot)
         }
         val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
             .createMediaSource(MediaItem.fromUri("crypto://$cdnUrl"))
@@ -190,7 +267,7 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
 
         setupPlayerListener(playerId, player)
 
-        val instance = PlayerInstance(playerId, player, textureEntry, streamHandle, surface)
+        val instance = PlayerInstance(playerId, player, textureEntry, slot, surface)
         players[playerId] = instance
         sendEvent(playerId, "created", textureEntry.id())
     }
@@ -219,25 +296,38 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
             }
 
             override fun onVideoSizeChanged(videoSize: VideoSize) {
-                if (videoSize.width > 0 && videoSize.height > 0) {
-                    handler.post {
-                        eventSink?.success(mapOf(
-                            "playerId" to playerId,
-                            "type" to "videoSize",
-                            "width" to videoSize.width,
-                            "height" to videoSize.height
-                        ))
-                    }
-                }
+                sendVideoSize(playerId, videoSize)
             }
 
             override fun onRenderedFirstFrame() {
                 if (!firstFrameSent) {
                     firstFrameSent = true
+                    // 兜底：确保首帧时 Dart 侧已拿到尺寸（否则按默认 9:16 拉伸）
+                    sendVideoSize(playerId, player.videoSize)
                     sendEvent(playerId, "firstFrame", true)
                 }
             }
         })
+    }
+
+    private val lastVideoSizes = ConcurrentHashMap<Int, Pair<Int, Int>>()
+
+    /** 上报显示尺寸：考虑非正方形像素（pixelWidthHeightRatio），并去重。 */
+    private fun sendVideoSize(playerId: Int, videoSize: VideoSize) {
+        if (videoSize.width <= 0 || videoSize.height <= 0) return
+        val ratio = if (videoSize.pixelWidthHeightRatio > 0f) videoSize.pixelWidthHeightRatio else 1f
+        val w = (videoSize.width * ratio).toInt()
+        val h = videoSize.height
+        if (lastVideoSizes[playerId] == Pair(w, h)) return
+        lastVideoSizes[playerId] = Pair(w, h)
+        handler.post {
+            eventSink?.success(mapOf(
+                "playerId" to playerId,
+                "type" to "videoSize",
+                "width" to w,
+                "height" to h
+            ))
+        }
     }
 
     private fun startPositionUpdates(playerId: Int) {
@@ -261,20 +351,24 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
 
     private fun disposePlayer(id: Int) {
         val instance = players.remove(id) ?: return
+        lastVideoSizes.remove(id)
+        // Abort first so a loader thread blocked on a parked stream returns
+        // and ExoPlayer can release promptly (and close its DataSource).
+        val unused = instance.streams?.release() ?: 0L
         instance.player.release()
         instance.surface.release()
         instance.textureEntry.release()
-        val handle = instance.streamHandle
-        if (handle != 0L) {
+        if (unused != 0L) {
             backgroundExecutor.execute {
-                CryptoNative.nativePlayerStreamClose(handle)
+                CryptoNative.nativePlayerStreamClose(unused)
             }
         }
     }
 
     private inner class CryptoDataSource(
         private val cdnUrl: String,
-        private val keyHex: String
+        private val keyHex: String,
+        private val slot: StreamSlot
     ) : BaseDataSource(true) {
 
         private var streamHandle: Long = 0L
@@ -283,10 +377,7 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
 
         override fun open(dataSpec: DataSpec): Long {
             uri = dataSpec.uri
-            streamHandle = CryptoNative.nativePlayerStreamOpen(cdnUrl, keyHex)
-            if (streamHandle == 0L) {
-                throw java.io.IOException("Failed to open crypto stream")
-            }
+            streamHandle = slot.acquire(cdnUrl, keyHex)
             val totalSize = CryptoNative.nativePlayerStreamSize(streamHandle)
             if (dataSpec.position > 0) {
                 CryptoNative.nativePlayerStreamSeek(streamHandle, dataSpec.position)
@@ -325,8 +416,9 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
 
         override fun close() {
             if (streamHandle != 0L) {
-                CryptoNative.nativePlayerStreamClose(streamHandle)
+                val h = streamHandle
                 streamHandle = 0L
+                slot.closeHandle(h)
             }
             transferEnded()
         }

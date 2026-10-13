@@ -82,56 +82,56 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 }
 
+/// 设置页头部：白底，真实应用图标 + 名称 + 一句文案，不放“设置”标题。
 class _SettingsHeader extends StatelessWidget {
   const _SettingsHeader();
 
   @override
   Widget build(BuildContext context) {
-    final primary = Theme.of(context).colorScheme.primary;
     return ColoredBox(
       color: Colors.white,
       child: SafeArea(
         bottom: false,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(22, 18, 22, 28),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          padding: const EdgeInsets.fromLTRB(22, 32, 22, 28),
+          child: Row(
             children: [
-              const Text(
-                '设置',
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w600,
-                  color: Color(0xFF222222),
+              ExcludeSemantics(
+                child: Container(
+                  width: 60,
+                  height: 60,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(15),
+                    border: Border.all(color: const Color(0x14000000)),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: Image.asset(
+                    'assets/icons/app_logo.png',
+                    fit: BoxFit.cover,
+                    filterQuality: FilterQuality.medium,
+                  ),
                 ),
               ),
-              const SizedBox(height: 30),
-              Row(
-                children: [
-                  ExcludeSemantics(
-                    child: Container(
-                      width: 56,
-                      height: 56,
-                      decoration: const BoxDecoration(
-                        color: Color(0xFFFFF1F3),
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(Icons.movie_creation_rounded,
-                          color: primary, size: 28),
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  const Expanded(
-                    child: Text(
-                      'ShortPlay',
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      '龙龙短剧',
                       style: TextStyle(
                         fontSize: 22,
                         fontWeight: FontWeight.w600,
                         color: Color(0xFF222222),
                       ),
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 4),
+                    const Text(
+                      '免费好剧，随时开追',
+                      style: TextStyle(fontSize: 13, color: Color(0xFF999999)),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),

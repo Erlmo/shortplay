@@ -108,18 +108,11 @@ void main() {
     await tester.pumpAndSettle();
     expect(quality, '1080p');
     expect(tester.widget<Text>(find.text('1080P')).style!.fontWeight,
-        FontWeight.w700);
-    final icons = [
-      CupertinoIcons.speedometer,
-      CupertinoIcons.tv,
-      CupertinoIcons.chat_bubble_text,
-      CupertinoIcons.arrow_down_to_line,
-      CupertinoIcons.timer
-    ];
-    final left = tester.getRect(find.byIcon(icons.first)).left;
-    for (final icon in icons) {
-      expect(tester.getRect(find.byIcon(icon)).left, left);
-    }
+        FontWeight.w600);
+    // 红果“更多”面板：倍速 / 清晰度 / 定时关闭 三组选项
+    expect(find.text('倍速'), findsOneWidget);
+    expect(find.text('清晰度'), findsOneWidget);
+    expect(find.text('定时关闭'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -164,32 +157,38 @@ void main() {
           scale: 1.4));
       await tester.tap(find.byTooltip('更多功能'));
       await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('1.5x'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('1.5x'));
       await tester.pumpAndSettle();
       expect(speed, 1.5);
       expect(tester.widget<Text>(find.text('1.5x')).style!.fontWeight,
-          FontWeight.w700);
-      await tester.tap(find.byType(Switch));
+          FontWeight.w600);
+      await tester.tap(find.text('弹幕'));
       await tester.pumpAndSettle();
-      expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+      expect(find.bySemanticsLabel('弹幕'), findsOneWidget);
       expect(toggles, 1);
-      await tester.tap(find.text('已下载本地'));
+      // 离线播放：缓存入口禁用
+      await tester.tap(find.text('离线缓存'));
       await tester.pumpAndSettle();
       expect(action, isNull);
-      expect(find.text('定时'), findsOneWidget);
+      expect(find.text('定时关闭'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await _capture(tester, boundary, 'menu-${screen.width.toInt()}');
-      await tester.ensureVisible(find.text('30分'));
-      await tester.tap(find.text('30分'));
+      await tester.ensureVisible(find.text('30分钟'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('30分钟'));
       await tester.pumpAndSettle();
       expect(timer, const Duration(minutes: 30));
-      expect(find.text('播放设置'), findsOneWidget);
-      expect(tester.widget<Text>(find.text('30分')).style!.fontWeight,
-          FontWeight.w700);
-      await tester.tap(find.text('关闭'));
+      expect(tester.widget<Text>(find.text('30分钟')).style!.fontWeight,
+          FontWeight.w600);
+      await tester.ensureVisible(find.text('不开启'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('不开启'));
       await tester.pumpAndSettle();
       expect(timer, Duration.zero);
-      await tester.tap(find.byIcon(Icons.close_rounded));
+      // 点遮罩关闭
+      await tester.tapAt(const Offset(4, 4));
       await tester.pumpAndSettle();
       expect(closed, 1);
     });

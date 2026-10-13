@@ -1,3 +1,6 @@
+/// 弹幕表情代码 → 表情字符。共 53 个，与红果 assets/emoji_config.json 的代码表
+/// （version 5，size 53）完全一致。显示时用 Twemoji（CC-BY 4.0）图片，
+/// 文件在 assets/emoji/<码点>.png，见 [danmakuEmojiAsset]。
 const Map<String, String> kDanmakuEmojiMap = {
   '[微笑]': '😊',
   '[偷笑]': '🤭',
@@ -61,4 +64,47 @@ String replaceDanmakuEmoji(String text) {
     final tag = match.group(0)!;
     return kDanmakuEmojiMap[tag] ?? tag;
   });
+}
+
+/// 表情字符对应的 Twemoji 图片资源路径（按 Twemoji 规则：码点小写十六进制用 - 连接，
+/// 非 ZWJ 序列去掉变体选择符 FE0F）。
+String danmakuEmojiAsset(String emoji) {
+  final cps = emoji.runes.map((r) => r.toRadixString(16)).toList();
+  final name = cps.contains('200d')
+      ? cps.join('-')
+      : cps.where((c) => c != 'fe0f').join('-');
+  return 'assets/emoji/$name.png';
+}
+
+/// 弹幕内容拆成的一段：普通文字，或一个表情（[asset] 为图片，[fallback] 为表情字符）。
+class DanmakuRun {
+  const DanmakuRun.text(this.text)
+      : asset = null,
+        fallback = null;
+  const DanmakuRun.emoji(this.asset, this.fallback) : text = null;
+  final String? text;
+  final String? asset;
+  final String? fallback;
+  bool get isEmoji => asset != null;
+}
+
+/// 把 "好看[笑哭][赞]" 拆成文字段和表情段；不认识的 [xxx] 原样保留为文字。
+List<DanmakuRun> splitDanmakuEmoji(String text) {
+  final runs = <DanmakuRun>[];
+  final buffer = StringBuffer();
+  var last = 0;
+  for (final m in _emojiTagPattern.allMatches(text)) {
+    final emoji = kDanmakuEmojiMap[m.group(0)!];
+    if (emoji == null) continue;
+    buffer.write(text.substring(last, m.start));
+    if (buffer.isNotEmpty) {
+      runs.add(DanmakuRun.text(buffer.toString()));
+      buffer.clear();
+    }
+    runs.add(DanmakuRun.emoji(danmakuEmojiAsset(emoji), emoji));
+    last = m.end;
+  }
+  buffer.write(text.substring(last));
+  if (buffer.isNotEmpty) runs.add(DanmakuRun.text(buffer.toString()));
+  return runs;
 }

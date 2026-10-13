@@ -67,6 +67,17 @@ int64_t sp_stream_size(void *handle);
 // Close the stream: stop the producer thread, free all resources.
 void sp_stream_close(void *handle);
 
+// Park / unpark a stream. Inactive (0): the producer stops fetching ~1MB past
+// the current read position and reads beyond that block until reactivated —
+// use for a paused prev/next player so it doesn't compete with the on-screen
+// episode. Active (1, the default after open): normal 16MB read-ahead.
+void sp_stream_set_active(void *handle, int active);
+
+// Non-blocking abort: stop the producer and wake any blocked reader so it
+// returns immediately. Call before sp_stream_close when the read thread may
+// be blocked (e.g. a parked stream). The handle stays valid until close.
+void sp_stream_abort(void *handle);
+
 // ── mpv adapter (kept for media_kit backward compatibility) ───────────────
 
 // Register the "crypto://" protocol on the given mpv handle (cast from the
@@ -78,15 +89,16 @@ int sp_register_crypto_protocol(int64_t handle);
 
 // Prewarm the cache for `cdn_url` so the next sp_stream_open for it skips the
 // box scan + header fetch + sample-table parse (~300-680ms). Blocking. Call
-// from a background thread. Returns 0 on success, non-zero on failure.
+// from a background thread. If the url is already cached without an mdat seed
+// (header-only), upgrades it. Returns 0 on success, non-zero on failure.
 int sp_prewarm(const char *cdn_url, const char *key_hex);
 
-// Header-only prewarm: same as sp_prewarm but skips the 512KB mdat prefetch.
+// Header-only prewarm: same as sp_prewarm but skips the mdat prefetch.
 // Use for N+2 episodes where you want fast build_stream but don't need the
 // mdat seed yet. Later call sp_prewarm_seed_mdat to upgrade.
 int sp_prewarm_header_only(const char *cdn_url, const char *key_hex);
 
-// Upgrade a header-only prewarm entry by fetching 512KB of raw mdat. No-op if
+// Upgrade a header-only prewarm entry by fetching the raw mdat seed. No-op if
 // the entry already has a seed or doesn't exist. Returns 0 on success.
 int sp_prewarm_seed_mdat(const char *cdn_url);
 

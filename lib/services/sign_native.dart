@@ -24,13 +24,19 @@ class SignNative {
   SignNative._();
   static final SignNative instance = SignNative._();
 
-  static bool get isSupported => Platform.isAndroid || Platform.isIOS;
+  static bool get isSupported =>
+      Platform.isAndroid || Platform.isIOS || _macOSHasSymbol;
+
+  // macOS app 静态链接了签名库；但 `flutter test` 等宿主进程同样跑在 macOS
+  // 上却没有这个符号，所以按符号是否真实存在来判断。
+  static final bool _macOSHasSymbol =
+      Platform.isMacOS && DynamicLibrary.process().providesSymbol('weeou_sign');
 
   late final _WeeouSignDart _sign = _load();
 
   _WeeouSignDart _load() {
     final DynamicLibrary lib;
-    if (Platform.isIOS) {
+    if (Platform.isIOS || Platform.isMacOS) {
       lib = DynamicLibrary.process();
     } else {
       lib = DynamicLibrary.open('libweeou_sign.so');

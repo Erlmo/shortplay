@@ -1,8 +1,17 @@
+import 'dart:async';
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
+import '../../services/device_profile.dart';
+import '../tv_side_panel.dart';
+
 import 'player_more_menu.dart';
+import 'player_video_surface.dart';
 
 export 'player_more_menu.dart' show PlayerMenuAction;
+
+part 'player_hg_overlay.dart';
 
 class PlayerControlsOverlay extends StatelessWidget {
   const PlayerControlsOverlay({
@@ -31,6 +40,7 @@ class PlayerControlsOverlay extends StatelessWidget {
     required this.onMenuAction,
     required this.onMenuOpened,
     required this.onMenuClosed,
+    this.onBottomPanelHeight,
     required this.canDownload,
     required this.sleepTimerActive,
     this.currentQuality = '',
@@ -47,6 +57,11 @@ class PlayerControlsOverlay extends StatelessWidget {
     this.durationMsNotifier,
     this.videoWidth = 0,
     this.videoHeight = 0,
+    this.dramaName = '',
+    this.totalEpisodes = 0,
+    this.dramaTags = const [],
+    this.dramaIntro = '',
+    this.onNextEpisode,
   });
 
   static const double _seekThumbRadius = 6;
@@ -76,6 +91,9 @@ class PlayerControlsOverlay extends StatelessWidget {
   final ValueChanged<PlayerMenuAction> onMenuAction;
   final VoidCallback onMenuOpened;
   final VoidCallback onMenuClosed;
+
+  /// 竖屏底部面板（“…”设置面板）的高度；0 表示已关闭。播放页据此缩放画面。
+  final ValueChanged<double>? onBottomPanelHeight;
   final bool canDownload;
   final bool sleepTimerActive;
   final String currentQuality;
@@ -91,6 +109,13 @@ class PlayerControlsOverlay extends StatelessWidget {
   final ValueNotifier<int>? durationMsNotifier;
   final int videoWidth;
   final int videoHeight;
+  final String dramaName;
+  final int totalEpisodes;
+  final List<String> dramaTags;
+  final String dramaIntro;
+
+  /// 横屏“下一集”按钮；最后一集时为 null。
+  final VoidCallback? onNextEpisode;
 
   @override
   Widget build(BuildContext context) {
@@ -105,6 +130,14 @@ class PlayerControlsOverlay extends StatelessWidget {
         (media.viewPadding.bottom + (screenWidth * 0.025).clamp(10.0, 16.0))
             .toDouble();
     final gradientExtraTop = (screenWidth * 0.02).clamp(6.0, 12.0).toDouble();
+
+    // 红果式布局：竖屏手机、手机横屏全屏。电视 / 桌面宽屏走下面的通用布局。
+    if (PlayerVideoSurface.usesPhoneLayout(media.size, isLandscapeFullScreen)) {
+      return _buildHgPortrait(context, media, textTheme);
+    }
+    if (isLandscapeFullScreen && !DeviceProfile.isTv) {
+      return _buildHgLandscape(context, media);
+    }
 
     return Stack(
       children: [
@@ -455,8 +488,15 @@ class _PlaybackProgressBar extends StatefulWidget {
     required this.onSeekChanged,
     required this.onSeekEnd,
     this.durationMsNotifier,
+    this.sliderOnly = false,
+    this.edgeToEdge = false,
   });
 
+  /// 只画一条细进度条（竖屏手机布局，放在画面与控件栏交界处）
+  final bool sliderOnly;
+
+  /// 轨道紧贴左右边缘（红果竖屏：进度条压在画面与选集栏交界处，通栏）
+  final bool edgeToEdge;
   final dynamic player;
   final ValueNotifier<int> positionMsNotifier;
   final ValueNotifier<bool> playingNotifier;
@@ -501,6 +541,10 @@ class _PlaybackProgressBarState extends State<_PlaybackProgressBar> {
             ? _dragValue
             : (_seekTarget ?? widget.positionMsNotifier.value.toDouble());
 
+        if (widget.sliderOnly) {
+          return _buildSlider(context, durationMs, displayPositionMs);
+        }
+
         return Row(
           children: [
             GestureDetector(
@@ -536,14 +580,21 @@ class _PlaybackProgressBarState extends State<_PlaybackProgressBar> {
     final max = durationMs > 0 ? durationMs.toDouble() : 1.0;
     final value = posMs.clamp(0.0, max);
 
+    final thin = widget.sliderOnly;
     return SliderTheme(
       data: SliderTheme.of(ctx).copyWith(
-        trackHeight: 3,
-        thumbShape: const RoundSliderThumbShape(
-          enabledThumbRadius: PlayerControlsOverlay._seekThumbRadius,
+        trackHeight: thin ? (_dragging ? 4 : 2) : 3,
+        trackShape: widget.edgeToEdge ? const _EdgeToEdgeTrackShape() : null,
+        thumbShape: RoundSliderThumbShape(
+          enabledThumbRadius: thin
+              ? (widget.edgeToEdge
+                  ? (_dragging ? 5 : 2.5)
+                  : (_dragging ? 7 : 4))
+              : PlayerControlsOverlay._seekThumbRadius,
         ),
-        overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-        activeTrackColor: Colors.white.withValues(alpha: 0.92),
+        overlayShape: RoundSliderOverlayShape(overlayRadius: thin ? 12 : 14),
+        activeTrackColor:
+            Colors.white.withValues(alpha: widget.edgeToEdge ? 0.6 : 0.92),
         inactiveTrackColor: Colors.white.withValues(alpha: 0.20),
         thumbColor: Colors.white,
         overlayColor: Colors.white.withValues(alpha: 0.12),
@@ -612,6 +663,79 @@ class _GlassButton extends StatelessWidget {
         ),
         child: child,
       ),
+    );
+  }
+}
+
+class _BareIconButton extends StatelessWidget {
+  const _BareIconButton({required this.icon, this.size = 22, this.onTap});
+
+  final IconData icon;
+  final double size;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Icon(
+          icon,
+          color: Colors.white,
+          size: size,
+          shadows: const [Shadow(color: Colors.black38, blurRadius: 6)],
+        ),
+      ),
+    );
+  }
+}
+
+/// 去掉 Slider 默认的左右留白（按拇指/光晕半径内缩），轨道占满整个宽度。
+class _EdgeToEdgeTrackShape extends RoundedRectSliderTrackShape {
+  const _EdgeToEdgeTrackShape();
+
+  @override
+  Rect getPreferredRect({
+    required RenderBox parentBox,
+    Offset offset = Offset.zero,
+    required SliderThemeData sliderTheme,
+    bool isEnabled = false,
+    bool isDiscrete = false,
+  }) {
+    final trackHeight = sliderTheme.trackHeight ?? 2;
+    final top = offset.dy + (parentBox.size.height - trackHeight) / 2;
+    return Rect.fromLTWH(offset.dx, top, parentBox.size.width, trackHeight);
+  }
+
+  /// 已播放部分和未播放部分同样粗（默认已播放会再粗 2px）
+  @override
+  void paint(
+    PaintingContext context,
+    Offset offset, {
+    required RenderBox parentBox,
+    required SliderThemeData sliderTheme,
+    required Animation<double> enableAnimation,
+    required TextDirection textDirection,
+    required Offset thumbCenter,
+    Offset? secondaryOffset,
+    bool isDiscrete = false,
+    bool isEnabled = false,
+    double additionalActiveTrackHeight = 2,
+  }) {
+    super.paint(
+      context,
+      offset,
+      parentBox: parentBox,
+      sliderTheme: sliderTheme,
+      enableAnimation: enableAnimation,
+      textDirection: textDirection,
+      thumbCenter: thumbCenter,
+      secondaryOffset: secondaryOffset,
+      isDiscrete: isDiscrete,
+      isEnabled: isEnabled,
+      additionalActiveTrackHeight: 0,
     );
   }
 }

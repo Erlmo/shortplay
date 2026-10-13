@@ -84,6 +84,10 @@ object CryptoNative {
     @JvmStatic external fun nativePlayerStreamSeek(handle: Long, offset: Long): Long
     @JvmStatic external fun nativePlayerStreamSize(handle: Long): Long
     @JvmStatic external fun nativePlayerStreamClose(handle: Long)
+    /** Park (false) / unpark (true) a stream; see sp_stream_set_active. */
+    @JvmStatic external fun nativePlayerStreamSetActive(handle: Long, active: Boolean)
+    /** Non-blocking: stop the producer and wake a blocked reader. */
+    @JvmStatic external fun nativePlayerStreamAbort(handle: Long)
 }
 
 /**

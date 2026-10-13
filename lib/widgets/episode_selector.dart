@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../models/episode.dart';
+import 'tv_tap.dart';
+import '../services/device_profile.dart';
 
 class EpisodeSelector extends StatefulWidget {
   const EpisodeSelector({
@@ -10,6 +12,9 @@ class EpisodeSelector extends StatefulWidget {
     required this.onSelect,
     this.selectedIndexes,
     this.disabledLabels = const {},
+    this.autofocusActive = true,
+    this.horizontalPadding = 20,
+    this.dark = false,
   });
 
   final List<Episode> episodes;
@@ -19,6 +24,13 @@ class EpisodeSelector extends StatefulWidget {
   /// 非 null 时复用相同分页与网格，改为多选下载模式。
   final Set<int>? selectedIndexes;
   final Map<int, String> disabledLabels;
+
+  /// 电视/桌面上打开时是否自动选中当前集（详情页嵌入时关闭，让“播放”按钮先得焦点）。
+  final bool autofocusActive;
+  final double horizontalPadding;
+
+  /// 深色样式（电视侧边面板，和播放设置面板统一）
+  final bool dark;
 
   @override
   State<EpisodeSelector> createState() => _EpisodeSelectorState();
@@ -36,7 +48,8 @@ class _EpisodeSelectorState extends State<EpisodeSelector> {
   @override
   void initState() {
     super.initState();
-    _currentTabIndex = (widget.activeIndex / _pageSize).floor();
+    _currentTabIndex =
+        (widget.activeIndex.clamp(0, 1 << 30) / _pageSize).floor();
 
     // 延迟一帧滚动 Tab 到可见区域
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -48,7 +61,8 @@ class _EpisodeSelectorState extends State<EpisodeSelector> {
   void didUpdateWidget(EpisodeSelector oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.activeIndex != widget.activeIndex) {
-      final newTabIndex = (widget.activeIndex / _pageSize).floor();
+      final newTabIndex =
+          (widget.activeIndex.clamp(0, 1 << 30) / _pageSize).floor();
       if (newTabIndex != _currentTabIndex) {
         setState(() {
           _currentTabIndex = newTabIndex;
@@ -102,7 +116,8 @@ class _EpisodeSelectorState extends State<EpisodeSelector> {
             margin: const EdgeInsets.fromLTRB(0, 4, 0, 12),
             child: ListView.separated(
               controller: _tabScrollController,
-              padding: const EdgeInsets.symmetric(horizontal: 20),
+              padding:
+                  EdgeInsets.symmetric(horizontal: widget.horizontalPadding),
               scrollDirection: Axis.horizontal,
               itemCount: totalTabs,
               separatorBuilder: (_, __) => const SizedBox(width: 8),
@@ -119,7 +134,9 @@ class _EpisodeSelectorState extends State<EpisodeSelector> {
                     curve: Curves.easeOut,
                     decoration: BoxDecoration(
                       color: isSelected
-                          ? const Color(0xFF171717)
+                          ? (widget.dark
+                              ? Colors.white
+                              : const Color(0xFF171717))
                           : Colors.transparent, // 选中用深邃黑
                       borderRadius: BorderRadius.circular(20),
                       boxShadow: isSelected
@@ -146,8 +163,10 @@ class _EpisodeSelectorState extends State<EpisodeSelector> {
                             '$tabStart-$displayEnd',
                             style: TextStyle(
                               color: isSelected
-                                  ? Colors.white
-                                  : const Color(0xFF757575),
+                                  ? (widget.dark ? Colors.black : Colors.white)
+                                  : (widget.dark
+                                      ? Colors.white60
+                                      : const Color(0xFF757575)),
                               fontWeight: isSelected
                                   ? FontWeight.w600
                                   : FontWeight.w500,
@@ -165,7 +184,8 @@ class _EpisodeSelectorState extends State<EpisodeSelector> {
         Expanded(
           child: GridView.builder(
             physics: const BouncingScrollPhysics(),
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+            padding: EdgeInsets.fromLTRB(
+                widget.horizontalPadding, 0, widget.horizontalPadding, 12),
             gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
               crossAxisCount: 6,
               mainAxisSpacing: 10,
@@ -193,16 +213,22 @@ class _EpisodeSelectorState extends State<EpisodeSelector> {
                   curve: Curves.easeOut,
                   decoration: BoxDecoration(
                     gradient: isActive
-                        ? const LinearGradient(
+                        ? LinearGradient(
                             begin: Alignment.topLeft,
                             end: Alignment.bottomRight,
-                            colors: [
-                              Color(0xFF333333), // 略浅的黑
-                              Color(0xFF111111), // 深黑
-                            ],
+                            colors: widget.dark
+                                ? const [Color(0xFFFF2E55), Color(0xFFFF5656)]
+                                : const [
+                                    Color(0xFF333333), // 略浅的黑
+                                    Color(0xFF111111), // 深黑
+                                  ],
                           )
                         : null,
-                    color: isActive ? null : const Color(0xFFF3F4F6), // 浅灰背景
+                    color: isActive
+                        ? null
+                        : (widget.dark
+                            ? Colors.white.withAlpha(22)
+                            : const Color(0xFFF3F4F6)), // 浅灰背景
                     borderRadius: BorderRadius.circular(8),
                     boxShadow: isActive
                         ? [
@@ -222,11 +248,17 @@ class _EpisodeSelectorState extends State<EpisodeSelector> {
                   ),
                   child: Material(
                     color: Colors.transparent,
-                    child: InkWell(
+                    child: TvTap(
+                      ink: true,
+                      // 电视上打开选集时默认选中当前集
+                      autofocus: isActive &&
+                          widget.autofocusActive &&
+                          DeviceProfile.usesFocusUi,
                       onTap: disabledLabel == null
                           ? () => widget.onSelect(globalIndex)
                           : null,
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: 8,
+                      ringColor: widget.dark ? Colors.white : null,
                       child: Stack(
                         alignment: Alignment.center,
                         children: [
@@ -235,7 +267,9 @@ class _EpisodeSelectorState extends State<EpisodeSelector> {
                             style: TextStyle(
                               color: isActive
                                   ? const Color(0xFFFAFAFA)
-                                  : const Color(0xFF4B5563),
+                                  : (widget.dark
+                                      ? Colors.white70
+                                      : const Color(0xFF4B5563)),
                               fontWeight:
                                   isActive ? FontWeight.w700 : FontWeight.w600,
                               fontSize: 15,

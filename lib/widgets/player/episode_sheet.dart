@@ -4,6 +4,9 @@ import 'package:flutter/material.dart';
 import '../../models/episode.dart';
 import '../../services/download_service.dart';
 import '../episode_selector.dart';
+import '../../services/device_profile.dart';
+import '../tv_side_panel.dart';
+import 'hg_episode_panel.dart';
 
 Future<void> showPlayerEpisodeSheet({
   required BuildContext context,
@@ -12,7 +15,45 @@ Future<void> showPlayerEpisodeSheet({
   required List<Episode> episodes,
   required ValueListenable<int> episodeNotifier,
   required ValueChanged<int> onSelectEpisode,
+  String cover = '',
+  String intro = '',
+  String status = '',
 }) {
+  // 手机、平板、桌面（macOS 等）：红果选集面板；宽窗口 / 横屏全屏用右侧侧栏。
+  // 只有电视保留遥控器焦点版的侧边面板。
+  if (!DeviceProfile.isTv) {
+    final size = MediaQuery.of(context).size;
+    return showHgEpisodePanel(
+      context: context,
+      landscape: isLandscapeFullScreen || size.width > size.height,
+      dramaName: dramaName,
+      cover: cover,
+      intro: intro,
+      status: status.isEmpty ? '共${episodes.length}集' : status,
+      episodes: episodes,
+      episodeNotifier: episodeNotifier,
+      onSelectEpisode: onSelectEpisode,
+    );
+  }
+  // 电视：右侧全高深色面板（遥控器焦点）
+  if (useSidePanel(context) || isLandscapeFullScreen) {
+    return showSidePanel<void>(
+      context: context,
+      color: _darkPanel,
+      barrierColor: Colors.black.withAlpha(40),
+      builder: (context) => _EpisodeSheetPanel(
+        height: double.infinity,
+        dramaName: dramaName,
+        episodes: episodes,
+        selector: _playbackSelector(
+            context, episodes, episodeNotifier, onSelectEpisode,
+            dark: true),
+        titleVerticalPadding: 24,
+        square: true,
+      ),
+    );
+  }
+
   if (isLandscapeFullScreen) {
     return showDialog<void>(
       context: context,
@@ -64,6 +105,9 @@ Future<void> showPlayerEpisodeSheet({
   );
 }
 
+// 电视侧边面板的深色底，与播放设置面板（TvPlayerSettingsPanel）一致
+const _darkPanel = Color(0xFF141414);
+
 class _EpisodeSheetPanel extends StatelessWidget {
   const _EpisodeSheetPanel({
     required this.height,
@@ -76,6 +120,7 @@ class _EpisodeSheetPanel extends StatelessWidget {
     this.bottomPadding = 0,
     this.titleVerticalPadding = 12,
     this.showHandle = false,
+    this.square = false,
   });
 
   final double? width;
@@ -83,6 +128,9 @@ class _EpisodeSheetPanel extends StatelessWidget {
   final double bottomPadding;
   final double titleVerticalPadding;
   final bool showHandle;
+
+  /// 侧边面板里使用：深色、不要圆角和阴影
+  final bool square;
   final String dramaName;
   final List<Episode> episodes;
   final Widget selector;
@@ -94,17 +142,21 @@ class _EpisodeSheetPanel extends StatelessWidget {
     return Container(
       width: width,
       height: height,
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.96),
-        borderRadius: BorderRadius.circular(24),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: width == null ? 0.1 : 0.2),
-            blurRadius: width == null ? 10 : 20,
-            offset: width == null ? const Offset(0, -2) : const Offset(0, 10),
-          ),
-        ],
-      ),
+      decoration: square
+          ? const BoxDecoration(color: _darkPanel)
+          : BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.96),
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [
+                BoxShadow(
+                  color:
+                      Colors.black.withValues(alpha: width == null ? 0.1 : 0.2),
+                  blurRadius: width == null ? 10 : 20,
+                  offset:
+                      width == null ? const Offset(0, -2) : const Offset(0, 10),
+                ),
+              ],
+            ),
       child: Padding(
         padding: EdgeInsets.only(bottom: bottomPadding),
         child: Column(
@@ -122,6 +174,7 @@ class _EpisodeSheetPanel extends StatelessWidget {
                 ),
               ),
             _EpisodeSheetHeader(
+              dark: square,
               dramaName: dramaName,
               episodeCount: episodes.length,
               verticalPadding: titleVerticalPadding,
@@ -142,8 +195,10 @@ class _EpisodeSheetHeader extends StatelessWidget {
     required this.episodeCount,
     required this.verticalPadding,
     this.subtitle,
+    this.dark = false,
   });
 
+  final bool dark;
   final String dramaName;
   final int episodeCount;
   final double verticalPadding;
@@ -163,9 +218,9 @@ class _EpisodeSheetHeader extends StatelessWidget {
                   dramaName,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Color(0xFF1A1A1A),
-                    fontSize: 18,
+                  style: TextStyle(
+                    color: dark ? Colors.white : const Color(0xFF1A1A1A),
+                    fontSize: dark ? 22 : 18,
                     fontWeight: FontWeight.w800,
                   ),
                 ),
@@ -186,9 +241,10 @@ class _EpisodeSheetHeader extends StatelessWidget {
                         subtitle ?? '更新至 $episodeCount 集',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Color(0xFF757575),
-                          fontSize: 12,
+                        style: TextStyle(
+                          color:
+                              dark ? Colors.white54 : const Color(0xFF757575),
+                          fontSize: dark ? 14 : 12,
                           fontWeight: FontWeight.w500,
                         ),
                       ),
@@ -199,26 +255,30 @@ class _EpisodeSheetHeader extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 12),
-          Material(
-            color: Colors.transparent,
-            child: InkWell(
-              onTap: () => Navigator.pop(context),
-              borderRadius: BorderRadius.circular(20),
-              child: Container(
-                width: 32,
-                height: 32,
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.05),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  Icons.close_rounded,
-                  color: Color(0xFF424242),
-                  size: 18,
+          if (dark)
+            const Text('按返回键关闭',
+                style: TextStyle(color: Colors.white38, fontSize: 13))
+          else
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () => Navigator.pop(context),
+                borderRadius: BorderRadius.circular(20),
+                child: Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.05),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.close_rounded,
+                    color: Color(0xFF424242),
+                    size: 18,
+                  ),
                 ),
               ),
             ),
-          ),
         ],
       ),
     );
@@ -226,10 +286,12 @@ class _EpisodeSheetHeader extends StatelessWidget {
 }
 
 Widget _playbackSelector(BuildContext context, List<Episode> episodes,
-    ValueListenable<int> notifier, ValueChanged<int> onSelect) {
+    ValueListenable<int> notifier, ValueChanged<int> onSelect,
+    {bool dark = false}) {
   return ValueListenableBuilder<int>(
     valueListenable: notifier,
     builder: (context, index, _) => EpisodeSelector(
+      dark: dark,
       episodes: episodes,
       activeIndex: index,
       onSelect: (index) {

@@ -42,11 +42,22 @@ class DanmakuService {
   }
 
   Future<void> ensureLoadedUpTo(int positionMs) async {
-    if (!_hasMore || _isLoading || _groupId.isEmpty) return;
+    if (_isLoading || _groupId.isEmpty) return;
+    // 红果 ON_SEEK_FINISH：拖到还没加载的位置时，直接从该位置所在的 30 秒窗口请求，
+    // 而不是从上一个窗口一段段追上去（追的过程中那段时间的弹幕都会错过）。
+    if (positionMs > _nextStartOffset + _windowMs) {
+      _nextStartOffset = positionMs ~/ _windowMs * _windowMs;
+      _cursor = '';
+      _hasMore = _nextStartOffset < _durationMs;
+    }
+    if (!_hasMore) return;
+    // 提前 15 秒预取下一段（红果 ON_PROGRESS_UPDATE）
     if (positionMs + 15000 > _nextStartOffset) {
       await _loadNextBatch();
     }
   }
+
+  static const _windowMs = 30000;
 
   Future<void> _loadNextBatch() async {
     if (_isLoading || !_hasMore) return;
@@ -61,7 +72,7 @@ class DanmakuService {
       _nextStartOffset = response.endOffsetMs;
 
       if (_nextStartOffset <= prevOffset) {
-        _nextStartOffset = prevOffset + 30000;
+        _nextStartOffset = prevOffset + _windowMs;
       }
       if (_nextStartOffset >= _durationMs) {
         _hasMore = false;
@@ -71,14 +82,22 @@ class DanmakuService {
       final batch = response.comments
         ..sort((a, b) => a.offsetMs.compareTo(b.offsetMs));
 
-      if (batch.isNotEmpty && windowMs > 0) {
-        final interval = windowMs / batch.length;
-        for (int i = 0; i < batch.length; i++) {
-          batch[i].fireAtMs = prevOffset + (interval * i).round();
+      // 红果：每条弹幕按它自己的 offset_time（发送时所在的视频时间点，毫秒）出现。
+      // 只有接口没给时间点的条目，才在本窗口内均匀铺开兜底。
+      final missing = batch.where((c) => c.offsetMs <= 0).toList();
+      for (final c in batch) {
+        if (c.offsetMs > 0) c.fireAtMs = c.offsetMs;
+      }
+      if (missing.isNotEmpty && windowMs > 0) {
+        final interval = windowMs / missing.length;
+        for (int i = 0; i < missing.length; i++) {
+          missing[i].fireAtMs = prevOffset + (interval * i).round();
         }
       }
 
-      _comments.addAll(batch);
+      final known = {for (final c in _comments) c.id};
+      _comments.addAll(batch.where((c) => c.id.isEmpty || known.add(c.id)));
+      _comments.sort((a, b) => a.fireAtMs.compareTo(b.fireAtMs));
 
       debugPrint(
         '[DANMAKU] loaded ${batch.length}, '

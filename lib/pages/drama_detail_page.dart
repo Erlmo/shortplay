@@ -11,6 +11,9 @@ import '../services/playback_history_store.dart';
 import '../services/theater_video_preload_manager.dart';
 import '../widgets/app_notice.dart';
 import 'player_page.dart';
+import '../widgets/tv_tap.dart';
+import '../services/device_profile.dart';
+import '../widgets/episode_selector.dart';
 
 class DramaDetailPage extends StatefulWidget {
   const DramaDetailPage({
@@ -111,7 +114,8 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
     }
   }
 
-  void _startPlay(BuildContext context, {bool resume = false}) {
+  void _startPlay(BuildContext context,
+      {bool resume = false, int? episodeIndex}) {
     Navigator.of(context)
         .push(
       MaterialPageRoute(
@@ -119,7 +123,8 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
           drama: drama,
           apiClient: apiClient,
           downloadService: widget.downloadService,
-          initialEpisodeIndex: resume ? _lastEpisodeIndex : null,
+          initialEpisodeIndex:
+              episodeIndex ?? (resume ? _lastEpisodeIndex : null),
           initialPositionMs: resume ? _lastPositionMs : null,
           prefetchedEpisodes: _prefetchedEpisodes,
           preloadManager: _detailPreloadManager,
@@ -233,10 +238,17 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
       );
     }
 
+    if (DeviceProfile.usesFocusUi && size.width > size.height) {
+      return _buildWideLayout(context);
+    }
+
     return Scaffold(
       backgroundColor: Colors.white,
       body: CustomScrollView(
         physics: const BouncingScrollPhysics(),
+        // 电视/桌面：预先构建屏幕外的按钮，方向键才能导航过去、
+        // “播放”按钮的 autofocus 也才能生效
+        cacheExtent: DeviceProfile.usesFocusUi ? 3000 : null,
         slivers: [
           _buildSliverAppBar(context, size),
           SliverPadding(
@@ -261,12 +273,15 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
 
   Widget _buildSliverAppBar(BuildContext context, Size size) {
     return SliverAppBar(
-      expandedHeight: size.width * 0.9, // 缩小图片占比
+      // 缩小图片占比；横屏（电视/桌面宽窗口）时按高度封顶，不然封面占满整屏
+      expandedHeight:
+          size.width > size.height ? size.height * 0.5 : size.width * 0.9,
       pinned: true,
       backgroundColor: Colors.white,
       elevation: 0,
       scrolledUnderElevation: 0,
-      leading: GestureDetector(
+      leading: TvTap(
+        borderRadius: 24,
         onTap: () => Navigator.of(context).pop(),
         child: Container(
           margin: const EdgeInsets.all(8),
@@ -485,9 +500,12 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
             ),
             child: Material(
               color: Colors.transparent,
-              child: InkWell(
+              child: TvTap(
+                ink: true,
+                // 电视上进详情页默认选中“播放”，按 OK 直接开播
+                autofocus: DeviceProfile.isTv,
                 onTap: () => _startPlay(context),
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: 12,
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
@@ -522,9 +540,10 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
             ),
             child: Material(
               color: Colors.transparent,
-              child: InkWell(
+              child: TvTap(
+                ink: true,
                 onTap: _addingDownloads ? null : () => _downloadAll(context),
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: 12,
                 child: _addingDownloads
                     ? const Center(child: CupertinoActivityIndicator())
                     : const Icon(
@@ -596,6 +615,123 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
           ),
         ),
       ],
+    );
+  }
+
+  // ─── 电视 / 桌面宽屏布局 ───────────────────────────────────────────────
+  // 左侧竖版海报，右侧信息 + 播放按钮 + 选集网格。全部内容一屏放下，
+  // 方向键：播放按钮默认选中，按“下”进入选集，按返回键退出。
+  Widget _buildWideLayout(BuildContext context) {
+    final cover = drama.cover.isNotEmpty
+        ? Image.network(
+            drama.cover,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => _buildGradientBg(),
+          )
+        : _buildGradientBg();
+
+    return Scaffold(
+      backgroundColor: Colors.white,
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(48, 32, 48, 24),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              AspectRatio(
+                aspectRatio: 3 / 4,
+                child: Hero(
+                  tag: 'drama_cover_${drama.id}',
+                  child: Container(
+                    clipBehavior: Clip.antiAlias,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withAlpha(40),
+                          blurRadius: 24,
+                          offset: const Offset(0, 10),
+                        ),
+                      ],
+                    ),
+                    child: cover,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 40),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildHeaderInfo(context),
+                    if (drama.intro.isNotEmpty) ...[
+                      const SizedBox(height: 16),
+                      Text(
+                        drama.intro,
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Color(0xFF424245),
+                          fontSize: 15,
+                          height: 1.6,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 20),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 520),
+                      child: _buildActionButtons(context),
+                    ),
+                    const SizedBox(height: 20),
+                    if (_prefetchedEpisodes != null)
+                      Expanded(child: _buildWideEpisodeGrid()),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWideEpisodeGrid() {
+    return FutureBuilder<TheaterEpisodesResult>(
+      future: _prefetchedEpisodes,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) return const SizedBox.shrink();
+        if (!snapshot.hasData) {
+          return const Center(child: CupertinoActivityIndicator());
+        }
+        final episodes = snapshot.data!.toEpisodes();
+        if (episodes.isEmpty) return const SizedBox.shrink();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Padding(
+              padding: EdgeInsets.only(bottom: 8),
+              child: Text(
+                '选集',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF1D1D1F),
+                ),
+              ),
+            ),
+            Expanded(
+              child: EpisodeSelector(
+                episodes: episodes,
+                activeIndex: _lastEpisodeIndex ?? -1,
+                onSelect: (index) => _startPlay(context, episodeIndex: index),
+                // 播放按钮已 autofocus，这里不要抢焦点
+                autofocusActive: false,
+                horizontalPadding: 0,
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 

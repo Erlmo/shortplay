@@ -54,12 +54,43 @@ class TheaterVideoPreloadManager {
   }
 
   final Set<int> _preloadingEpisodeIndexes = {};
-  int _activePrewarmCount = 0;
-  static const _maxConcurrentPrewarms = 1;
+
+  // 已解析的播放信息（地址 + key），预加载与正式播放共用，保证 native
+  // 预热缓存的 key（CDN url）前后一致。
+  final Map<String, _ResolvedTheaterVideo> _resolved = {};
+
+  // 已完成的预热级别（按 videoId）。以前用 _preloadedUrls 判断“已预加载”，
+  // 但地址解析成功 ≠ 预热完成：预热被跳过/失败后这一集再也不会重试，
+  // 只做过 header-only 的集也永远拿不到 mdat 种子。
+  final Set<String> _fullPrewarmed = {};
+  final Set<String> _headerPrewarmed = {};
+
+  // 预热串行队列：同一时刻只跑一个 native prewarm（弱网下不占满连接池、
+  // 不和当前集抢带宽），但任务是排队而不是丢弃——以前忙时直接 return，
+  // 这一集的预热就永久丢失了。N+1 的预热在 prepareNextPlayer 里直接调用、
+  // 不进这个队列，相当于更高优先级。
+  Future<void> _prewarmTail = Future<void>.value();
+  int _generation = 0;
+
+  Future<int> _enqueuePrewarm(Future<int> Function() task) {
+    final completer = Completer<int>();
+    _prewarmTail = _prewarmTail.then((_) async {
+      try {
+        completer.complete(await task());
+      } catch (e, s) {
+        completer.completeError(e, s);
+      }
+    });
+    return completer.future;
+  }
 
   void clear() {
+    _generation++;
     _preloadedUrls.clear();
     _sourceUrls.clear();
+    _resolved.clear();
+    _fullPrewarmed.clear();
+    _headerPrewarmed.clear();
     _preloadingEpisodeIndexes.clear();
   }
 
@@ -73,29 +104,36 @@ class TheaterVideoPreloadManager {
     return videoId.isNotEmpty && _preloadedUrls.containsKey(videoId);
   }
 
+  /// 解析（或复用已解析的）播放信息。首次结果被固定下来：之后不会再用
+  /// 新签名的 CDN url 覆盖，否则 native 预热缓存（以 CDN url 为 key）会失配。
+  Future<_ResolvedTheaterVideo> _resolveCached(
+    String videoId, {
+    int maxRetries = 3,
+  }) async {
+    final cached = _resolved[videoId];
+    if (cached != null) return cached;
+    final fresh = await _resolveVideoWithRetry(videoId, maxRetries: maxRetries);
+    final kept = _resolved.putIfAbsent(videoId, () => fresh);
+    _preloadedUrls.putIfAbsent(videoId, () => kept.proxyUrl);
+    _sourceUrls.putIfAbsent(videoId, () => kept.sourceUrl);
+    return kept;
+  }
+
   Future<String> resolvePlayUrl(
     String videoId, {
     required int episodeIndex,
     int maxRetries = 3,
   }) async {
-    final cachedUrl = _preloadedUrls[videoId];
-    if (cachedUrl != null) {
+    if (_resolved.containsKey(videoId)) {
       debugPrint('使用预加载缓存，秒开');
-      return cachedUrl;
     }
-
-    final resolved =
-        await _resolveVideoWithRetry(videoId, maxRetries: maxRetries);
-    _preloadedUrls[videoId] = resolved.proxyUrl;
-    // putIfAbsent：保留第一次存入的 sourceUrl（来自 preloadEpisode /
-    // preloadEpisodeHeaderOnly），不让后续 resolvePlayUrl 覆盖它。
-    // native prewarm 缓存以 CDN URL 为 key，覆盖后 seedMdat 会用新 URL
-    // 而 prewarm 缓存里存的是旧 URL，导致 prewarmSeedMdat 返回非零。
-    _sourceUrls.putIfAbsent(videoId, () => resolved.sourceUrl);
+    final resolved = await _resolveCached(videoId, maxRetries: maxRetries);
     debugPrint('播放地址就绪');
     return resolved.proxyUrl;
   }
 
+  /// 完整预热：文件头 + 样本表 + mdat 种子。对只做过 header-only 的集，
+  /// native 侧会补上 mdat 种子。
   Future<void> preloadEpisode({
     required List<Episode> episodes,
     required int currentIndex,
@@ -103,90 +141,79 @@ class TheaterVideoPreloadManager {
     required bool Function() isStillCurrent,
     VoidCallback? onNextEpisodeReady,
   }) async {
-    if (targetIndex < 0 || targetIndex >= episodes.length) return;
-    if (_preloadingEpisodeIndexes.contains(targetIndex)) return;
-
-    final videoId = episodes[targetIndex].url.trim();
-    if (videoId.isEmpty || _preloadedUrls.containsKey(videoId)) return;
-
-    _preloadingEpisodeIndexes.add(targetIndex);
-    try {
-      if (!isStillCurrent()) return;
-      final resolved = await _resolveVideoWithRetry(videoId);
-      if (!isStillCurrent()) return;
-
-      _preloadedUrls[videoId] = resolved.proxyUrl;
-      // putIfAbsent：保留第一次存入的 sourceUrl（来自 preloadEpisode /
-      // preloadEpisodeHeaderOnly），不让后续 resolvePlayUrl 覆盖它。
-      // native prewarm 缓存以 CDN URL 为 key，覆盖后 seedMdat 会用新 URL
-      // 而 prewarm 缓存里存的是旧 URL，导致 prewarmSeedMdat 返回非零。
-      _sourceUrls.putIfAbsent(videoId, () => resolved.sourceUrl);
-      // Prewarm the native crypto:// pipeline so the next cb_open skips the
-      // ~300-680ms box scan + header fetch + sample parse (header + sample
-      // table get cached in the C core, keyed by CDN url).
-      if (!isStillCurrent()) return;
-      // 限制同时进行的 prewarm 数量，避免弱网下占满连接池影响当前集播放
-      if (_activePrewarmCount >= _maxConcurrentPrewarms) return;
-      _activePrewarmCount++;
-      try {
-        final status = await CryptoNativeChannel.instance
-            .prewarm(resolved.sourceUrl, resolved.key);
-        if (status != 0) {
-          debugPrint('native prewarm 返回非零状态: $status (第${targetIndex + 1}集)');
-        }
-      } finally {
-        _activePrewarmCount--;
-      }
-      debugPrint('剧集数据预缓存完成: 第${targetIndex + 1}集');
-
-      if (targetIndex == currentIndex + 1) {
-        onNextEpisodeReady?.call();
-      }
-    } catch (error) {
-      debugPrint('第${targetIndex + 1}集预缓存失败: $error');
-    } finally {
-      _preloadingEpisodeIndexes.remove(targetIndex);
+    final ok = await _prewarmEpisode(
+      episodes: episodes,
+      targetIndex: targetIndex,
+      isStillCurrent: isStillCurrent,
+      headerOnly: false,
+    );
+    if (ok && targetIndex == currentIndex + 1) {
+      onNextEpisodeReady?.call();
     }
   }
 
-  // 带重试的视频解析：首集播放与预加载共用，消除“首集有重试、预加载无重试”
-  // 的不对称——慢网下预加载也能像首集一样重试兜底，不会一次超时就放弃。
+  /// 只预热文件头 + 样本表（不拉 mdat），用于更远的集。
   Future<void> preloadEpisodeHeaderOnly({
     required List<Episode> episodes,
     required int currentIndex,
     required int targetIndex,
     required bool Function() isStillCurrent,
   }) async {
-    if (targetIndex < 0 || targetIndex >= episodes.length) return;
-    if (_preloadingEpisodeIndexes.contains(targetIndex)) return;
+    await _prewarmEpisode(
+      episodes: episodes,
+      targetIndex: targetIndex,
+      isStillCurrent: isStillCurrent,
+      headerOnly: true,
+    );
+  }
+
+  Future<bool> _prewarmEpisode({
+    required List<Episode> episodes,
+    required int targetIndex,
+    required bool Function() isStillCurrent,
+    required bool headerOnly,
+  }) async {
+    if (targetIndex < 0 || targetIndex >= episodes.length) return false;
+    if (_preloadingEpisodeIndexes.contains(targetIndex)) return false;
 
     final videoId = episodes[targetIndex].url.trim();
-    if (videoId.isEmpty || _preloadedUrls.containsKey(videoId)) return;
+    if (videoId.isEmpty) return false;
+    final done = headerOnly ? _headerPrewarmed : _fullPrewarmed;
+    if (done.contains(videoId)) return true;
+
+    final label = headerOnly ? '剧集头部数据预缓存' : '剧集数据预缓存';
+    final gen = _generation;
+    bool stale() => !isStillCurrent() || gen != _generation;
 
     _preloadingEpisodeIndexes.add(targetIndex);
     try {
-      if (!isStillCurrent()) return;
-      final resolved = await _resolveVideoWithRetry(videoId);
-      if (!isStillCurrent()) return;
+      if (stale()) return false;
+      final resolved = await _resolveCached(videoId);
+      if (stale()) return false;
 
-      _preloadedUrls[videoId] = resolved.proxyUrl;
-      _sourceUrls.putIfAbsent(videoId, () => resolved.sourceUrl);
-      if (!isStillCurrent()) return;
-      if (_activePrewarmCount >= _maxConcurrentPrewarms) return;
-      _activePrewarmCount++;
-      try {
-        final status = await CryptoNativeChannel.instance
-            .prewarmHeaderOnly(resolved.sourceUrl, resolved.key);
-        if (status != 0) {
-          debugPrint(
-              'native prewarmHeaderOnly 返回非零: $status (第${targetIndex + 1}集)');
-        }
-      } finally {
-        _activePrewarmCount--;
+      final status = await _enqueuePrewarm(() async {
+        // 排队期间可能已离开页面或切换清晰度，过期任务直接跳过。
+        if (stale()) return -2;
+        return headerOnly
+            ? CryptoNativeChannel.instance
+                .prewarmHeaderOnly(resolved.sourceUrl, resolved.key)
+            : CryptoNativeChannel.instance
+                .prewarm(resolved.sourceUrl, resolved.key);
+      });
+      if (status == -2) return false;
+      if (status != 0) {
+        debugPrint('$label 返回非零状态: $status (第${targetIndex + 1}集)');
+        return false;
       }
-      debugPrint('剧集头部数据预缓存完成: 第${targetIndex + 1}集');
+      if (gen == _generation) {
+        _headerPrewarmed.add(videoId);
+        if (!headerOnly) _fullPrewarmed.add(videoId);
+      }
+      debugPrint('$label完成: 第${targetIndex + 1}集');
+      return true;
     } catch (error) {
-      debugPrint('预加载头部失败 第${targetIndex + 1}集: $error');
+      debugPrint('$label失败 第${targetIndex + 1}集: $error');
+      return false;
     } finally {
       _preloadingEpisodeIndexes.remove(targetIndex);
     }

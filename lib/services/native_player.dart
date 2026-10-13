@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' show Size, ValueNotifier;
 
 class NativePlayer {
   static const _channel = MethodChannel('shortplay/native_player');
@@ -43,6 +44,11 @@ class NativePlayer {
   bool get firstFrameRendered => _firstFrameRendered;
   int get videoWidth => _videoWidth;
   int get videoHeight => _videoHeight;
+
+  /// 视频显示尺寸。原生侧上报后立即更新，画面和横屏按钮据此重建；
+  /// 只读 [videoWidth]/[videoHeight] 字段的话，要等下一次无关的 setState
+  /// 才会生效（横屏片源会先按 9:16 被拉伸一会儿）。
+  final ValueNotifier<Size> videoSizeNotifier = ValueNotifier(Size.zero);
 
   final _positionCtrl = StreamController<Duration>.broadcast();
   final _durationCtrl = StreamController<Duration>.broadcast();
@@ -109,6 +115,13 @@ class NativePlayer {
     });
   }
 
+  /// 停放(false)/激活(true)底层加密流。停放后只再预取约 1MB，暂停中的
+  /// 上一集/下一集播放器不再和当前集抢带宽；激活后恢复正常预读。
+  Future<void> setActive(bool active) async {
+    if (_disposed || _playerId == null) return;
+    _channel.invokeMethod('setActive', {'id': _playerId, 'active': active});
+  }
+
   static Future<void> setKeepScreenOn(bool on) async {
     _channel.invokeMethod('setKeepScreenOn', {'on': on});
   }
@@ -126,6 +139,8 @@ class NativePlayer {
     _completedCtrl.close();
     _bufferingCtrl.close();
     _firstFrameCtrl.close();
+    // videoSizeNotifier 不 dispose：页面上的 ValueListenableBuilder 可能晚于
+    // 播放器释放才移除监听，交给 GC 回收即可。
   }
 
   // ─── 事件处理 ──────────────────────────────────────────────────────────
@@ -175,6 +190,8 @@ class NativePlayer {
         if (_disposed) return;
         _videoWidth = event['width'] as int;
         _videoHeight = event['height'] as int;
+        videoSizeNotifier.value =
+            Size(_videoWidth.toDouble(), _videoHeight.toDouble());
     }
   }
 }

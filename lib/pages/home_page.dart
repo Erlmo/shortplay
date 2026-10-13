@@ -12,6 +12,8 @@ import 'drama_detail_page.dart';
 import 'global_search_page.dart';
 import 'play_history_page.dart';
 import 'settings_page.dart';
+import '../widgets/tv_tap.dart';
+import '../services/device_profile.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({
@@ -125,15 +127,19 @@ class _HomePageState extends State<HomePage> {
               label: '历史',
             ),
             BottomNavigationBarItem(
-              icon: const Icon(
-                Icons.video_library_outlined,
-                size: 28,
-                color: Color(0xFF999999),
+              icon: SvgPicture.asset(
+                'assets/icons/nav_cache.svg',
+                width: 28,
+                height: 28,
+                colorFilter: const ColorFilter.mode(
+                  Color(0xFF999999),
+                  BlendMode.srcIn,
+                ),
               ),
-              activeIcon: const Icon(
-                Icons.video_library_rounded,
-                size: 28,
-                color: Colors.black,
+              activeIcon: SvgPicture.asset(
+                'assets/icons/nav_cache_active.svg',
+                width: 28,
+                height: 28,
               ),
               label: '缓存',
             ),
@@ -521,7 +527,8 @@ class _DramaListTabState extends State<_DramaListTab>
                 final filter = _filters[index];
                 final isSelected = _filterMap[filter] == _currentType;
                 return Center(
-                  child: GestureDetector(
+                  child: TvTap(
+                    borderRadius: 20,
                     onTap: () => _onFilterChanged(filter),
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 200),
@@ -581,13 +588,20 @@ class _DramaListTabState extends State<_DramaListTab>
                             : EdgeInsets.zero,
                         sliver: widget.useGridView
                             ? SliverGrid(
-                                gridDelegate:
-                                    const SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount: 2,
-                                  childAspectRatio: 0.68,
-                                  crossAxisSpacing: 8,
-                                  mainAxisSpacing: 8,
-                                ),
+                                gridDelegate: DeviceProfile.usesFocusUi
+                                    // 电视/桌面：按宽度自适应列数，避免两列海报被拉满整屏
+                                    ? const SliverGridDelegateWithMaxCrossAxisExtent(
+                                        maxCrossAxisExtent: 200,
+                                        childAspectRatio: 0.68,
+                                        crossAxisSpacing: 16,
+                                        mainAxisSpacing: 16,
+                                      )
+                                    : const SliverGridDelegateWithFixedCrossAxisCount(
+                                        crossAxisCount: 2,
+                                        childAspectRatio: 0.68,
+                                        crossAxisSpacing: 8,
+                                        mainAxisSpacing: 8,
+                                      ),
                                 delegate: SliverChildBuilderDelegate((
                                   context,
                                   index,
@@ -664,7 +678,10 @@ class _RankListItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
+    return TvTap(
+      ink: true,
+      borderRadius: 0,
+      focusScale: 1.0,
       onTap: () {
         Navigator.push(
           context,
@@ -868,7 +885,7 @@ class _XHSCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    return TvTap(
       onTap: () {
         Navigator.push(
           context,

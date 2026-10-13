@@ -3,7 +3,14 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'device_profile.dart';
 import 'native_ui.dart';
+
+/// 电视不能旋转，请求竖屏会被系统强制转成竖向窗口；电视上一律不锁方向。
+Future<void> _setOrientations(List<DeviceOrientation> orientations) async {
+  if (DeviceProfile.isTv) return;
+  await SystemChrome.setPreferredOrientations(orientations);
+}
 
 class PlayerSystemUiController extends ChangeNotifier {
   bool isLandscapeFullScreen = false;
@@ -21,8 +28,12 @@ class PlayerSystemUiController extends ChangeNotifier {
         systemNavigationBarColor: Colors.transparent,
       ),
     );
-    await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+    await _setOrientations([DeviceOrientation.portraitUp]);
+    await NativeUi.setBottomBarAutoHidden(true);
   }
+
+  /// 回到前台时系统会按上次的 SystemChrome 模式重新显示导航栏，需要再隐藏一次。
+  Future<void> reapplyBottomBar() => NativeUi.setBottomBarAutoHidden(true);
 
   Future<void> updateForVideo(int width, int height) async {
     if (width <= 0 || height <= 0) return;
@@ -38,6 +49,7 @@ class PlayerSystemUiController extends ChangeNotifier {
         systemNavigationBarColor: Colors.transparent,
       ),
     );
+    await NativeUi.setBottomBarAutoHidden(true);
   }
 
   Future<void> exitFullScreen() async {
@@ -46,8 +58,8 @@ class PlayerSystemUiController extends ChangeNotifier {
     isLandscapeFullScreen = false;
     showLandscapeUI = true;
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-    await NativeUi.setHomeIndicatorHidden(false);
+    await _setOrientations([DeviceOrientation.portraitUp]);
+    await NativeUi.setBottomBarAutoHidden(false);
   }
 
   Future<void> toggleLandscapeFullScreen() async {
@@ -56,25 +68,24 @@ class PlayerSystemUiController extends ChangeNotifier {
     notifyListeners();
 
     if (isLandscapeFullScreen) {
-      await SystemChrome.setPreferredOrientations([
+      await _setOrientations([
         DeviceOrientation.landscapeLeft,
         DeviceOrientation.landscapeRight,
       ]);
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-      await NativeUi.setHomeIndicatorHidden(false);
+      await NativeUi.setBottomBarAutoHidden(true);
       _startHideTimer();
     } else {
       _hideUITimer?.cancel();
-      await SystemChrome.setPreferredOrientations(
-          [DeviceOrientation.portraitUp]);
+      await _setOrientations([DeviceOrientation.portraitUp]);
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-      await NativeUi.setHomeIndicatorHidden(false);
       SystemChrome.setSystemUIOverlayStyle(
         SystemUiOverlayStyle.light.copyWith(
           statusBarColor: Colors.transparent,
           systemNavigationBarColor: Colors.transparent,
         ),
       );
+      await NativeUi.setBottomBarAutoHidden(true);
     }
   }
 
@@ -91,14 +102,12 @@ class PlayerSystemUiController extends ChangeNotifier {
     if (!isLandscapeFullScreen) return;
     showLandscapeUI = false;
     _hideUITimer?.cancel();
-    NativeUi.setHomeIndicatorHidden(true);
     notifyListeners();
   }
 
   void showUIAndResetTimer() {
     if (!isLandscapeFullScreen) return;
     showLandscapeUI = true;
-    NativeUi.setHomeIndicatorHidden(false);
     notifyListeners();
     _startHideTimer();
   }
@@ -108,7 +117,6 @@ class PlayerSystemUiController extends ChangeNotifier {
     if (open) {
       _hideUITimer?.cancel();
       showLandscapeUI = true;
-      NativeUi.setHomeIndicatorHidden(false);
       notifyListeners();
     } else {
       showUIAndResetTimer();
@@ -121,7 +129,6 @@ class PlayerSystemUiController extends ChangeNotifier {
     _hideUITimer = Timer(const Duration(seconds: 3), () {
       if (!isLandscapeFullScreen) return;
       showLandscapeUI = false;
-      NativeUi.setHomeIndicatorHidden(true);
       notifyListeners();
     });
   }

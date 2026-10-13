@@ -30,21 +30,22 @@ android {
         versionName = flutter.versionName
     }
 
-    // 只保留 arm64-v8a 一个架构。99% 的现代 Android 真机都是 arm64-v8a。
+    // 支持 arm64-v8a 和 armeabi-v7a（32 位：老手机和大量电视盒子）。
+    // 自研 .so 在 src/main/jniLibs/<abi>/ 下，两个架构都要有。
     //
     // 注意：defaultConfig.ndk.abiFilters 对 Flutter 无效——Flutter 的 gradle
     // 插件会在其后重新注入全部 ABI 的引擎库（libflutter/libapp 等），覆盖掉
     // 过滤。必须用 packagingOptions.jniLibs.excludes，它在打包最后阶段按路径
-    // 排除，对所有 .so（含引擎库）都生效，把四架构 fat 包从 ~52MB 砍到 ~22MB。
+    // 排除，对所有 .so（含引擎库）都生效。
     //
-    // 如需兼容老 32 位 arm 机，从下面 excludes 里去掉 "**/armeabi-v7a/**"；
-    // 如需 x86 模拟器，去掉 "**/x86/**" 与 "**/x86_64/**"。
+    // 发布时用 `flutter build apk --split-per-abi` 按架构拆成两个 APK，
+    // 各自体积与原来单架构包相当；不拆的话一个包同时含 32/64 位，体积更大。
+    // 如需 x86 模拟器，去掉 "**/x86/**" 与 "**/x86_64/**"（还需编译对应 .so）。
     packagingOptions {
         jniLibs {
             excludes += [
                 "**/x86/**",
                 "**/x86_64/**",
-                "**/armeabi-v7a/**",
             ]
         }
     }

@@ -1,12 +1,13 @@
 Pod::Spec.new do |s|
   s.name         = 'ShortplayCrypto'
   s.version      = '1.0.0'
-  s.summary      = 'Prebuilt crypto static library for Shortplay iOS'
+  s.summary      = 'Prebuilt crypto static library for Shortplay iOS/macOS'
   s.homepage     = 'https://github.com/user/shortplay'
   s.license      = { :type => 'Proprietary' }
   s.author       = 'Shortplay'
   s.source       = { :path => '.' }
-  s.platform     = :ios, '13.0'
+  s.ios.deployment_target = '13.0'
+  s.osx.deployment_target = '10.15'
 
   s.vendored_frameworks = 'ShortplayCrypto.xcframework'
   s.static_framework = true

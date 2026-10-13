@@ -1,8 +1,15 @@
 package com.example.shortplay
 
+import android.app.UiModeManager
+import android.content.Context
+import android.content.pm.PackageManager
+import android.content.res.Configuration
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 /**
  * Hosts the "shortplay/crypto" MethodChannel that lets the Dart layer register
@@ -15,12 +22,53 @@ import io.flutter.plugin.common.MethodChannel
  */
 class MainActivity : FlutterActivity() {
 
+    private fun isTelevision(): Boolean {
+        val uiMode = getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager
+        if (uiMode?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION) return true
+        // 部分国产电视盒子不报 TELEVISION 模式，但声明了 leanback 特性
+        return packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+    }
+
     private val channelName = "shortplay/crypto"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
         flutterEngine.plugins.add(NativePlayerPlugin())
+
+        // 播放页底部导航栏/手势条自动隐藏（红果同款）：上滑临时显示，随后自动收起
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "com.shortplay/ui",
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "setNavigationBarAutoHidden" -> {
+                    val hidden = call.argument<Boolean>("hidden") ?: false
+                    val controller =
+                        WindowCompat.getInsetsController(window, window.decorView)
+                    if (hidden) {
+                        controller.systemBarsBehavior =
+                            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                        controller.hide(WindowInsetsCompat.Type.navigationBars())
+                    } else {
+                        controller.show(WindowInsetsCompat.Type.navigationBars())
+                    }
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        // 设备形态：Dart 侧据此切换遥控器操作、不锁竖屏
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "shortplay/device",
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "isTv" -> result.success(isTelevision())
+                else -> result.notImplemented()
+            }
+        }
 
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,

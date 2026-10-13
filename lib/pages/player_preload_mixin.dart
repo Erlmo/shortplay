@@ -142,6 +142,9 @@ mixin PlayerPreloadMixin on State<PlayerPage> {
     }
 
     unawaited(player.pause());
+    // 首帧已出，停放加密流：之后只再预取约 1MB，不再占满 16MB 窗口
+    // 和当前集抢带宽。切到这一集时 _openEpisode 会 setActive(true)。
+    unawaited(player.setActive(false));
 
     nextPlayer = player;
     nextEpisodeIndex = index;

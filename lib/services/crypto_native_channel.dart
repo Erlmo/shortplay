@@ -23,7 +23,8 @@ class CryptoNativeChannel {
   static const MethodChannel _channel = MethodChannel('shortplay/crypto');
 
   /// Whether native crypto is supported on this platform.
-  static bool get isSupported => Platform.isAndroid || Platform.isIOS;
+  static bool get isSupported =>
+      Platform.isAndroid || Platform.isIOS || Platform.isMacOS;
 
   /// Build the URL handed to media_kit for native decryption:
   /// `crypto://<percent-encoded-cdn-url>?key=<32 hex chars>`.
@@ -123,7 +124,8 @@ class CryptoNativeChannel {
   /// Decrypt the entire encrypted MP4 at [cdnUrl] using [keyHex] and write the
   /// resulting clear MP4 to [outputPath]. Blocking (downloads + decrypts the
   /// full file). Returns 0 on success, non-zero on failure.
-  Future<int> decryptToFile(String cdnUrl, String keyHex, String outputPath) async {
+  Future<int> decryptToFile(
+      String cdnUrl, String keyHex, String outputPath) async {
     if (!isSupported) return -1;
     try {
       final status = await _channel.invokeMethod<int>(

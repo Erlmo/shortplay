@@ -398,12 +398,12 @@ void main() {
       apiClient: service.apiClient,
     )));
     await tester.pump();
-    expect(find.text('已缓存 0 / 3 集'), findsOneWidget);
-    expect(find.text('已完成'), findsNothing);
-    await tester.tap(find.text('暂停下载'));
+    expect(find.text('共3集 · 已下载0集'), findsOneWidget);
+    expect(find.text('已下载3集'), findsNothing);
+    await tester.tap(find.byIcon(Icons.pause_rounded));
     await tester.pumpAndSettle();
     expect(service.isGroupPaused('a'), isTrue);
-    await tester.tap(find.text('继续 / 重试'));
+    await tester.tap(find.byIcon(Icons.play_arrow_rounded));
     await tester.pump();
     expect(
         service.groups['a']!.episodes
@@ -418,8 +418,8 @@ void main() {
     }
     await settleService(() => service.groups['a']!.isAllCompleted);
     await tester.pumpAndSettle();
-    expect(find.text('已完成'), findsOneWidget);
-    expect(find.text('共 3 集'), findsOneWidget);
+    expect(find.text('已下载3集'), findsOneWidget);
+    expect(find.text('共1个'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
