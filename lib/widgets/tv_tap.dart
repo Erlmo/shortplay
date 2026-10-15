@@ -82,12 +82,37 @@ class _TvTapState extends State<TvTap> {
         }
       },
       child: AnimatedScale(
-        scale: _focused ? widget.focusScale : 1.0,
-        duration: const Duration(milliseconds: 120),
-        child: Container(
+        scale: _focused
+            ? (DeviceProfile.isTv
+                ? widget.focusScale.clamp(1.0, 1.02)
+                : widget.focusScale)
+            : 1.0,
+        duration: const Duration(milliseconds: 160),
+        curve: Curves.easeOutCubic,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOutCubic,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(widget.borderRadius),
+            boxShadow: _focused && DeviceProfile.isTv
+                ? [
+                    BoxShadow(
+                      color: color.withAlpha(24),
+                      blurRadius: 18,
+                      spreadRadius: 2,
+                    ),
+                    BoxShadow(
+                      color: Colors.black.withAlpha(18),
+                      blurRadius: 18,
+                      offset: const Offset(0, 6),
+                    ),
+                  ]
+                : const [],
+          ),
           foregroundDecoration: _focused
               ? BoxDecoration(
-                  border: Border.all(color: color, width: 3),
+                  border: Border.all(
+                      color: color, width: DeviceProfile.isTv ? 1.8 : 3),
                   borderRadius: BorderRadius.circular(widget.borderRadius),
                 )
               : null,

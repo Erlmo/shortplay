@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../services/api_client.dart';
+import '../services/device_profile.dart';
 
 /// 顶部滚动公告栏：拉取 /notice 列表，多条时纵向轮播切换。
 /// 加载失败或为空时整体隐藏（占位高度 0），不打扰布局。
@@ -57,18 +58,24 @@ class _NoticeBarState extends State<NoticeBar> {
     return Container(
       height: 34,
       // 水平 8 对齐首页网格卡片的左右边缘（网格 SliverPadding 水平 8）。
-      margin: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+      margin: EdgeInsets.fromLTRB(
+          DeviceProfile.isTv ? 32 : 8, 8, DeviceProfile.isTv ? 32 : 8, 0),
       padding: const EdgeInsets.symmetric(horizontal: 12),
       decoration: BoxDecoration(
-        color: const Color(0xFFFFF6F0),
-        borderRadius: BorderRadius.circular(8),
+        color: DeviceProfile.isTv ? Colors.white : const Color(0xFFFFF6F0),
+        border: DeviceProfile.isTv
+            ? Border.all(color: const Color(0xFFE6E9EF))
+            : null,
+        borderRadius: BorderRadius.circular(DeviceProfile.isTv ? 12 : 8),
       ),
       child: Row(
         children: [
-          const Icon(
+          Icon(
             Icons.campaign_rounded,
             size: 18,
-            color: Color(0xFFFF7D27),
+            color: DeviceProfile.isTv
+                ? const Color(0xFF747B88)
+                : const Color(0xFFFF7D27),
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -103,9 +110,11 @@ class _NoticeBarState extends State<NoticeBar> {
                 key: ValueKey(_index),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 12,
-                  color: Color(0xFFB35418),
+                  color: DeviceProfile.isTv
+                      ? const Color(0xFF747B88)
+                      : const Color(0xFFB35418),
                   height: 1.4,
                 ),
               ),

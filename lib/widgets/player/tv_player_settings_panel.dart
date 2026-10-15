@@ -283,8 +283,8 @@ class _FocusableState extends State<_Focusable> {
         behavior: HitTestBehavior.opaque,
         onTap: widget.onTap,
         child: AnimatedScale(
-          scale: _focused ? 1.06 : 1,
-          duration: const Duration(milliseconds: 120),
+          scale: _focused ? 1.025 : 1,
+          duration: const Duration(milliseconds: 160),
           child: widget.builder(_focused),
         ),
       ),
@@ -324,7 +324,7 @@ class _TvChip extends StatelessWidget {
                     ? Colors.white38
                     : Colors.white70;
         return AnimatedContainer(
-          duration: const Duration(milliseconds: 120),
+          duration: const Duration(milliseconds: 160),
           height: 40,
           padding: const EdgeInsets.symmetric(horizontal: 18),
           decoration: BoxDecoration(
@@ -375,7 +375,7 @@ class _TvTile extends StatelessWidget {
                 ? Colors.white38
                 : Colors.white;
         return AnimatedContainer(
-          duration: const Duration(milliseconds: 120),
+          duration: const Duration(milliseconds: 160),
           height: 56,
           padding: const EdgeInsets.symmetric(horizontal: 18),
           decoration: BoxDecoration(

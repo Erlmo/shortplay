@@ -83,9 +83,9 @@ class _ShortPlayAppState extends State<ShortPlayApp>
       brightness: Brightness.light,
       colorScheme: colorScheme,
       scaffoldBackgroundColor: Colors.white,
-      // 电视/桌面用方向键操作：加深默认焦点高亮（Tab、底部导航、列表项等）
+      // 保留默认控件的方向键反馈，电视使用更柔和的底色。
       focusColor: DeviceProfile.usesFocusUi
-          ? const Color(0xFFFF2442).withAlpha(70)
+          ? const Color(0xFFFF2442).withAlpha(DeviceProfile.isTv ? 28 : 70)
           : null,
       cardTheme: CardThemeData(
         elevation: 0,

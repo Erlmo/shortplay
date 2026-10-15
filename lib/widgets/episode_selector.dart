@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../models/episode.dart';
-import 'tv_tap.dart';
 import '../services/device_profile.dart';
+import 'tv_tap.dart';
 
 class EpisodeSelector extends StatefulWidget {
   const EpisodeSelector({
@@ -97,6 +97,7 @@ class _EpisodeSelectorState extends State<EpisodeSelector> {
 
   @override
   Widget build(BuildContext context) {
+    final tvLight = DeviceProfile.isTv && !widget.dark;
     final totalEpisodes = widget.episodes.length;
     final totalTabs = (totalEpisodes / _pageSize).ceil();
     final hasTabs = totalTabs > 1;
@@ -112,8 +113,8 @@ class _EpisodeSelectorState extends State<EpisodeSelector> {
       children: [
         if (hasTabs)
           Container(
-            height: 40,
-            margin: const EdgeInsets.fromLTRB(0, 4, 0, 12),
+            height: tvLight ? 34 : 40,
+            margin: EdgeInsets.fromLTRB(0, 4, 0, tvLight ? 8 : 12),
             child: ListView.separated(
               controller: _tabScrollController,
               padding:
@@ -134,12 +135,14 @@ class _EpisodeSelectorState extends State<EpisodeSelector> {
                     curve: Curves.easeOut,
                     decoration: BoxDecoration(
                       color: isSelected
-                          ? (widget.dark
-                              ? Colors.white
-                              : const Color(0xFF171717))
+                          ? (tvLight
+                              ? const Color(0xFFFFF0F3)
+                              : widget.dark
+                                  ? Colors.white
+                                  : const Color(0xFF171717))
                           : Colors.transparent, // 选中用深邃黑
                       borderRadius: BorderRadius.circular(20),
-                      boxShadow: isSelected
+                      boxShadow: isSelected && !tvLight
                           ? [
                               BoxShadow(
                                 color: Colors.black.withValues(alpha: 0.15),
@@ -151,9 +154,11 @@ class _EpisodeSelectorState extends State<EpisodeSelector> {
                     ),
                     child: Material(
                       color: Colors.transparent,
-                      child: InkWell(
+                      child: TvTap(
+                        ink: true,
+                        focusScale: 1,
                         onTap: () => setState(() => _currentTabIndex = index),
-                        borderRadius: BorderRadius.circular(20),
+                        borderRadius: 20,
                         child: Container(
                           padding: const EdgeInsets.symmetric(
                             horizontal: 16,
@@ -163,7 +168,11 @@ class _EpisodeSelectorState extends State<EpisodeSelector> {
                             '$tabStart-$displayEnd',
                             style: TextStyle(
                               color: isSelected
-                                  ? (widget.dark ? Colors.black : Colors.white)
+                                  ? (tvLight
+                                      ? const Color(0xFFFF2442)
+                                      : widget.dark
+                                          ? Colors.black
+                                          : Colors.white)
                                   : (widget.dark
                                       ? Colors.white60
                                       : const Color(0xFF757575)),
@@ -186,12 +195,19 @@ class _EpisodeSelectorState extends State<EpisodeSelector> {
             physics: const BouncingScrollPhysics(),
             padding: EdgeInsets.fromLTRB(
                 widget.horizontalPadding, 0, widget.horizontalPadding, 12),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 6,
-              mainAxisSpacing: 10,
-              crossAxisSpacing: 10,
-              childAspectRatio: 1.35,
-            ),
+            gridDelegate: tvLight
+                ? const SliverGridDelegateWithMaxCrossAxisExtent(
+                    maxCrossAxisExtent: 96,
+                    mainAxisExtent: 44,
+                    mainAxisSpacing: 8,
+                    crossAxisSpacing: 8,
+                  )
+                : const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 6,
+                    mainAxisSpacing: 10,
+                    crossAxisSpacing: 10,
+                    childAspectRatio: 1.35,
+                  ),
             itemCount: currentEpisodes.length,
             itemBuilder: (context, index) {
               final episode = currentEpisodes[index];
@@ -216,7 +232,7 @@ class _EpisodeSelectorState extends State<EpisodeSelector> {
                         ? LinearGradient(
                             begin: Alignment.topLeft,
                             end: Alignment.bottomRight,
-                            colors: widget.dark
+                            colors: widget.dark || tvLight
                                 ? const [Color(0xFFFF2E55), Color(0xFFFF5656)]
                                 : const [
                                     Color(0xFF333333), // 略浅的黑
@@ -230,7 +246,7 @@ class _EpisodeSelectorState extends State<EpisodeSelector> {
                             ? Colors.white.withAlpha(22)
                             : const Color(0xFFF3F4F6)), // 浅灰背景
                     borderRadius: BorderRadius.circular(8),
-                    boxShadow: isActive
+                    boxShadow: isActive && !tvLight
                         ? [
                             BoxShadow(
                               color: Colors.black.withValues(alpha: 0.25),

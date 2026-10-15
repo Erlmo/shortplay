@@ -6,14 +6,15 @@ import 'package:flutter/services.dart';
 
 import '../models/drama.dart';
 import '../services/api_client.dart';
+import '../services/device_profile.dart';
 import '../services/download_service.dart';
 import '../services/playback_history_store.dart';
 import '../services/theater_video_preload_manager.dart';
 import '../widgets/app_notice.dart';
-import 'player_page.dart';
-import '../widgets/tv_tap.dart';
-import '../services/device_profile.dart';
 import '../widgets/episode_selector.dart';
+import '../widgets/tv_drama_detail_view.dart';
+import '../widgets/tv_tap.dart';
+import 'player_page.dart';
 
 class DramaDetailPage extends StatefulWidget {
   const DramaDetailPage({
@@ -630,6 +631,20 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
           )
         : _buildGradientBg();
 
+    if (DeviceProfile.isTv) {
+      return TvDramaDetailView(
+        drama: drama,
+        cover: cover,
+        onBack: () => Navigator.of(context).pop(),
+        onPlay: () => _startPlay(context),
+        onDownload: widget.downloadService != null && drama.isTheaterResource
+            ? () => _downloadAll(context)
+            : null,
+        addingDownloads: _addingDownloads,
+        episodes: _prefetchedEpisodes != null ? _buildWideEpisodeGrid() : null,
+      );
+    }
+
     return Scaffold(
       backgroundColor: Colors.white,
       body: SafeArea(
@@ -708,14 +723,14 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Padding(
-              padding: EdgeInsets.only(bottom: 8),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
               child: Text(
                 '选集',
                 style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF1D1D1F),
+                  fontSize: DeviceProfile.isTv ? 15 : 18,
+                  fontWeight: FontWeight.w600,
+                  color: const Color(0xFF242833),
                 ),
               ),
             ),

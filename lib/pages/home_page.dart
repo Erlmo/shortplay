@@ -68,99 +68,181 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white,
-      body: IndexedStack(index: _currentIndex, children: _pages),
-      bottomNavigationBar: Theme(
-        data: ThemeData(
-          splashColor: Colors.transparent,
-          highlightColor: Colors.transparent,
-        ),
-        child: BottomNavigationBar(
-          currentIndex: _currentIndex,
-          onTap: (index) {
-            setState(() {
-              _currentIndex = index;
-            });
-            // 当切换到播放记录tab时，刷新数据以显示最新的播放记录
-            if (index == 1) {
-              _playHistoryKey.currentState?.refresh();
-            }
-          },
-          type: BottomNavigationBarType.fixed,
-          backgroundColor: Colors.white,
-          elevation: 0,
-          selectedItemColor: Colors.black,
-          unselectedItemColor: const Color(0xFF999999),
-          selectedFontSize: 10,
-          unselectedFontSize: 10,
-          showSelectedLabels: true,
-          showUnselectedLabels: true,
-          items: [
-            BottomNavigationBarItem(
-              icon: SvgPicture.asset(
-                'assets/icons/nav_home.svg',
-                width: 28,
-                height: 28,
-                colorFilter: const ColorFilter.mode(
-                  Color(0xFF999999),
-                  BlendMode.srcIn,
+      backgroundColor:
+          DeviceProfile.isTv ? const Color(0xFFF4F5F8) : Colors.white,
+      body: IndexedStack(
+        index: _currentIndex,
+        children: _pages.indexed
+            .map((entry) => ExcludeFocus(
+                  excluding: entry.$1 != _currentIndex,
+                  child: entry.$2,
+                ))
+            .toList(),
+      ),
+      bottomNavigationBar: DeviceProfile.isTv
+          ? _buildTvNavigation()
+          : Theme(
+              data: ThemeData(
+                splashColor: Colors.transparent,
+                highlightColor: Colors.transparent,
+              ),
+              child: BottomNavigationBar(
+                currentIndex: _currentIndex,
+                onTap: (index) {
+                  setState(() {
+                    _currentIndex = index;
+                  });
+                  // 当切换到播放记录tab时，刷新数据以显示最新的播放记录
+                  if (index == 1) {
+                    _playHistoryKey.currentState?.refresh();
+                  }
+                },
+                type: BottomNavigationBarType.fixed,
+                backgroundColor: Colors.white,
+                elevation: 0,
+                selectedItemColor: Colors.black,
+                unselectedItemColor: const Color(0xFF999999),
+                selectedFontSize: 10,
+                unselectedFontSize: 10,
+                showSelectedLabels: true,
+                showUnselectedLabels: true,
+                items: [
+                  BottomNavigationBarItem(
+                    icon: SvgPicture.asset(
+                      'assets/icons/nav_home.svg',
+                      width: 28,
+                      height: 28,
+                      colorFilter: const ColorFilter.mode(
+                        Color(0xFF999999),
+                        BlendMode.srcIn,
+                      ),
+                    ),
+                    activeIcon: SvgPicture.asset(
+                      'assets/icons/nav_home_active.svg',
+                      width: 28,
+                      height: 28,
+                    ),
+                    label: '首页',
+                  ),
+                  BottomNavigationBarItem(
+                    icon: SvgPicture.asset(
+                      'assets/icons/nav_history.svg',
+                      width: 28,
+                      height: 28,
+                      colorFilter: const ColorFilter.mode(
+                        Color(0xFF999999),
+                        BlendMode.srcIn,
+                      ),
+                    ),
+                    activeIcon: SvgPicture.asset(
+                      'assets/icons/nav_history_active.svg',
+                      width: 28,
+                      height: 28,
+                    ),
+                    label: '历史',
+                  ),
+                  BottomNavigationBarItem(
+                    icon: SvgPicture.asset(
+                      'assets/icons/nav_cache.svg',
+                      width: 28,
+                      height: 28,
+                      colorFilter: const ColorFilter.mode(
+                        Color(0xFF999999),
+                        BlendMode.srcIn,
+                      ),
+                    ),
+                    activeIcon: SvgPicture.asset(
+                      'assets/icons/nav_cache_active.svg',
+                      width: 28,
+                      height: 28,
+                    ),
+                    label: '缓存',
+                  ),
+                  const BottomNavigationBarItem(
+                    icon: Icon(
+                      Icons.settings_outlined,
+                      size: 28,
+                      color: Color(0xFF999999),
+                    ),
+                    activeIcon: Icon(
+                      Icons.settings_rounded,
+                      size: 28,
+                      color: Colors.black,
+                    ),
+                    label: '设置',
+                  ),
+                ],
+              ),
+            ),
+    );
+  }
+
+  void _selectTvPage(int index) {
+    setState(() => _currentIndex = index);
+    if (index == 1) _playHistoryKey.currentState?.refresh();
+  }
+
+  Widget _buildTvNavigation() {
+    const labels = ['首页', '历史', '缓存', '设置'];
+    const icons = [
+      Icons.home_outlined,
+      Icons.history_rounded,
+      Icons.download_for_offline_outlined,
+      Icons.settings_outlined,
+    ];
+    return SafeArea(
+      top: false,
+      minimum: const EdgeInsets.fromLTRB(24, 10, 24, 14),
+      child: Center(
+        heightFactor: 1,
+        child: Container(
+          padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(color: const Color(0xFFE6E9EF)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: List.generate(labels.length, (index) {
+              final selected = index == _currentIndex;
+              final color =
+                  selected ? const Color(0xFFFF2442) : const Color(0xFF747B88);
+              return Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 3),
+                child: TvTap(
+                  borderRadius: 16,
+                  focusScale: 1,
+                  onTap: () => _selectTvPage(index),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 160),
+                    width: 112,
+                    height: 42,
+                    decoration: BoxDecoration(
+                      color: selected
+                          ? const Color(0xFFFFF0F3)
+                          : Colors.transparent,
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(icons[index], color: color, size: 21),
+                        const SizedBox(width: 8),
+                        Text(labels[index],
+                            style: TextStyle(
+                              color: color,
+                              fontSize: 14,
+                              fontWeight:
+                                  selected ? FontWeight.w600 : FontWeight.w500,
+                            )),
+                      ],
+                    ),
+                  ),
                 ),
-              ),
-              activeIcon: SvgPicture.asset(
-                'assets/icons/nav_home_active.svg',
-                width: 28,
-                height: 28,
-              ),
-              label: '首页',
-            ),
-            BottomNavigationBarItem(
-              icon: SvgPicture.asset(
-                'assets/icons/nav_history.svg',
-                width: 28,
-                height: 28,
-                colorFilter: const ColorFilter.mode(
-                  Color(0xFF999999),
-                  BlendMode.srcIn,
-                ),
-              ),
-              activeIcon: SvgPicture.asset(
-                'assets/icons/nav_history_active.svg',
-                width: 28,
-                height: 28,
-              ),
-              label: '历史',
-            ),
-            BottomNavigationBarItem(
-              icon: SvgPicture.asset(
-                'assets/icons/nav_cache.svg',
-                width: 28,
-                height: 28,
-                colorFilter: const ColorFilter.mode(
-                  Color(0xFF999999),
-                  BlendMode.srcIn,
-                ),
-              ),
-              activeIcon: SvgPicture.asset(
-                'assets/icons/nav_cache_active.svg',
-                width: 28,
-                height: 28,
-              ),
-              label: '缓存',
-            ),
-            const BottomNavigationBarItem(
-              icon: Icon(
-                Icons.settings_outlined,
-                size: 28,
-                color: Color(0xFF999999),
-              ),
-              activeIcon: Icon(
-                Icons.settings_rounded,
-                size: 28,
-                color: Colors.black,
-              ),
-              label: '设置',
-            ),
-          ],
+              );
+            }),
+          ),
         ),
       ),
     );
@@ -298,7 +380,18 @@ class _HomeFeedPageState extends State<_HomeFeedPage>
                   );
                 },
               ),
-            ],
+            ]
+                .indexed
+                .map((entry) => ListenableBuilder(
+                      listenable: _tabController,
+                      child: entry.$2,
+                      builder: (_, child) => ExcludeFocus(
+                        // TabBarView 会缓存相邻栏目，隐藏页不能接收方向键焦点。
+                        excluding: entry.$1 != _tabController.index,
+                        child: child!,
+                      ),
+                    ))
+                .toList(),
           ),
         ),
       ],
@@ -306,6 +399,7 @@ class _HomeFeedPageState extends State<_HomeFeedPage>
   }
 
   Widget _buildTopBar(BuildContext context) {
+    if (DeviceProfile.isTv) return _buildTvTopBar(context);
     return SafeArea(
       bottom: false,
       child: Container(
@@ -371,6 +465,86 @@ class _HomeFeedPageState extends State<_HomeFeedPage>
               constraints: const BoxConstraints(
                 minWidth: 44,
                 minHeight: 44,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTvTopBar(BuildContext context) {
+    const labels = ['首页', '新剧', '推荐', '热播', '飙升'];
+    return SafeArea(
+      bottom: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(32, 22, 32, 12),
+        child: Row(
+          children: [
+            const Icon(Icons.play_circle_filled_rounded,
+                size: 27, color: Color(0xFFFF2442)),
+            const SizedBox(width: 9),
+            const Text('龙龙短剧',
+                style: TextStyle(
+                  color: Color(0xFF242833),
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: .5,
+                )),
+            const SizedBox(width: 36),
+            Expanded(
+              child: ListenableBuilder(
+                listenable: _tabController,
+                builder: (_, __) => Row(
+                  children: List.generate(labels.length, (index) {
+                    final selected = index == _tabController.index;
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: TvTap(
+                        borderRadius: 14,
+                        focusScale: 1,
+                        onTap: () => _tabController.animateTo(index),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 160),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 17, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: selected
+                                ? const Color(0xFFFF2442)
+                                : Colors.transparent,
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Text(labels[index],
+                              style: TextStyle(
+                                color: selected
+                                    ? Colors.white
+                                    : const Color(0xFF747B88),
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                              )),
+                        ),
+                      ),
+                    );
+                  }),
+                ),
+              ),
+            ),
+            TvTap(
+              borderRadius: 14,
+              focusScale: 1,
+              onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(
+                builder: (_) => GlobalSearchPage(
+                  apiClient: widget.apiClient,
+                  downloadService: widget.downloadService,
+                ),
+              )),
+              child: const Tooltip(
+                message: '搜索',
+                child: Padding(
+                  padding: EdgeInsets.all(11),
+                  child: Icon(Icons.search_rounded,
+                      color: Color(0xFF424957), size: 23),
+                ),
               ),
             ),
           ],
@@ -527,9 +701,10 @@ class _DramaListTabState extends State<_DramaListTab>
           Container(
             height: 34,
             margin: const EdgeInsets.only(top: 4, bottom: 4),
-            color: Colors.white,
+            color: DeviceProfile.isTv ? Colors.transparent : Colors.white,
             child: ListView.separated(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
+              padding: EdgeInsets.symmetric(
+                  horizontal: DeviceProfile.isTv ? 32 : 16),
               scrollDirection: Axis.horizontal,
               itemCount: _filters.length,
               separatorBuilder: (_, __) => const SizedBox(width: 8),
@@ -590,12 +765,14 @@ class _DramaListTabState extends State<_DramaListTab>
                     ),
                     slivers: [
                       SliverPadding(
-                        padding: widget.useGridView
-                            ? const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 8,
-                              )
-                            : EdgeInsets.zero,
+                        padding: DeviceProfile.isTv
+                            ? const EdgeInsets.fromLTRB(32, 12, 32, 20)
+                            : widget.useGridView
+                                ? const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 8,
+                                  )
+                                : EdgeInsets.zero,
                         sliver: widget.useGridView
                             ? SliverGrid(
                                 gridDelegate: DeviceProfile.usesFocusUi
@@ -707,7 +884,10 @@ class _RankListItem extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
         width: double.infinity,
-        color: Colors.white,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: DeviceProfile.isTv ? BorderRadius.circular(12) : null,
+        ),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -896,6 +1076,7 @@ class _XHSCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return TvTap(
+      borderRadius: DeviceProfile.isTv ? 14 : 12,
       onTap: () {
         Navigator.push(
           context,
@@ -908,82 +1089,92 @@ class _XHSCard extends StatelessWidget {
           ),
         );
       },
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: Container(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
-                color: Colors.grey[200],
-              ),
-              clipBehavior: Clip.antiAlias,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  CachedNetworkImage(
-                    imageUrl: drama.cover,
-                    fit: BoxFit.cover,
-                    errorWidget: (context, url, error) =>
-                        Container(color: Colors.grey[200]),
-                  ),
-                  Positioned(
-                    bottom: 6,
-                    right: 6,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.6),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(
-                        (drama.playCnt ?? 0) > 10000
-                            ? '${((drama.playCnt ?? 0) / 10000).toInt()}万'
-                            : '${drama.playCnt ?? 0}',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 10,
-                          fontWeight: FontWeight.w500,
+      child: Container(
+        padding: DeviceProfile.isTv ? const EdgeInsets.all(8) : EdgeInsets.zero,
+        decoration: DeviceProfile.isTv
+            ? BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFFE8EBF0)),
+              )
+            : null,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(8),
+                  color: Colors.grey[200],
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    CachedNetworkImage(
+                      imageUrl: drama.cover,
+                      fit: BoxFit.cover,
+                      errorWidget: (context, url, error) =>
+                          Container(color: Colors.grey[200]),
+                    ),
+                    Positioned(
+                      bottom: 6,
+                      right: 6,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.6),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          (drama.playCnt ?? 0) > 10000
+                              ? '${((drama.playCnt ?? 0) / 10000).toInt()}万'
+                              : '${drama.playCnt ?? 0}',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w500,
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                  // 左上角徽标
-                  if (drama.tagInfo != null && drama.tagInfo!.text.isNotEmpty)
-                    _buildTopBadge(
-                      drama.tagInfo!.text,
-                      _parseColor(
-                        drama.tagInfo!.bgColor.isNotEmpty
-                            ? drama.tagInfo!.bgColor.first
-                            : '',
+                    // 左上角徽标
+                    if (drama.tagInfo != null && drama.tagInfo!.text.isNotEmpty)
+                      _buildTopBadge(
+                        drama.tagInfo!.text,
+                        _parseColor(
+                          drama.tagInfo!.bgColor.isNotEmpty
+                              ? drama.tagInfo!.bgColor.first
+                              : '',
+                        ),
                       ),
-                    ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            drama.name,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: Color(0xFF1D1D1F),
+            const SizedBox(height: 8),
+            Text(
+              drama.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF1D1D1F),
+              ),
             ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            drama.subTitle ?? '',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 11, color: Color(0xFF999999)),
-          ),
-        ],
+            const SizedBox(height: 2),
+            Text(
+              drama.subTitle ?? '',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 11, color: Color(0xFF999999)),
+            ),
+          ],
+        ),
       ),
     );
   }

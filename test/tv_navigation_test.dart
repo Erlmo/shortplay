@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shortplay/main.dart';
 import 'package:shortplay/models/drama.dart';
 import 'package:shortplay/pages/player_page.dart';
@@ -11,6 +12,42 @@ import 'package:shortplay/services/player_system_ui_controller.dart';
 import 'package:shortplay/widgets/player/player_controls_overlay.dart';
 
 import 'support/no_app_updates.dart';
+
+class _FocusApiClient extends ApiClient {
+  @override
+  Future<List<String>> fetchNotice() async => [];
+
+  @override
+  Future<HomePageResult> fetchHomePage(
+          {int? offset, String? sessionId}) async =>
+      HomePageResult(
+        offset: 0,
+        sessionId: '',
+        count: 1,
+        hasMore: false,
+        nextOffset: 0,
+        list: [
+          Drama.fromJson({'id': 1, 'name': '首页列表短剧'})
+        ],
+      );
+
+  @override
+  Future<NewPlayResult> fetchNewPlay({
+    int? offset,
+    String? sessionId,
+    String? cellGender,
+  }) async =>
+      NewPlayResult(
+        offset: 0,
+        sessionId: '',
+        count: 1,
+        hasMore: false,
+        nextOffset: 0,
+        list: [
+          Drama.fromJson({'id': 2, 'name': '新剧列表短剧'})
+        ],
+      );
+}
 
 void main() {
   setUp(() {
@@ -54,12 +91,61 @@ void main() {
     await tester.pump();
     expect(Focus.of(tester.element(find.text('新剧'))).hasFocus, isTrue);
     expect(Focus.of(tabContext).hasFocus, isFalse);
-    final tabBar = tester.widget<TabBar>(find.byType(TabBar));
-    expect(
-        tabBar.overlayColor!.resolve({WidgetState.focused})!.a, greaterThan(0));
-    expect(tabBar.overlayColor!.resolve({}), Colors.transparent);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(Focus.of(tester.element(find.text('新剧'))).hasFocus, isTrue);
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
+  });
+
+  testWidgets('切换栏目后遥控器只聚焦可见列表，底部切页后也不能聚焦隐藏内容', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final client = _FocusApiClient();
+    final downloads = DownloadService(apiClient: client);
+    addTearDown(downloads.dispose);
+    addTearDown(() => client.dio.close(force: true));
+    await tester.binding.setSurfaceSize(const Size(960, 540));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(ShortPlayApp(
+        apiClient: client,
+        downloadService: downloads,
+        appUpdateService: NoAppUpdates(client)));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    final homeFocus = Focus.of(tester.element(find.text('首页列表短剧')));
+    homeFocus.requestFocus();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(homeFocus.hasFocus, isTrue);
+
+    await tester.tap(find.text('新剧'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    homeFocus.requestFocus();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(homeFocus.hasFocus, isFalse);
+    final newTabFocus = Focus.of(tester.element(find.text('新剧')));
+    newTabFocus.requestFocus();
+    await tester.pump();
+    final newFocus = Focus.of(tester.element(find.text('新剧列表短剧')));
+    newFocus.requestFocus();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(newFocus.hasFocus, isTrue);
+
+    await tester.tap(find.text('设置'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    newFocus.requestFocus();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(newFocus.hasFocus, isFalse);
+    newTabFocus.requestFocus();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(newTabFocus.hasFocus, isFalse);
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 
   testWidgets('电视未切换横屏时集数和进度一起自动隐藏并可重新显示', (tester) async {
