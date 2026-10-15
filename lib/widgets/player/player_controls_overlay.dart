@@ -141,7 +141,7 @@ class PlayerControlsOverlay extends StatelessWidget {
 
     return Stack(
       children: [
-        if (!isLandscapeFullScreen || showLandscapeUI)
+        if ((!isLandscapeFullScreen && !DeviceProfile.isTv) || showLandscapeUI)
           _TopControls(
             textTheme: textTheme,
             speedButtonKey: speedButtonKey,
@@ -177,7 +177,9 @@ class PlayerControlsOverlay extends StatelessWidget {
             textTheme: textTheme,
             onTap: onToggleLandscapeFullScreen,
           ),
-        if ((!isLandscapeFullScreen || showLandscapeUI) && !isPageTransitioning)
+        if (((!isLandscapeFullScreen && !DeviceProfile.isTv) ||
+                showLandscapeUI) &&
+            !isPageTransitioning)
           Positioned(
             bottom: 0,
             left: 0,
@@ -218,7 +220,7 @@ class PlayerControlsOverlay extends StatelessWidget {
   }
 
   bool get _shouldShowLandscapeButton {
-    if (!playerInitialized || isLandscapeFullScreen) {
+    if (!playerInitialized || isLandscapeFullScreen || DeviceProfile.isTv) {
       return false;
     }
     return videoWidth > videoHeight;

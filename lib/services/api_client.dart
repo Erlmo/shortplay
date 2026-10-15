@@ -5,6 +5,7 @@ import 'dart:math';
 import 'package:dio/dio.dart';
 
 import '../config/api_config.dart';
+import '../models/app_update.dart';
 import '../models/danmaku.dart';
 import '../models/drama.dart';
 import '../models/episode.dart';
@@ -40,6 +41,31 @@ class ApiClient {
 
   /// 暴露已配置 SignInterceptor 的 Dio，供 ShareLinkResolver 等复用同一签名链路。
   Dio get dio => _dio;
+
+  Future<AppUpdate?> checkAppUpdate({
+    required String device,
+    required String version,
+    CancelToken? cancelToken,
+  }) async {
+    try {
+      final response = await _dio.get(
+        ApiConfig.appUpdate,
+        queryParameters: {'device': device, 'version': version},
+        cancelToken: cancelToken,
+      );
+      final decoded = _decode(response);
+      final data = decoded['data'];
+      if (data is! Map<String, dynamic>) {
+        throw ApiException('更新信息无效，请稍后重试');
+      }
+      return AppUpdate.fromResponse(data);
+    } on FormatException {
+      throw ApiException('更新信息无效，请稍后重试');
+    } on DioException catch (error) {
+      if (CancelToken.isCancel(error)) rethrow;
+      throw ApiException('连接更新服务失败，请稍后重试');
+    }
+  }
 
   Future<Drama> fetchDramaDetail(String dramaId) async {
     if (_dramaCache.containsKey(dramaId)) return _dramaCache[dramaId]!;

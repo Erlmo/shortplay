@@ -35,6 +35,7 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
 
         flutterEngine.plugins.add(NativePlayerPlugin())
+        AppUpdateBridge(this).register(flutterEngine.dartExecutor.binaryMessenger)
 
         // 播放页底部导航栏/手势条自动隐藏（红果同款）：上滑临时显示，随后自动收起
         MethodChannel(

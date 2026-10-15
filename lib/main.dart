@@ -1,13 +1,14 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'pages/home_page.dart';
 import 'services/api_client.dart';
 import 'services/app_route_observer.dart';
+import 'services/app_update_service.dart';
 import 'services/device_profile.dart';
 import 'services/download_service.dart';
+import 'widgets/app_update_gate.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -26,10 +27,12 @@ class ShortPlayApp extends StatefulWidget {
     super.key,
     required this.apiClient,
     required this.downloadService,
+    this.appUpdateService,
   });
 
   final ApiClient apiClient;
   final DownloadService downloadService;
+  final AppUpdateService? appUpdateService;
 
   @override
   State<ShortPlayApp> createState() => _ShortPlayAppState();
@@ -37,6 +40,9 @@ class ShortPlayApp extends StatefulWidget {
 
 class _ShortPlayAppState extends State<ShortPlayApp>
     with WidgetsBindingObserver {
+  late final AppUpdateService _updates =
+      widget.appUpdateService ?? AppUpdateService(apiClient: widget.apiClient);
+
   @override
   void initState() {
     super.initState();
@@ -46,6 +52,7 @@ class _ShortPlayAppState extends State<ShortPlayApp>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    if (widget.appUpdateService == null) _updates.dispose();
     super.dispose();
   }
 
@@ -99,9 +106,14 @@ class _ShortPlayAppState extends State<ShortPlayApp>
       debugShowCheckedModeBanner: false,
       theme: baseTheme,
       navigatorObservers: [appRouteObserver],
+      builder: (_, child) => AppUpdateGate(
+        service: _updates,
+        child: child ?? const SizedBox.shrink(),
+      ),
       home: HomePage(
         apiClient: widget.apiClient,
         downloadService: widget.downloadService,
+        appUpdateService: _updates,
       ),
     );
   }

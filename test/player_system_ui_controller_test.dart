@@ -1,5 +1,6 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shortplay/services/device_profile.dart';
 import 'package:shortplay/services/player_system_ui_controller.dart';
 
 void main() {
@@ -12,8 +13,39 @@ void main() {
   });
 
   tearDown(() {
+    DeviceProfile.isTv = false;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SystemChannels.platform, null);
+  });
+
+  testWidgets('电视默认播放三秒后隐藏屏显，手动开关和菜单关闭后重新计时', (tester) async {
+    DeviceProfile.isTv = true;
+    final controller = PlayerSystemUiController();
+    addTearDown(controller.dispose);
+    await controller.setFullScreen();
+    expect(controller.isLandscapeFullScreen, isFalse);
+    await tester.pump(const Duration(seconds: 3));
+    expect(controller.showLandscapeUI, isFalse);
+
+    controller.toggleLandscapeUi();
+    expect(controller.showLandscapeUI, isTrue);
+    controller.toggleLandscapeUi();
+    expect(controller.showLandscapeUI, isFalse);
+    controller.showUIAndResetTimer();
+    await tester.pump(const Duration(seconds: 2));
+    controller.showUIAndResetTimer();
+    await tester.pump(const Duration(seconds: 2));
+    expect(controller.showLandscapeUI, isTrue);
+
+    controller.setMenuOpen(true);
+    controller.toggleLandscapeUi();
+    await tester.pump(const Duration(seconds: 10));
+    expect(controller.showLandscapeUI, isTrue);
+    controller.setMenuOpen(false);
+    await tester.pump(const Duration(milliseconds: 2999));
+    expect(controller.showLandscapeUI, isTrue);
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(controller.showLandscapeUI, isFalse);
   });
 
   testWidgets('横屏点击依次隐藏和显示播放控件', (tester) async {

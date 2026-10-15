@@ -5,6 +5,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 
 import '../models/drama.dart';
 import '../services/api_client.dart';
+import '../services/app_update_service.dart';
 import '../services/download_service.dart';
 import '../widgets/notice_bar.dart';
 import 'cache_page.dart';
@@ -20,10 +21,12 @@ class HomePage extends StatefulWidget {
     super.key,
     required this.apiClient,
     required this.downloadService,
+    this.appUpdateService,
   });
 
   final ApiClient apiClient;
   final DownloadService downloadService;
+  final AppUpdateService? appUpdateService;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -57,6 +60,7 @@ class _HomePageState extends State<HomePage> {
       SettingsPage(
         apiClient: widget.apiClient,
         downloadService: widget.downloadService,
+        appUpdateService: widget.appUpdateService,
       ),
     ];
   }
@@ -329,7 +333,13 @@ class _HomeFeedPageState extends State<_HomeFeedPage>
                     fontWeight: FontWeight.normal,
                   ),
                   dividerColor: Colors.transparent,
-                  overlayColor: WidgetStateProperty.all(Colors.transparent),
+                  overlayColor: WidgetStateProperty.resolveWith((states) {
+                    if (DeviceProfile.usesFocusUi &&
+                        states.contains(WidgetState.focused)) {
+                      return const Color(0xFFFF2442).withAlpha(90);
+                    }
+                    return Colors.transparent;
+                  }),
                   splashFactory: NoSplash.splashFactory,
                   tabAlignment: TabAlignment.start,
                   padding: EdgeInsets.zero,

@@ -58,6 +58,31 @@ class MainFlutterViewController: FlutterViewController {
     nativePlayerEventChannel.setStreamHandler(nativePlayerPlugin)
     self.nativePlayerPlugin = nativePlayerPlugin
 
+    // 更新：打开服务端返回的 iOS 下载页面或安装链接。
+    let updateChannel = FlutterMethodChannel(name: "shortplay/update", binaryMessenger: controller.binaryMessenger)
+    updateChannel.setMethodCallHandler { call, result in
+      switch call.method {
+      case "openUrl":
+        guard let args = call.arguments as? [String: Any],
+              let text = args["url"] as? String,
+              let url = URL(string: text),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https", "itms-apps", "itms-services"].contains(scheme) else {
+          result(FlutterError(code: "INVALID_URL", message: "更新链接无效", details: nil))
+          return
+        }
+        UIApplication.shared.open(url, options: [:]) { opened in
+          if opened {
+            result(true)
+          } else {
+            result(FlutterError(code: "OPEN_FAILED", message: "无法打开更新链接，请稍后重试", details: nil))
+          }
+        }
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+
     // 原生通道：UI 控制（Home 指示条等）
     let channel = FlutterMethodChannel(name: "com.shortplay/ui", binaryMessenger: controller.binaryMessenger)
     channel.setMethodCallHandler { call, result in

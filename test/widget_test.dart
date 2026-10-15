@@ -7,6 +7,8 @@ import 'package:shortplay/pages/global_search_page.dart';
 import 'package:shortplay/services/api_client.dart';
 import 'package:shortplay/services/download_service.dart';
 
+import 'support/no_app_updates.dart';
+
 class _ClipboardApiClient extends ApiClient {
   int requests = 0;
 
@@ -37,6 +39,7 @@ void main() {
         messenger.setMockMethodCallHandler(SystemChannels.platform, null));
     await tester.pumpWidget(ShortPlayApp(
       apiClient: apiClient,
+      appUpdateService: NoAppUpdates(apiClient),
       downloadService: downloads,
     ));
     await tester.pump(const Duration(seconds: 1));
@@ -78,6 +81,7 @@ void main() {
     addTearDown(() => apiClient.dio.close(force: true));
     await tester.pumpWidget(ShortPlayApp(
       apiClient: apiClient,
+      appUpdateService: NoAppUpdates(apiClient),
       downloadService: downloads,
     ));
     await tester.pump(const Duration(seconds: 1));
@@ -100,6 +104,7 @@ void main() {
     final apiClient = ApiClient();
     await tester.pumpWidget(ShortPlayApp(
       apiClient: apiClient,
+      appUpdateService: NoAppUpdates(apiClient),
       downloadService: DownloadService(apiClient: apiClient),
     ));
     expect(find.byIcon(Icons.search), findsOneWidget);

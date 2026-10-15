@@ -20,7 +20,11 @@ class PlayerSystemUiController extends ChangeNotifier {
   Timer? _hideUITimer;
   bool _menuOpen = false;
 
+  /// 电视默认就是全屏播放，不需要先切换手机的横屏全屏模式。
+  bool get autoHideControls => isLandscapeFullScreen || DeviceProfile.isTv;
+
   Future<void> setFullScreen() async {
+    _startHideTimer();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     SystemChrome.setSystemUIOverlayStyle(
       SystemUiOverlayStyle.light.copyWith(
@@ -90,7 +94,7 @@ class PlayerSystemUiController extends ChangeNotifier {
   }
 
   void toggleLandscapeUi() {
-    if (!isLandscapeFullScreen || _menuOpen) return;
+    if (!autoHideControls || _menuOpen) return;
     if (showLandscapeUI) {
       hideLandscapeUi();
     } else {
@@ -99,14 +103,14 @@ class PlayerSystemUiController extends ChangeNotifier {
   }
 
   void hideLandscapeUi() {
-    if (!isLandscapeFullScreen) return;
+    if (!autoHideControls) return;
     showLandscapeUI = false;
     _hideUITimer?.cancel();
     notifyListeners();
   }
 
   void showUIAndResetTimer() {
-    if (!isLandscapeFullScreen) return;
+    if (!autoHideControls) return;
     showLandscapeUI = true;
     notifyListeners();
     _startHideTimer();
@@ -125,9 +129,9 @@ class PlayerSystemUiController extends ChangeNotifier {
 
   void _startHideTimer() {
     _hideUITimer?.cancel();
-    if (!isLandscapeFullScreen || _menuOpen) return;
+    if (!autoHideControls || _menuOpen) return;
     _hideUITimer = Timer(const Duration(seconds: 3), () {
-      if (!isLandscapeFullScreen) return;
+      if (!autoHideControls) return;
       showLandscapeUI = false;
       notifyListeners();
     });

@@ -798,7 +798,7 @@ class _PlayerPageState extends State<PlayerPage>
 
   // 遥控器/键盘：上下切集，左右快退/快进 10 秒，OK/回车/空格 暂停播放，
   // 长按 OK 或菜单键（M）打开播放菜单（选集/倍速/清晰度/定时/弹幕/下载），
-  // E 直接打开选集。返回键由系统处理（退出播放页）。
+  // E 直接打开选集。电视返回键先隐藏屏显，再退出播放页。
   static final _okKeys = {
     LogicalKeyboardKey.select,
     LogicalKeyboardKey.enter,
@@ -827,6 +827,7 @@ class _PlayerPageState extends State<PlayerPage>
         if (_okHoldTimer != null) {
           _okHoldTimer!.cancel();
           _okHoldTimer = null;
+          _systemUi.showUIAndResetTimer();
           _onTogglePlay();
         }
       }
@@ -836,6 +837,10 @@ class _PlayerPageState extends State<PlayerPage>
       return KeyEventResult.ignored;
     }
     final isDown = event is KeyDownEvent;
+    if (key == LogicalKeyboardKey.escape && DeviceProfile.isTv) {
+      if (isDown) _onBack();
+      return KeyEventResult.handled;
+    }
     if (key == LogicalKeyboardKey.arrowUp ||
         key == LogicalKeyboardKey.channelUp ||
         key == LogicalKeyboardKey.pageUp) {
@@ -889,12 +894,14 @@ class _PlayerPageState extends State<PlayerPage>
   void _stepEpisode(int delta) {
     final target = _currentEpisodeIndex + delta;
     if (target < 0 || target >= _episodes.length) return;
+    _systemUi.showUIAndResetTimer();
     _jumpToEpisode(target);
   }
 
   void _seekBy(int deltaMs) {
     final player = _player;
     if (player == null || !_playerInitialized) return;
+    _systemUi.showUIAndResetTimer();
     final duration = durationMsNotifier.value;
     var target = positionMsNotifier.value + deltaMs;
     if (target < 0) target = 0;
@@ -1098,6 +1105,10 @@ class _PlayerPageState extends State<PlayerPage>
   }
 
   void _onBack() {
+    if (DeviceProfile.isTv && _systemUi.showLandscapeUI) {
+      _systemUi.hideLandscapeUi();
+      return;
+    }
     if (_systemUi.isLandscapeFullScreen) {
       _onToggleLandscapeFullScreen();
       return;
@@ -1166,13 +1177,12 @@ class _PlayerPageState extends State<PlayerPage>
       _swipeBlockTimer?.cancel();
     }
 
-    // 红果：横屏全屏时系统返回键先退回竖屏，而不是直接离开播放页
+    // 电视先关闭屏显；手机横屏全屏时先退回竖屏。
     return PopScope(
-      canPop: !_systemUi.isLandscapeFullScreen,
+      canPop: !_systemUi.isLandscapeFullScreen &&
+          !(DeviceProfile.isTv && _systemUi.showLandscapeUI),
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && _systemUi.isLandscapeFullScreen) {
-          _onToggleLandscapeFullScreen();
-        }
+        if (!didPop) _onBack();
       },
       child: Scaffold(
         backgroundColor: Colors.black,
