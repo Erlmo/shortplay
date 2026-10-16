@@ -130,7 +130,7 @@ void main() {
     return tester.getRect(find.byType(Texture));
   }
 
-  // 竖屏手机底部固定控件栏 56（+系统手势条，测试里为 0），与红果一致
+  // 播放页系统底栏自动隐藏，竖屏手机控件栏固定 56。
   const bar = 56.0;
 
   testWidgets('竖屏手机竖版片源铺满控件栏以上区域，与控件栏无缝衔接', (tester) async {

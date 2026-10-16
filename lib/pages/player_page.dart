@@ -1317,7 +1317,7 @@ class _PlayerPageState extends State<PlayerPage>
         final fills = PlayerVideoSurface.usesPhoneLayout(size, false);
         // 竖屏时画面可见区域在底部选集栏之上
         final areaH = fills
-            ? size.height - PlayerVideoSurface.phoneBottomBarHeight(media)
+            ? size.height - PlayerVideoSurface.phoneBottomBarHeight
             : size.height;
         final panelH =
             _shrinkPanelHeight ?? size.height * kHgEpisodePanelHeightFactor;

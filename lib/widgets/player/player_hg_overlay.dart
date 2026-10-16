@@ -51,7 +51,7 @@ extension _HgLayouts on PlayerControlsOverlay {
   // ═══ 竖屏 ═══════════════════════════════════════════════════════════════
   Widget _buildHgPortrait(
       BuildContext context, MediaQueryData media, TextTheme textTheme) {
-    final barH = PlayerVideoSurface.phoneBottomBarHeight(media);
+    const barH = PlayerVideoSurface.phoneBottomBarHeight;
     final areaH = media.size.height - barH;
     final landscapeVideo = videoWidth > 0 &&
         videoHeight > 0 &&
@@ -160,7 +160,6 @@ extension _HgLayouts on PlayerControlsOverlay {
             child: _HgEpisodeBar(
               episodeNumber: _epNo,
               totalEpisodes: totalEpisodes,
-              bottomInset: media.viewPadding.bottom,
               onTap: onEpisodeTap,
               time: _HgTimeLabel(
                 positionMsNotifier: positionMsNotifier,
@@ -462,13 +461,11 @@ class _HgEpisodeBar extends StatelessWidget {
   const _HgEpisodeBar({
     required this.episodeNumber,
     required this.totalEpisodes,
-    required this.bottomInset,
     required this.onTap,
     this.time,
   });
   final int episodeNumber;
   final int totalEpisodes;
-  final double bottomInset;
   final VoidCallback onTap;
 
   /// 播放时间（当前 / 总时长），显示在全屏按钮左边
@@ -479,7 +476,7 @@ class _HgEpisodeBar extends StatelessWidget {
         onTap: onTap,
         child: Container(
           color: PlayerVideoSurface.phoneBarColor,
-          padding: EdgeInsets.fromLTRB(16, 0, 4, bottomInset),
+          padding: const EdgeInsets.fromLTRB(16, 0, 4, 0),
           child: Row(children: [
             const SizedBox(
               width: 18,

@@ -30,9 +30,9 @@ class PlayerVideoSurface extends StatelessWidget {
   /// 屏幕宽/高超过此值视为宽屏设备（红果 wide_screen_boundary 默认 0.8）。
   static const double wideScreenBoundary = 0.8;
 
-  /// 竖屏手机底部固定控件栏高度（红果默认 56dp）+ 系统手势条 / Home 指示条。
-  static double phoneBottomBarHeight(MediaQueryData media) =>
-      56 + media.viewPadding.bottom;
+  /// 播放页已自动隐藏底部系统条，控件栏固定 56dp。
+  /// iOS 隐藏 Home 指示条后仍可能保留安全区，不能再叠加到栏高。
+  static const double phoneBottomBarHeight = 56;
 
   /// 画面区域底部两个角的圆角半径。圆角外露出的是控件栏的底色，
   /// 看起来像控件栏向上托住画面，两者衔接成一体（红果做法）。
@@ -42,17 +42,16 @@ class PlayerVideoSurface extends StatelessWidget {
   static const Color phoneBarColor = Color(0xFF161616);
 
   /// 画面区域高度：控件栏以上。
-  static double phoneVideoAreaHeight(Size box, MediaQueryData media) =>
-      box.height - phoneBottomBarHeight(media);
+  static double phoneVideoAreaHeight(Size box) =>
+      box.height - phoneBottomBarHeight;
 
   /// 是否使用竖屏手机布局（底部固定控件栏 + 画面贴顶）。
   static bool usesPhoneLayout(Size size, bool isLandscapeFullScreen) =>
       !isLandscapeFullScreen && size.width / size.height <= wideScreenBoundary;
 
   /// 竖屏手机 + 竖版片源：画面在整块屏幕坐标里的位置（铺满控件栏以上区域）。
-  static Rect phoneFillRect(
-      Size box, MediaQueryData media, double width, double height) {
-    final areaH = phoneVideoAreaHeight(box, media);
+  static Rect phoneFillRect(Size box, double width, double height) {
+    final areaH = phoneVideoAreaHeight(box);
     final scale = math.max(box.width / width, areaH / height);
     final drawW = width * scale;
     final drawH = height * scale;
@@ -97,8 +96,8 @@ class PlayerVideoSurface extends StatelessWidget {
         );
       }
 
-      final r = phoneFillRect(box, MediaQuery.of(context), width, height);
-      final areaH = phoneVideoAreaHeight(box, MediaQuery.of(context));
+      final r = phoneFillRect(box, width, height);
+      final areaH = phoneVideoAreaHeight(box);
       return ColoredBox(
         color: Colors.black,
         child: Stack(
