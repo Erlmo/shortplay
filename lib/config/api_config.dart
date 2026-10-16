@@ -5,6 +5,7 @@ class ApiConfig {
   static const String noveHome = '/nove/home';
   static const String noveRank = '/nove/rank';
   static const String noveDirectory = '/nove/directory';
+  static const String noveSeasons = '/nove/seasons';
   static const String noveDanmaku = '/nove/danmaku';
   static const String notice = '/notice';
   static const String noveShare = '/nove/share';

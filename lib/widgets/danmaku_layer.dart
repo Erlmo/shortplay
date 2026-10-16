@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -8,6 +7,7 @@ import 'package:flutter/services.dart' show rootBundle;
 
 import '../models/danmaku.dart';
 import '../utils/emoji_map.dart';
+import 'danmaku_timeline.dart';
 
 /// 弹幕里的一段：一段文字（白字 + 描边两层），或一张表情图。
 class _Piece {
@@ -32,13 +32,11 @@ class _Piece {
 class _DanmakuItem {
   double x;
   final double width;
-  final double speed;
   final List<_Piece> pieces;
 
   _DanmakuItem({
     required this.x,
     required this.width,
-    required this.speed,
     required this.pieces,
   });
 
@@ -71,15 +69,11 @@ class _EmojiImages {
   }
 }
 
-// ─── 红果弹幕参数（kmp_video_danmaku / DDanmakuEngine 反编译）────────────
-// · 时间点：每条弹幕在自己的 offset_time 出现（见 DanmakuService）。
-// · 滚动时长：竖屏 10000ms、横屏 12000ms，再除以“弹幕速度 × 播放倍速”。
-// · 字号：默认 16sp（DanmakuTextSize.DEFAULT），白字 #FFFFFF + #8F000000 描边。
-// · 不透明度：默认 255（完全不透明）。
-// · 同一行相邻两条之间至少隔 48dp（horizontalMargin），行间距 4dp。
-// · 后发的弹幕不能在屏幕内追上前一条；放不下的弹幕最多等 2 秒，过时就丢弃，
-//   不会拖到很久以后才出来。
-
+/// 红果 APK 静态默认 Meteor 普通滚动路径，采用媒体时间排版、
+/// 缓冲溢出时清理超过 4000 ms 的普通项，并防同轨追尾。
+/// 不再按帧区间触发后永久跳过迟到数据。
+/// APK 宿主静态默认竖屏 2 行，远程实验/用户配置可覆盖；横屏默认上 1/4 区域。
+/// 这不是互动/特殊弹幕或远程实验配置的一比一复刻。
 class DanmakuLayer extends StatefulWidget {
   const DanmakuLayer({
     super.key,
@@ -90,9 +84,10 @@ class DanmakuLayer extends StatefulWidget {
     this.playbackSpeed = 1.0,
     this.fontSize = 16.0,
     this.opacity = 1.0,
-    this.maxTracks = 3,
-    this.durationMs = 10000,
+    this.maxTracks,
+    this.durationMs,
     this.topOffset,
+    this.seekGeneration = 0,
   });
 
   final List<DanmakuComment> comments;
@@ -102,9 +97,10 @@ class DanmakuLayer extends StatefulWidget {
   final double playbackSpeed;
   final double fontSize;
   final double opacity;
-  final int maxTracks;
-  final int durationMs;
+  final int? maxTracks;
+  final int? durationMs;
   final double? topOffset;
+  final int seekGeneration;
 
   @override
   State<DanmakuLayer> createState() => _DanmakuLayerState();
@@ -113,154 +109,157 @@ class DanmakuLayer extends StatefulWidget {
 class _DanmakuLayerState extends State<DanmakuLayer>
     with SingleTickerProviderStateMixin {
   final List<List<_DanmakuItem>> _tracks = [];
-  final Set<String> _dispatched = {};
-  final List<DanmakuComment> _pending = [];
-  static const double _gap = 48;
-  static const int _maxLateMs = 2000;
-  late Ticker _ticker;
-  Duration _lastElapsed = Duration.zero;
-  int _lastPositionMs = -1;
-  final _random = Random();
+  final Map<String, _DanmakuItem> _items = {};
+  final DanmakuMediaClock _clock = DanmakuMediaClock();
   final _repaintNotifier = _RepaintNotifier();
+  late final Ticker _ticker;
+  DanmakuTimeline? _timeline;
+  String? _layoutSignature;
+  double _viewportWidth = 0;
+  List<(String, String, int, int, bool)> _commentSnapshot = [];
+  int _dataGeneration = 0;
 
   @override
   void initState() {
     super.initState();
-    _initTracks();
-    unawaited(_EmojiImages.load());
+    unawaited(_EmojiImages.load().then((_) {
+      if (!mounted) return;
+      setState(() => _layoutSignature = null);
+    }));
     _ticker = createTicker(_onTick)..start();
-  }
-
-  void _initTracks() {
-    for (final track in _tracks) {
-      for (final item in track) {
-        item.dispose();
-      }
-    }
-    _tracks.clear();
-    for (int i = 0; i < widget.maxTracks; i++) {
-      _tracks.add([]);
-    }
   }
 
   @override
   void didUpdateWidget(DanmakuLayer oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.maxTracks != oldWidget.maxTracks) _initTracks();
+    if (!_sameComments()) {
+      _dataGeneration++;
+      _layoutSignature = null;
+    }
+    if (oldWidget.seekGeneration != widget.seekGeneration ||
+        oldWidget.playbackSpeed != widget.playbackSpeed ||
+        oldWidget.isPlaying != widget.isPlaying) {
+      _clock.reset();
+    }
+  }
+
+  bool _sameComments() {
+    if (widget.comments.length != _commentSnapshot.length) return false;
+    for (var i = 0; i < widget.comments.length; i++) {
+      final comment = widget.comments[i];
+      if (_commentSnapshot[i] !=
+          (
+            comment.id,
+            comment.content,
+            comment.fireAtMs,
+            comment.showBoost,
+            comment.forceInsert
+          )) {
+        return false;
+      }
+    }
+    return true;
   }
 
   @override
   void dispose() {
-    for (final track in _tracks) {
-      for (final item in track) {
-        item.dispose();
-      }
-    }
     _ticker.dispose();
+    _disposeItems();
     _repaintNotifier.dispose();
     super.dispose();
   }
 
-  void _onTick(Duration elapsed) {
-    final dt = (elapsed - _lastElapsed).inMilliseconds;
-    _lastElapsed = elapsed;
-    if (dt <= 0 || dt > 100) return;
-    if (!widget.isPlaying) return;
-
-    final currentMs = widget.getPositionMs();
-    if (_lastPositionMs < 0) {
-      _lastPositionMs = currentMs;
-      return;
+  void _disposeItems() {
+    for (final item in _items.values) {
+      item.dispose();
     }
-
-    final diff = currentMs - _lastPositionMs;
-    if (diff < -2000) {
-      _clearAll();
-      _lastPositionMs = currentMs;
-      _repaintNotifier.notify();
-      return;
-    }
-    if (diff > 3000) {
-      _skipForward(currentMs);
-      _lastPositionMs = currentMs;
-      _repaintNotifier.notify();
-      return;
-    }
-
-    final delta = dt * widget.playbackSpeed;
-    bool changed = false;
-    for (final track in _tracks) {
-      track.removeWhere((item) {
-        final gone = item.x + item.width < -10;
-        if (gone) item.dispose();
-        return gone;
-      });
-      for (final item in track) {
-        item.x -= item.speed * delta;
-      }
-      if (track.isNotEmpty) changed = true;
-    }
-
-    if (widget.visible) _flushPending(currentMs);
-
-    if (currentMs > _lastPositionMs) {
-      for (final comment in widget.comments) {
-        if (_dispatched.contains(comment.id)) continue;
-        if (comment.fireAtMs > _lastPositionMs &&
-            comment.fireAtMs <= currentMs) {
-          _dispatched.add(comment.id);
-          if (widget.visible) {
-            if (!_tryAddToTrack(comment.content)) {
-              _pending.add(comment);
-            }
-          }
-          changed = true;
-        }
-      }
-      _lastPositionMs = currentMs;
-    }
-
-    if (changed) _repaintNotifier.notify();
+    _items.clear();
+    _tracks.clear();
   }
 
-  void _clearAll() {
+  void _onTick(Duration elapsed) {
+    final timeline = _timeline;
+    if (timeline == null) return;
+    final position = _clock.read(
+      positionMs: widget.getPositionMs(),
+      elapsed: elapsed,
+      isPlaying: widget.isPlaying,
+      playbackSpeed: widget.playbackSpeed,
+    );
     for (final track in _tracks) {
-      for (final item in track) {
-        item.dispose();
-      }
       track.clear();
     }
-    _dispatched.clear();
-    _pending.clear();
-  }
-
-  void _skipForward(int targetMs) {
-    for (final comment in widget.comments) {
-      if (comment.fireAtMs <= targetMs) {
-        _dispatched.add(comment.id);
+    if (widget.visible) {
+      for (final placement in timeline.placements) {
+        if (!placement.visibleAt(position, _viewportWidth)) continue;
+        final item = _items[placement.cue.id];
+        if (item == null) continue;
+        item.x = placement.xAt(position, _viewportWidth);
+        _tracks[placement.track].add(item);
       }
     }
-    _pending.clear();
+    _repaintNotifier.notify();
   }
 
-  void _flushPending(int currentMs) {
-    if (_pending.isEmpty) return;
-    final retry = List<DanmakuComment>.from(_pending);
-    _pending.clear();
-    for (final comment in retry) {
-      // 过时太久的不再补发，避免弹幕和画面对不上
-      if (currentMs - comment.fireAtMs > _maxLateMs) continue;
-      if (!_tryAddToTrack(comment.content)) {
-        _pending.add(comment);
+  void _configure(Size size, double trackHeight) {
+    final landscape = size.width > size.height;
+    // nl2.e.a() 使用 getRealMetrics 的屏幕高度，而非弹幕容器高度。
+    final view = View.of(context);
+    final screenHeight = view.physicalSize.height / view.devicePixelRatio;
+    final count = widget.maxTracks ??
+        (landscape ? (screenHeight * 0.25 / trackHeight).floor() : 2);
+    final tracks = count.clamp(1, 100);
+    final duration = widget.durationMs ?? (landscape ? 12000 : 10000);
+    final scale = MediaQuery.textScalerOf(context).scale(widget.fontSize);
+    final pixelRatio = MediaQuery.devicePixelRatioOf(context);
+    final signature =
+        '${size.width}:$tracks:$duration:$scale:$pixelRatio:$_dataGeneration';
+    if (_layoutSignature == signature) return;
+    _layoutSignature = signature;
+    _commentSnapshot = widget.comments
+        .map((comment) => (
+              comment.id,
+              comment.content,
+              comment.fireAtMs,
+              comment.showBoost,
+              comment.forceInsert,
+            ))
+        .toList();
+    _viewportWidth = size.width;
+    _disposeItems();
+    for (var i = 0; i < tracks; i++) {
+      _tracks.add([]);
+    }
+    final cues = <DanmakuCue>[];
+    for (var index = 0; index < widget.comments.length; index++) {
+      final comment = widget.comments[index];
+      // 上游缺失 ID 时仍保留不同条目；顺序作为重复文本的区分依据。
+      final id = comment.id.isEmpty
+          ? 'missing:${comment.fireAtMs}:${comment.content}:$index'
+          : comment.id;
+      if (_items.containsKey(id)) continue;
+      final item = _measure(comment.content.replaceAll('\n', ' '));
+      if (item.width <= 0) {
+        item.dispose();
+        continue;
       }
+      _items[id] = item;
+      cues.add(DanmakuCue(
+        id: id,
+        atMs: comment.fireAtMs,
+        width: item.width,
+        weight: comment.showBoost.toDouble(),
+        forceInsert: comment.forceInsert,
+      ));
     }
-    if (_pending.length > 20) {
-      _pending.removeRange(0, _pending.length - 20);
-    }
+    _timeline = DanmakuTimeline(
+      viewportWidth: size.width,
+      trackCount: tracks,
+      durationMs: duration,
+    )..layout(cues);
   }
 
-  bool _tryAddToTrack(String content) {
-    final screenWidth = MediaQuery.of(context).size.width;
+  _DanmakuItem _measure(String content) {
     final textScaler = MediaQuery.textScalerOf(context);
     TextPainter make(String text, TextStyle style) => TextPainter(
           text: TextSpan(text: text, style: style),
@@ -270,67 +269,40 @@ class _DanmakuLayerState extends State<DanmakuLayer>
         )..layout();
     final fillStyle = TextStyle(
       fontSize: widget.fontSize,
-      fontWeight: FontWeight.w500,
+      fontWeight: FontWeight.w400,
       color: Colors.white,
     );
     final strokeStyle = TextStyle(
       fontSize: widget.fontSize,
-      fontWeight: FontWeight.w500,
+      fontWeight: FontWeight.w400,
       foreground: Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2
-        ..strokeJoin = StrokeJoin.round
+        // Meteor Paint.setStrokeWidth(2.75f) 使用物理像素，非 dp。
+        ..strokeWidth = 2.75 / MediaQuery.devicePixelRatioOf(context)
+        ..strokeJoin = StrokeJoin.miter
         ..color = const Color(0x8F000000),
     );
-    // 表情比字略大一点（约 1.25 倍字号），和红果一样嵌在文字行里
-    final emojiSize = textScaler.scale(widget.fontSize) * 1.25;
+    final pixelRatio = MediaQuery.devicePixelRatioOf(context);
+    // VideoDanmakuBaseData.E: 字号 * 0.9；jg2.c.m: 再 * 1.4，
+    // 截断到物理像素整数。wh2.d.getSize 不另加左右间距。
+    final emojiSize =
+        (textScaler.scale(widget.fontSize) * pixelRatio * 0.9 * 1.4).floor() /
+            pixelRatio;
     final pieces = <_Piece>[];
     for (final run in splitDanmakuEmoji(content)) {
       final image = run.isEmoji ? _EmojiImages.cache[run.asset] : null;
       if (image != null) {
-        pieces.add(_Piece.image(image, emojiSize + 2));
+        pieces.add(_Piece.image(image, emojiSize));
       } else {
         final text = run.isEmoji ? run.fallback! : run.text!;
         pieces.add(_Piece.text(make(text, fillStyle), make(text, strokeStyle)));
       }
     }
-    if (pieces.isEmpty) return true;
-    final textWidth = pieces.fold<double>(0, (w, p) => w + p.width);
-    // 红果：每条弹幕从右边进入到完全离开左边用同样的时长，长弹幕走得快一些
-    final totalDistance = screenWidth + textWidth;
-    final baseSpeed = totalDistance / widget.durationMs;
-    final speed = baseSpeed * (0.98 + _random.nextDouble() * 0.04);
-
-    for (int i = 0; i < _tracks.length; i++) {
-      if (_canInsert(i, screenWidth, speed)) {
-        _tracks[i].add(
-          _DanmakuItem(
-            x: screenWidth,
-            width: textWidth,
-            speed: speed,
-            pieces: pieces,
-          ),
-        );
-        return true;
-      }
-    }
-    for (final p in pieces) {
-      p.dispose();
-    }
-    return false;
-  }
-
-  /// 这一行能否从右边放入新弹幕：前一条的尾巴已离开右边缘至少 48dp，
-  /// 并且新弹幕（若更快）在前一条离屏之前追不上它。
-  bool _canInsert(int trackIndex, double screenWidth, double speed) {
-    if (_tracks[trackIndex].isEmpty) return true;
-    final last = _tracks[trackIndex].last;
-    final tail = last.x + last.width;
-    final room = screenWidth - tail - _gap;
-    if (room < 0) return false;
-    if (speed <= last.speed) return true;
-    final lastExitMs = tail / last.speed;
-    return room >= (speed - last.speed) * lastExitMs;
+    return _DanmakuItem(
+      x: 0,
+      width: pieces.fold<double>(0, (width, piece) => width + piece.width),
+      pieces: pieces,
+    );
   }
 
   double? _cachedTextHeight;
@@ -345,7 +317,7 @@ class _DanmakuLayerState extends State<DanmakuLayer>
     final tp = TextPainter(
       text: TextSpan(
         text: '国',
-        style: TextStyle(fontSize: scaled, fontWeight: FontWeight.w500),
+        style: TextStyle(fontSize: scaled, fontWeight: FontWeight.w400),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
@@ -357,30 +329,33 @@ class _DanmakuLayerState extends State<DanmakuLayer>
 
   @override
   Widget build(BuildContext context) {
-    if (!widget.visible) return const SizedBox.shrink();
-    // 行高 = 字高 + 4dp 行间距（红果 DanmakuTextSize.verticalMargin）
-    final trackHeight =
-        MediaQuery.textScalerOf(context).scale(widget.fontSize) * 1.4 + 4;
-    final topOffset =
-        widget.topOffset ?? MediaQuery.of(context).viewPadding.top + 80;
-    return IgnorePointer(
-      child: Opacity(
-        opacity: widget.opacity,
-        child: RepaintBoundary(
-          child: CustomPaint(
-            painter: _DanmakuPainter(
-              tracks: _tracks,
-              trackHeight: trackHeight,
-              topOffset: topOffset,
-              // 文字行高（用于让表情图和文字垂直居中对齐）
-              textHeight: _textHeight(context),
-              repaint: _repaintNotifier,
+    return LayoutBuilder(builder: (context, constraints) {
+      final size = constraints.biggest;
+      // APK 默认字号含上下各 8 dp 内边距，行间距 4 dp。
+      final trackHeight = _textHeight(context) + 16 + 4;
+      _configure(size, trackHeight);
+      final topOffset =
+          widget.topOffset ?? MediaQuery.of(context).viewPadding.top + 80;
+      return IgnorePointer(
+        child: Opacity(
+          opacity: widget.visible ? widget.opacity : 0,
+          child: RepaintBoundary(
+            child: ClipRect(
+              child: CustomPaint(
+                painter: _DanmakuPainter(
+                  tracks: _tracks,
+                  trackHeight: trackHeight,
+                  topOffset: topOffset,
+                  textHeight: _textHeight(context),
+                  repaint: _repaintNotifier,
+                ),
+                size: size,
+              ),
             ),
-            size: Size.infinite,
           ),
         ),
-      ),
-    );
+      );
+    });
   }
 }
 
@@ -412,13 +387,13 @@ class _DanmakuPainter extends CustomPainter {
         for (final piece in item.pieces) {
           final image = piece.image;
           if (image != null) {
-            final size = piece.width - 2;
+            final size = piece.width;
             final top = y + (textHeight - size) / 2;
             canvas.drawImageRect(
               image,
               Rect.fromLTWH(
                   0, 0, image.width.toDouble(), image.height.toDouble()),
-              Rect.fromLTWH(dx + 1, top, size, size),
+              Rect.fromLTWH(dx, top, size, size),
               _imagePaint,
             );
           } else {

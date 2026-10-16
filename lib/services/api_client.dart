@@ -8,6 +8,7 @@ import '../config/api_config.dart';
 import '../models/app_update.dart';
 import '../models/danmaku.dart';
 import '../models/drama.dart';
+import '../models/drama_season.dart';
 import '../models/episode.dart';
 import '../models/fq_video.dart';
 import 'sign_interceptor.dart';
@@ -377,16 +378,19 @@ class ApiClient {
 
   Future<DanmakuResponse> fetchDanmaku({
     required String groupId,
+    String? bookId,
     int? duration,
     int? startOffsetTime,
     String? cursor,
     int count = 90,
+    CancelToken? cancelToken,
   }) async {
     final params = <String, String>{
       'group_id': groupId,
       'count': count.toString(),
       'sort': '1',
     };
+    if (bookId != null && bookId.isNotEmpty) params['book_id'] = bookId;
     if (duration != null) params['duration'] = duration.toString();
     if (startOffsetTime != null) {
       params['start_offset_time'] = startOffsetTime.toString();
@@ -398,7 +402,7 @@ class ApiClient {
       ApiConfig.noveDanmaku,
       params,
     );
-    final response = await _dio.getUri(uri);
+    final response = await _dio.getUri(uri, cancelToken: cancelToken);
     final decoded = _decode(response);
     return DanmakuResponse.fromJson(decoded);
   }
@@ -434,10 +438,15 @@ class ApiClient {
     final decoded = _decode(response);
     final data = decoded['data'] as Map<String, dynamic>? ?? {};
     final lists = data['lists'] as List? ?? [];
-    final chapters = lists.whereType<Map>().map((item) {
+    final chapters =
+        lists.whereType<Map>().toList().asMap().entries.map((entry) {
+      final item = entry.value;
       final itemId = item['item_id']?.toString() ?? '';
-      final title = item['title']?.toString() ?? '';
-      final index = RegExp(r'\d+').firstMatch(title)?.group(0) ?? '0';
+      final episodeTitle = item['episode_title']?.toString().trim() ?? '';
+      final title = episodeTitle.isNotEmpty
+          ? episodeTitle
+          : item['title']?.toString() ?? '';
+      final index = (entry.key + 1).toString();
       return TheaterChapter(
         itemId: itemId,
         title: title,
@@ -455,6 +464,49 @@ class ApiClient {
       chapters: chapters,
       bookInfo: bookInfo,
     );
+  }
+
+  Future<Map<String, String>> fetchEpisodeTitles(String seriesId) async {
+    try {
+      final response = await _dio
+          .get('/nove/episodetitles', queryParameters: {'book_id': seriesId});
+      final data = _decode(response)['data'];
+      if (data is! Map || data['titles'] is! Map) {
+        throw ApiException('分集标题数据无效');
+      }
+      if (data['series_id'] != null &&
+          data['series_id'].toString() != seriesId) {
+        throw ApiException('分集标题与当前短剧不匹配');
+      }
+      return {
+        for (final entry in (data['titles'] as Map).entries)
+          if (entry.value is String &&
+              (entry.value as String).trim().isNotEmpty)
+            entry.key.toString(): (entry.value as String).trim()
+      };
+    } on DioException catch (error) {
+      final body = error.response?.data;
+      throw ApiException(body is Map
+          ? body['message']?.toString() ?? '分集标题加载失败'
+          : '分集标题加载失败，请稍后重试');
+    }
+  }
+
+  Future<DramaSeasons> fetchDramaSeasons(String seriesId,
+      {CancelToken? cancelToken}) async {
+    try {
+      final response = await _dio.get(ApiConfig.noveSeasons,
+          queryParameters: {'book_id': seriesId}, cancelToken: cancelToken);
+      final decoded = _decode(response);
+      final data = decoded['data'];
+      if (data is! Map<String, dynamic>) {
+        throw ApiException('其他季数据无效');
+      }
+      return DramaSeasons.fromJson(data);
+    } on DioException catch (error) {
+      if (CancelToken.isCancel(error)) rethrow;
+      throw ApiException('无法加载其他季，请检查服务端接口或稍后重试');
+    }
   }
 
   /// 按短剧 ID 取详情（封面 / 简介 / 标签 / 评分 / 集数等）。
@@ -479,7 +531,7 @@ class ApiClient {
     return HomePageResult.fromJson(data);
   }
 
-  // rankType: 'hotplay' | 'recommend' | 'rising' | 'newplay'
+  // rankType: 'hotplay' | 'recommend' | 'followed' | 'hotsearch' | 'newplay' | 'newrank'
   Future<RankListResult> fetchRankList({
     required String rankType,
     String type = 'all',
@@ -498,7 +550,16 @@ class ApiClient {
       ApiConfig.noveRank,
       params,
     );
-    final response = await _dio.getUri(uri);
+    late final Response response;
+    try {
+      response = await _dio.getUri(uri);
+    } on DioException catch (error) {
+      if (CancelToken.isCancel(error)) rethrow;
+      final body = error.response?.data;
+      final message = body is Map ? body['message'] ?? body['msg'] : null;
+      throw ApiException(message is String ? message : '榜单加载失败，请稍后重试',
+          code: error.response?.statusCode);
+    }
     final decoded = _decode(response);
     final data = decoded['data'] as Map<String, dynamic>? ?? {};
     return RankListResult.fromJson(data);
@@ -548,7 +609,11 @@ class ApiClient {
       final decoded = _asJsonMap(response.data);
       final code = decoded['code'] as int? ?? 0;
       if (code != 0) {
-        throw ApiException(decoded['msg']?.toString() ?? '接口异常', code: code);
+        throw ApiException(
+            decoded['msg']?.toString() ??
+                decoded['message']?.toString() ??
+                '接口异常',
+            code: code);
       }
       return decoded;
     } catch (error) {

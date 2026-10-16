@@ -305,8 +305,7 @@ class _HgLandscapeIconPainter extends CustomPainter {
 
     // 横放的手机
     canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          Rect.fromLTWH(1.2 * k, 6 * k, 12.6 * k, 7.6 * k),
+      RRect.fromRectAndRadius(Rect.fromLTWH(1.2 * k, 6 * k, 12.6 * k, 7.6 * k),
           Radius.circular(1.6 * k)),
       stroke,
     );
@@ -985,8 +984,7 @@ class _HgEpisodeIconPainter extends CustomPainter {
     // 前面的卡片
     stroke.color = const Color(0xF2FFFFFF);
     canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          Rect.fromLTWH(2 * s, 5.5 * s, 14 * s, 10.5 * s),
+      RRect.fromRectAndRadius(Rect.fromLTWH(2 * s, 5.5 * s, 14 * s, 10.5 * s),
           Radius.circular(2.6 * s)),
       stroke,
     );

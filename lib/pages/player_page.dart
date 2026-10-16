@@ -132,6 +132,7 @@ class _PlayerPageState extends State<PlayerPage>
   late final PlayerSystemUiController _systemUi;
   late final PlayerSleepTimer _sleepTimer;
   late final PlayerDanmakuController _danmakuController;
+  int _danmakuSeekGeneration = 0;
   late final TheaterVideoPreloadManager _preloadManager;
   PageController? _pageController;
 
@@ -403,7 +404,7 @@ class _PlayerPageState extends State<PlayerPage>
       }
       _setupSubscriptions(reusedPlayer, reqId);
       _danmakuController.clearComments();
-      _loadDanmaku();
+      _loadDanmaku(positionMs: initialSeekMs);
       schedulePreloads(_currentEpisodeIndex);
       _saveHistory();
       return;
@@ -549,7 +550,7 @@ class _PlayerPageState extends State<PlayerPage>
 
     _setupSubscriptions(player, reqId);
     _danmakuController.clearComments();
-    _loadDanmaku();
+    _loadDanmaku(positionMs: initialSeekMs);
     schedulePreloads(_currentEpisodeIndex);
     _saveHistory();
   }
@@ -590,6 +591,7 @@ class _PlayerPageState extends State<PlayerPage>
     // 持续加载弹幕下一批
     unawaited(_danmakuController.ensureLoadedUpTo(
       positionMs: position.inMilliseconds,
+      durationMs: duration.inMilliseconds,
       isTheaterResource: widget.drama.isTheaterResource,
       isOfflinePlayback: isOfflinePlayback,
     ));
@@ -671,6 +673,8 @@ class _PlayerPageState extends State<PlayerPage>
     final player = _player;
     if (player != null && _playerInitialized) {
       player.seek(Duration(milliseconds: ms.toInt()));
+      positionMsNotifier.value = ms.toInt();
+      _onDanmakuSeek(ms.toInt());
       if (_resumeAfterSeek) {
         player.play();
       }
@@ -767,18 +771,33 @@ class _PlayerPageState extends State<PlayerPage>
       isOfflinePlayback: isOfflinePlayback,
       currentEpisode:
           _episodes.isNotEmpty ? _episodes[_currentEpisodeIndex] : null,
+      bookId: widget.drama.id.toString(),
       durationMs: durationMsNotifier.value,
+      positionMs: positionMsNotifier.value,
     ));
     setState(() {});
   }
 
-  void _loadDanmaku() {
+  void _loadDanmaku({int? positionMs}) {
     if (isOfflinePlayback || !widget.drama.isTheaterResource) return;
     if (!_danmakuController.enabled) return;
     if (_currentEpisodeIndex >= _episodes.length) return;
     unawaited(_danmakuController.loadForEpisode(
       episode: _episodes[_currentEpisodeIndex],
+      bookId: widget.drama.id.toString(),
       durationMs: durationMsNotifier.value,
+      positionMs: positionMs ?? positionMsNotifier.value,
+      isOfflinePlayback: isOfflinePlayback,
+    ));
+  }
+
+  void _onDanmakuSeek(int positionMs) {
+    _danmakuSeekGeneration++;
+    unawaited(_danmakuController.ensureLoadedUpTo(
+      positionMs: positionMs,
+      durationMs: durationMsNotifier.value,
+      seek: true,
+      isTheaterResource: widget.drama.isTheaterResource,
       isOfflinePlayback: isOfflinePlayback,
     ));
   }
@@ -908,6 +927,8 @@ class _PlayerPageState extends State<PlayerPage>
     if (duration > 0 && target > duration - 500) target = duration - 500;
     unawaited(player.seek(Duration(milliseconds: target)));
     positionMsNotifier.value = target;
+    _onDanmakuSeek(target);
+    setState(() {});
   }
 
   void _flashKeyHint() {
@@ -1002,6 +1023,10 @@ class _PlayerPageState extends State<PlayerPage>
         isLandscapeFullScreen: _systemUi.isLandscapeFullScreen,
         dramaName: widget.drama.name,
         episodes: _episodes,
+        loadTitles: widget.drama.isTheaterResource && !isOfflinePlayback
+            ? () =>
+                widget.apiClient.fetchEpisodeTitles(widget.drama.id.toString())
+            : null,
         episodeNotifier: episodeNotifier,
         onSelectEpisode: _jumpToEpisode,
         cover: widget.drama.cover,
@@ -1420,15 +1445,17 @@ class _PlayerPageState extends State<PlayerPage>
           _hideWhileShrunk(ListenableBuilder(
             listenable: Listenable.merge([_danmakuController, playingNotifier]),
             builder: (context, _) => DanmakuLayer(
+              key: ValueKey('danmaku-${_episodes[index].url}'),
+              seekGeneration: _danmakuSeekGeneration,
               comments: _danmakuController.comments,
               getPositionMs: () => positionMsNotifier.value,
               isPlaying: playingNotifier.value,
               visible: _danmakuController.enabled,
               playbackSpeed: _isSpeedUp ? 2.0 : _playbackSpeed,
-              // 红果：竖屏 10 秒、横屏 12 秒滚完一屏；横屏多一行
-              durationMs: _systemUi.isLandscapeFullScreen ? 12000 : 10000,
-              maxTracks: _systemUi.isLandscapeFullScreen ? 4 : 3,
-              topOffset: MediaQuery.of(context).viewPadding.top + 64,
+              topOffset: MediaQuery.viewPaddingOf(context).top +
+                  (MediaQuery.orientationOf(context) == Orientation.landscape
+                      ? 8
+                      : 64),
             ),
           )),
         if (isActive && _loading)

@@ -18,6 +18,7 @@ Future<void> showPlayerEpisodeSheet({
   String cover = '',
   String intro = '',
   String status = '',
+  Future<Map<String, String>> Function()? loadTitles,
 }) {
   // 手机、平板、桌面（macOS 等）：红果选集面板；宽窗口 / 横屏全屏用右侧侧栏。
   // 只有电视保留遥控器焦点版的侧边面板。
@@ -33,6 +34,7 @@ Future<void> showPlayerEpisodeSheet({
       episodes: episodes,
       episodeNotifier: episodeNotifier,
       onSelectEpisode: onSelectEpisode,
+      loadTitles: loadTitles,
     );
   }
   // 电视：右侧全高深色面板（遥控器焦点）

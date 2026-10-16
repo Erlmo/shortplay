@@ -14,6 +14,9 @@ import 'package:shortplay/widgets/player/player_controls_overlay.dart';
 import 'support/no_app_updates.dart';
 
 class _FocusApiClient extends ApiClient {
+  _FocusApiClient({this.manyNewPlays = false});
+
+  final bool manyNewPlays;
   @override
   Future<List<String>> fetchNotice() async => [];
 
@@ -44,7 +47,15 @@ class _FocusApiClient extends ApiClient {
         hasMore: false,
         nextOffset: 0,
         list: [
-          Drama.fromJson({'id': 2, 'name': '新剧列表短剧'})
+          if (manyNewPlays)
+            ...List.generate(
+                100,
+                (index) => Drama.fromJson({
+                      'id': index + 2,
+                      'name': '新剧列表短剧 $index',
+                    }))
+          else
+            Drama.fromJson({'id': 2, 'name': '新剧列表短剧'})
         ],
       );
 }
@@ -146,6 +157,84 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
     expect(newTabFocus.hasFocus, isFalse);
     await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('电视浏览新剧多行后返回聚焦当前栏目，保留位置并可左右切换及再次返回退出', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    var exits = 0;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'SystemNavigator.pop') exits++;
+      return null;
+    });
+    final client = _FocusApiClient(manyNewPlays: true);
+    final downloads = DownloadService(apiClient: client);
+    addTearDown(downloads.dispose);
+    addTearDown(() => client.dio.close(force: true));
+    await tester.binding.setSurfaceSize(const Size(960, 540));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(ShortPlayApp(
+        apiClient: client,
+        downloadService: downloads,
+        appUpdateService: NoAppUpdates(client)));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('新剧'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    final cardContext = tester.element(find.text('新剧列表短剧 0'));
+    final position = Scrollable.of(cardContext).position;
+    Focus.of(cardContext).requestFocus();
+    await tester.pump();
+    for (var row = 0; row < 6; row++) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+    }
+    expect(position.pixels, greaterThan(0));
+    final offset = position.pixels;
+    await tester.binding.handlePopRoute();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(exits, 0);
+    expect(Focus.of(tester.element(find.text('新剧'))).hasFocus, isTrue);
+    expect(position.pixels, offset);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+    expect(Focus.of(tester.element(find.text('推荐'))).hasFocus, isTrue);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+    expect(Focus.of(tester.element(find.text('热播'))).hasFocus, isTrue);
+    await tester.binding.handlePopRoute();
+    expect(exits, 1);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+  });
+
+  testWidgets('手机首页返回键仍按系统行为退出', (tester) async {
+    DeviceProfile.isTv = false;
+    SharedPreferences.setMockInitialValues({});
+    var exits = 0;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'SystemNavigator.pop') exits++;
+      return null;
+    });
+    final client = _FocusApiClient();
+    final downloads = DownloadService(apiClient: client);
+    addTearDown(downloads.dispose);
+    addTearDown(() => client.dio.close(force: true));
+    await tester.pumpWidget(ShortPlayApp(
+        apiClient: client,
+        downloadService: downloads,
+        appUpdateService: NoAppUpdates(client)));
+    await tester.pump();
+    await tester.binding.handlePopRoute();
+    expect(exits, 1);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
   });
 
   testWidgets('电视未切换横屏时集数和进度一起自动隐藏并可重新显示', (tester) async {

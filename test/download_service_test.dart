@@ -3,11 +3,14 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:shortplay/models/episode.dart';
 import 'package:shortplay/pages/cache_page.dart';
+import 'package:shortplay/pages/player_page.dart';
+import 'package:shortplay/services/device_profile.dart';
 import 'package:shortplay/services/api_client.dart';
 import 'package:shortplay/services/download_service.dart';
 import 'package:shortplay/services/offline_playback_cache.dart';
@@ -421,6 +424,156 @@ void main() {
     expect(find.text('已下载3集'), findsOneWidget);
     expect(find.text('共1个'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('电视方向键可独立暂停继续整部缓存和单集，确认键不会误展开条目', (tester) async {
+    DeviceProfile.isTv = true;
+    addTearDown(() => DeviceProfile.isTv = false);
+    late DownloadService service;
+    await tester.runAsync(() async {
+      service = createService();
+      await add(service, 'a', [_episode(1), _episode(2)]);
+      await _until(() => downloader.requests.length == 2);
+    });
+    await tester.pumpWidget(MaterialApp(
+        home:
+            CachePage(downloadService: service, apiClient: service.apiClient)));
+    await tester.pump();
+    final pauseFocus =
+        Focus.of(tester.element(find.byIcon(Icons.pause_rounded)));
+    pauseFocus.requestFocus();
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+    expect(
+        Focus.of(tester.element(find.byIcon(Icons.keyboard_arrow_down_rounded)))
+            .hasFocus,
+        isTrue);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+    await tester.pump();
+    expect(pauseFocus.hasFocus, isTrue);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(service.isGroupPaused('a'), isTrue);
+    expect(find.text('第1集'), findsNothing);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(service.isGroupPaused('a'), isFalse);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(service.isGroupPaused('a'), isTrue);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    final episodes = service.groups['a']!.episodes;
+    Focus.of(tester.element(find.text('第1集'))).requestFocus();
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(episodes[0].status, isNot(DownloadStatus.paused));
+    expect(episodes[1].status, DownloadStatus.paused);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(episodes[0].status, DownloadStatus.paused);
+    expect(find.text('第2集'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('电视可删除正在缓存的条目，默认取消且确认后才移除', (tester) async {
+    DeviceProfile.isTv = true;
+    addTearDown(() => DeviceProfile.isTv = false);
+    late DownloadService service;
+    await tester.runAsync(() async {
+      service = createService();
+      await add(service, 'a', [_episode(1)]);
+      await _until(() => downloader.requests.length == 1);
+    });
+    await tester.pumpWidget(MaterialApp(
+        home:
+            CachePage(downloadService: service, apiClient: service.apiClient)));
+    await tester.pump();
+    Focus.of(tester.element(find.byIcon(Icons.pause_rounded))).requestFocus();
+    await tester.pump();
+    for (var step = 0; step < 2; step++) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+    }
+    expect(
+        Focus.of(tester.element(find.byIcon(Icons.delete_outline_rounded)))
+            .hasFocus,
+        isTrue);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(Focus.of(tester.element(find.text('取消'))).hasFocus, isTrue);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(service.groups, contains('a'));
+    expect(service.groups['a']!.episodes.single.status,
+        DownloadStatus.downloading);
+    Focus.of(tester.element(find.byIcon(Icons.delete_outline_rounded)))
+        .requestFocus();
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.runAsync(() async => _until(() => service.groups.isEmpty));
+    await tester.pumpAndSettle();
+    expect(find.text('暂无缓存'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('电视确认已缓存集数时打开本地播放，保留不连续集号', (tester) async {
+    DeviceProfile.isTv = true;
+    addTearDown(() => DeviceProfile.isTv = false);
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    for (final channel in [
+      SystemChannels.platform,
+      const MethodChannel('shortplay/native_player')
+    ]) {
+      messenger.setMockMethodCallHandler(channel, (_) async => null);
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    }
+    late DownloadService service;
+    await tester.runAsync(() async {
+      service = createService();
+      await add(service, 'a', [_episode(1), _episode(3)]);
+      await _until(() => downloader.requests.length == 2);
+      for (final request in downloader.requests) {
+        request.finish();
+      }
+      await _until(() => service.groups['a']!.isAllCompleted);
+    });
+    await tester.pumpWidget(MaterialApp(
+        home:
+            CachePage(downloadService: service, apiClient: service.apiClient)));
+    await tester.pump();
+    Focus.of(tester.element(find.byIcon(Icons.keyboard_arrow_down_rounded)))
+        .requestFocus();
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    Focus.of(tester.element(find.text('第3集'))).requestFocus();
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    final player = tester.widget<PlayerPage>(find.byType(PlayerPage));
+    expect(player.initialEpisodeNumber, 3);
+    expect(player.initialEpisodeIndex, 1);
+    expect(player.offlineEpisodes!.map((episode) => episode.index), [1, 3]);
+    expect(
+        player.offlineEpisodes!
+            .every((episode) => File(episode.url).existsSync()),
+        isTrue);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
   });
 
   test('标题没有数字时预加载、播放与缓存仍生成一致的非零集号', () {

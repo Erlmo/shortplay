@@ -5,11 +5,12 @@ import 'package:flutter/material.dart';
 
 import '../models/drama.dart';
 import '../services/api_client.dart';
+import '../services/device_profile.dart';
 import '../services/download_service.dart';
 import '../services/offline_playback_cache.dart';
 import '../widgets/app_notice.dart';
-import 'player_page.dart';
 import '../widgets/tv_tap.dart';
+import 'player_page.dart';
 
 class CachePage extends StatefulWidget {
   const CachePage({
@@ -278,6 +279,7 @@ class _CachePageState extends State<CachePage> with WidgetsBindingObserver {
             style: const TextStyle(fontSize: 14, color: _Hg.gray70)),
         actions: [
           TextButton(
+            autofocus: DeviceProfile.usesFocusUi,
             onPressed: () => Navigator.pop(context, false),
             style: TextButton.styleFrom(foregroundColor: _Hg.gray70),
             child: const Text('取消'),
@@ -373,6 +375,8 @@ class _GroupCardState extends State<_GroupCard> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           InkWell(
+            // 电视把焦点交给独立操作按钮，避免整行覆盖内部按钮的导航区域。
+            canRequestFocus: !DeviceProfile.usesFocusUi,
             onTap: () => setState(() => _expanded = !_expanded),
             splashColor: Colors.transparent,
             highlightColor: Colors.transparent,
@@ -442,38 +446,29 @@ class _GroupCardState extends State<_GroupCard> {
                   ),
                   const SizedBox(width: 8),
                   if (!done)
-                    TvTap(
-                      borderRadius: 16,
+                    _CacheAction(
+                      label: isPaused ? '继续缓存' : '暂停缓存',
+                      icon: isPaused
+                          ? Icons.play_arrow_rounded
+                          : Icons.pause_rounded,
                       onTap: () => isPaused
                           ? widget.downloadService.resumeGroup(group.dramaId)
                           : widget.downloadService.pauseGroup(group.dramaId),
-                      child: Container(
-                        width: 32,
-                        height: 32,
-                        decoration: const BoxDecoration(
-                            color: _Hg.fill, shape: BoxShape.circle),
-                        child: Icon(
-                          isPaused
-                              ? Icons.play_arrow_rounded
-                              : Icons.pause_rounded,
-                          size: 18,
-                          color: _Hg.gray70,
-                        ),
-                      ),
                     ),
-                  TvTap(
+                  _CacheAction(
+                    label: _expanded ? '收起集数' : '展开集数',
+                    compact: true,
+                    icon: _expanded
+                        ? Icons.keyboard_arrow_up_rounded
+                        : Icons.keyboard_arrow_down_rounded,
                     onTap: () => setState(() => _expanded = !_expanded),
-                    child: Padding(
-                      padding: const EdgeInsets.only(left: 4),
-                      child: Icon(
-                        _expanded
-                            ? Icons.keyboard_arrow_up_rounded
-                            : Icons.keyboard_arrow_down_rounded,
-                        size: 20,
-                        color: _Hg.gray40,
-                      ),
-                    ),
                   ),
+                  if (DeviceProfile.usesFocusUi)
+                    _CacheAction(
+                      label: '删除缓存',
+                      icon: Icons.delete_outline_rounded,
+                      onTap: () => widget.onDelete(),
+                    ),
                 ],
               ),
             ),
@@ -496,6 +491,57 @@ class _GroupCardState extends State<_GroupCard> {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// 组操作独立聚焦，方向键可以依次选中暂停、展开和删除。
+class _CacheAction extends StatelessWidget {
+  const _CacheAction(
+      {required this.label,
+      required this.icon,
+      required this.onTap,
+      this.compact = false});
+
+  final String label;
+  final IconData icon;
+  final VoidCallback onTap;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final focusUi = DeviceProfile.usesFocusUi;
+    return Padding(
+      padding: EdgeInsets.only(left: focusUi ? 8 : 4),
+      child: Semantics(
+        button: true,
+        label: label,
+        child: TvTap(
+          borderRadius: focusUi ? 12 : 16,
+          focusScale: 1,
+          onTap: onTap,
+          child: Tooltip(
+            message: label,
+            child: Container(
+              width: focusUi
+                  ? 44
+                  : compact
+                      ? 20
+                      : 32,
+              height: focusUi
+                  ? 44
+                  : compact
+                      ? 20
+                      : 32,
+              decoration: BoxDecoration(
+                  color: compact && !focusUi ? Colors.transparent : _Hg.fill,
+                  borderRadius: BorderRadius.circular(focusUi ? 12 : 16)),
+              child: Icon(icon,
+                  size: focusUi || compact ? 20 : 18, color: _Hg.gray70),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -545,80 +591,91 @@ class _EpisodeChip extends StatelessWidget {
                   detail: ep.error!,
                   kind: AppNoticeKind.error);
             },
-      onTap: () {
-        if (isCompleted) {
-          onPlay?.call();
-        } else if (isDownloading || isPending) {
-          downloadService.pauseEpisode(ep);
-        } else if (isPaused) {
-          downloadService.resumeEpisode(ep);
-        } else if (status == DownloadStatus.failed ||
-            status == DownloadStatus.completed) {
-          downloadService.resumeEpisode(ep);
-        }
-      },
-      child: Container(
-        width: 56,
-        height: 36,
-        decoration: BoxDecoration(
-          color: bgColor,
-          borderRadius: BorderRadius.circular(6),
+      child: Semantics(
+        button: true,
+        label:
+            '第${ep.episode.index}集，${isCompleted ? '播放已缓存剧集' : isDownloading || isPending ? '暂停缓存' : '开始缓存'}',
+        child: TvTap(
+          borderRadius: 6,
+          focusScale: 1,
+          onTap: () {
+            if (isCompleted) {
+              onPlay?.call();
+            } else if (isDownloading || isPending) {
+              downloadService.pauseEpisode(ep);
+            } else if (isPaused) {
+              downloadService.resumeEpisode(ep);
+            } else if (status == DownloadStatus.failed ||
+                status == DownloadStatus.completed) {
+              downloadService.resumeEpisode(ep);
+            }
+          },
+          child: Container(
+            width: 56,
+            height: 36,
+            decoration: BoxDecoration(
+              color: bgColor,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: isDownloading
+                ? Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        ep.progress < 0
+                            ? '下载中'
+                            : '${(ep.progress * 100).toInt()}%',
+                        style: const TextStyle(fontSize: 11, color: _Hg.brand),
+                      ),
+                      const SizedBox(height: 3),
+                      SizedBox(
+                        width: 32,
+                        child: LinearProgressIndicator(
+                          value: ep.progress < 0 ? null : ep.progress,
+                          minHeight: 2,
+                          color: _Hg.brand,
+                          backgroundColor: const Color(0x1AFA6725),
+                        ),
+                      ),
+                    ],
+                  )
+                : Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      Text(
+                        '第${ep.episode.index}集',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight:
+                              isCompleted ? FontWeight.w500 : FontWeight.w400,
+                          color: textColor,
+                        ),
+                      ),
+                      if (isPaused)
+                        const Positioned(
+                          right: 3,
+                          top: 3,
+                          child: Icon(Icons.pause_rounded,
+                              size: 10, color: _Hg.gray40),
+                        ),
+                      if (isFailed)
+                        const Positioned(
+                          right: 3,
+                          top: 3,
+                          child: Icon(Icons.error_outline_rounded,
+                              size: 10, color: _Hg.red),
+                        ),
+                      if (isPending)
+                        const Positioned(
+                          right: 3,
+                          top: 3,
+                          child: Icon(Icons.schedule_rounded,
+                              size: 10, color: _Hg.gray40),
+                        ),
+                    ],
+                  ),
+          ),
         ),
-        child: isDownloading
-            ? Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    ep.progress < 0 ? '下载中' : '${(ep.progress * 100).toInt()}%',
-                    style: const TextStyle(fontSize: 11, color: _Hg.brand),
-                  ),
-                  const SizedBox(height: 3),
-                  SizedBox(
-                    width: 32,
-                    child: LinearProgressIndicator(
-                      value: ep.progress < 0 ? null : ep.progress,
-                      minHeight: 2,
-                      color: _Hg.brand,
-                      backgroundColor: const Color(0x1AFA6725),
-                    ),
-                  ),
-                ],
-              )
-            : Stack(
-                alignment: Alignment.center,
-                children: [
-                  Text(
-                    '第${ep.episode.index}集',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight:
-                          isCompleted ? FontWeight.w500 : FontWeight.w400,
-                      color: textColor,
-                    ),
-                  ),
-                  if (isPaused)
-                    const Positioned(
-                      right: 3,
-                      top: 3,
-                      child: Icon(Icons.pause_rounded,
-                          size: 10, color: _Hg.gray40),
-                    ),
-                  if (isFailed)
-                    const Positioned(
-                      right: 3,
-                      top: 3,
-                      child: Icon(Icons.error_outline_rounded,
-                          size: 10, color: _Hg.red),
-                    ),
-                  if (isPending)
-                    const Positioned(
-                      right: 3,
-                      top: 3,
-                      child: Icon(Icons.schedule_rounded,
-                          size: 10, color: _Hg.gray40),
-                    ),
-                ],
-              ),
       ),
     );
   }

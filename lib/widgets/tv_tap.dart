@@ -15,6 +15,7 @@ class TvTap extends StatefulWidget {
     this.behavior,
     this.borderRadius = 12,
     this.autofocus = false,
+    this.focusNode,
     this.focusScale = 1.04,
     this.ink = false,
     this.ringColor,
@@ -25,6 +26,7 @@ class TvTap extends StatefulWidget {
   final HitTestBehavior? behavior;
   final double borderRadius;
   final bool autofocus;
+  final FocusNode? focusNode;
   final double focusScale;
 
   /// true：用 InkWell 保留点击水波纹（替换原来的 InkWell 时用）。
@@ -62,6 +64,7 @@ class _TvTapState extends State<TvTap> {
     return FocusableActionDetector(
       enabled: widget.onTap != null,
       autofocus: widget.autofocus,
+      focusNode: widget.focusNode,
       actions: <Type, Action<Intent>>{
         ActivateIntent: CallbackAction<ActivateIntent>(
           onInvoke: (_) {

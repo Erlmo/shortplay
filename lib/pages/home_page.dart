@@ -34,6 +34,8 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   int _currentIndex = 0;
+  bool _tvTopBarFocused = false;
+  final _homeFeedKey = GlobalKey<_HomeFeedPageState>();
 
   late final List<Widget> _pages;
 
@@ -45,6 +47,12 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     _pages = [
       _HomeFeedPage(
+        key: _homeFeedKey,
+        onTvTopBarFocusChanged: (focused) {
+          if (mounted && focused != _tvTopBarFocused) {
+            setState(() => _tvTopBarFocused = focused);
+          }
+        },
         apiClient: widget.apiClient,
         downloadService: widget.downloadService,
       ),
@@ -67,6 +75,18 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
+    return PopScope(
+      canPop: !DeviceProfile.isTv || _currentIndex != 0 || _tvTopBarFocused,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && DeviceProfile.isTv && _currentIndex == 0) {
+          _homeFeedKey.currentState?.focusCurrentTvTab();
+        }
+      },
+      child: _buildScaffold(),
+    );
+  }
+
+  Widget _buildScaffold() {
     return Scaffold(
       backgroundColor:
           DeviceProfile.isTv ? const Color(0xFFF4F5F8) : Colors.white,
@@ -250,7 +270,13 @@ class _HomePageState extends State<HomePage> {
 }
 
 class _HomeFeedPage extends StatefulWidget {
-  const _HomeFeedPage({required this.apiClient, required this.downloadService});
+  const _HomeFeedPage({
+    super.key,
+    required this.apiClient,
+    required this.downloadService,
+    required this.onTvTopBarFocusChanged,
+  });
+  final ValueChanged<bool> onTvTopBarFocusChanged;
   final ApiClient apiClient;
   final DownloadService downloadService;
 
@@ -261,17 +287,26 @@ class _HomeFeedPage extends StatefulWidget {
 class _HomeFeedPageState extends State<_HomeFeedPage>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
+  final List<FocusNode> _tvTabFocusNodes =
+      List.generate(6, (index) => FocusNode(debugLabel: 'TV 栏目 $index'));
+
+  void focusCurrentTvTab() {
+    _tvTabFocusNodes[_tabController.index].requestFocus();
+  }
 
   @override
   void initState() {
     super.initState();
-    // 5个 Tab: 首页(原发现), 新剧(原关注), 推荐(原杭州), 热播(新增), 飙升(新增)
-    _tabController = TabController(length: 5, vsync: this, initialIndex: 0);
+    // 首页、新剧、推荐、热播、收藏、热搜。
+    _tabController = TabController(length: 6, vsync: this, initialIndex: 0);
   }
 
   @override
   void dispose() {
     _tabController.dispose();
+    for (final node in _tvTabFocusNodes) {
+      node.dispose();
+    }
     super.dispose();
   }
 
@@ -365,7 +400,30 @@ class _HomeFeedPageState extends State<_HomeFeedPage>
                 showRanking: true, // 显示排名
                 fetchFunction: (client, offset, sessionId, type) async {
                   final res = await client.fetchRankList(
-                    rankType: 'rising',
+                    rankType: 'followed',
+                    type: type,
+                    offset: offset,
+                    sessionId: sessionId,
+                  );
+                  return HomePageResult(
+                    offset: res.offset,
+                    sessionId: res.sessionId,
+                    count: res.count,
+                    hasMore: res.hasMore,
+                    nextOffset: res.nextOffset,
+                    list: res.list,
+                  );
+                },
+              ),
+              _DramaListTab(
+                apiClient: widget.apiClient,
+                downloadService: widget.downloadService,
+                enableFilters: true,
+                useGridView: false,
+                showRanking: true, // 显示排名
+                fetchFunction: (client, offset, sessionId, type) async {
+                  final res = await client.fetchRankList(
+                    rankType: 'hotsearch',
                     type: type,
                     offset: offset,
                     sessionId: sessionId,
@@ -443,7 +501,8 @@ class _HomeFeedPageState extends State<_HomeFeedPage>
                     Tab(text: '新剧'),
                     Tab(text: '推荐'),
                     Tab(text: '热播'),
-                    Tab(text: '飙升'),
+                    Tab(text: '收藏'),
+                    Tab(text: '热搜'),
                   ],
                 ),
               ),
@@ -474,7 +533,7 @@ class _HomeFeedPageState extends State<_HomeFeedPage>
   }
 
   Widget _buildTvTopBar(BuildContext context) {
-    const labels = ['首页', '新剧', '推荐', '热播', '飙升'];
+    const labels = ['首页', '新剧', '推荐', '热播', '收藏', '热搜'];
     return SafeArea(
       bottom: false,
       child: Padding(
@@ -493,39 +552,45 @@ class _HomeFeedPageState extends State<_HomeFeedPage>
                 )),
             const SizedBox(width: 36),
             Expanded(
-              child: ListenableBuilder(
-                listenable: _tabController,
-                builder: (_, __) => Row(
-                  children: List.generate(labels.length, (index) {
-                    final selected = index == _tabController.index;
-                    return Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: TvTap(
-                        borderRadius: 14,
-                        focusScale: 1,
-                        onTap: () => _tabController.animateTo(index),
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 160),
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 17, vertical: 10),
-                          decoration: BoxDecoration(
-                            color: selected
-                                ? const Color(0xFFFF2442)
-                                : Colors.transparent,
-                            borderRadius: BorderRadius.circular(14),
+              child: Focus(
+                canRequestFocus: false,
+                skipTraversal: true,
+                onFocusChange: widget.onTvTopBarFocusChanged,
+                child: ListenableBuilder(
+                  listenable: _tabController,
+                  builder: (_, __) => Row(
+                    children: List.generate(labels.length, (index) {
+                      final selected = index == _tabController.index;
+                      return Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: TvTap(
+                          borderRadius: 14,
+                          focusNode: _tvTabFocusNodes[index],
+                          focusScale: 1,
+                          onTap: () => _tabController.animateTo(index),
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 160),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 17, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: selected
+                                  ? const Color(0xFFFF2442)
+                                  : Colors.transparent,
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: Text(labels[index],
+                                style: TextStyle(
+                                  color: selected
+                                      ? Colors.white
+                                      : const Color(0xFF747B88),
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                )),
                           ),
-                          child: Text(labels[index],
-                              style: TextStyle(
-                                color: selected
-                                    ? Colors.white
-                                    : const Color(0xFF747B88),
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                              )),
                         ),
-                      ),
-                    );
-                  }),
+                      );
+                    }),
+                  ),
                 ),
               ),
             ),
@@ -587,6 +652,7 @@ class _DramaListTabState extends State<_DramaListTab>
   bool _isLoading = false;
   bool _hasMore = true;
   String? _sessionId;
+  String? _loadError;
   int? _nextOffset;
   final _scrollController = ScrollController();
 
@@ -626,7 +692,10 @@ class _DramaListTabState extends State<_DramaListTab>
 
   Future<void> _loadData() async {
     if (_isLoading) return;
-    setState(() => _isLoading = true);
+    setState(() {
+      _isLoading = true;
+      _loadError = null;
+    });
 
     try {
       final result = await widget.fetchFunction(
@@ -647,7 +716,13 @@ class _DramaListTabState extends State<_DramaListTab>
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _isLoading = false);
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _hasMore = false;
+          _loadError = e is ApiException ? e.message : '加载失败，请稍后重试';
+        });
+      }
     }
   }
 
@@ -747,77 +822,86 @@ class _DramaListTabState extends State<_DramaListTab>
         Expanded(
           child: _dramas.isEmpty && _isLoading
               ? const Center(child: CupertinoActivityIndicator(radius: 12))
-              : RefreshIndicator(
-                  onRefresh: () async {
-                    setState(() {
-                      _dramas.clear();
-                      _sessionId = null;
-                      _nextOffset = null;
-                      _hasMore = true;
-                    });
-                    await _loadData();
-                  },
-                  color: const Color(0xFFFF2442),
-                  child: CustomScrollView(
-                    controller: _scrollController,
-                    physics: const BouncingScrollPhysics(
-                      parent: AlwaysScrollableScrollPhysics(),
-                    ),
-                    slivers: [
-                      SliverPadding(
-                        padding: DeviceProfile.isTv
-                            ? const EdgeInsets.fromLTRB(32, 12, 32, 20)
-                            : widget.useGridView
-                                ? const EdgeInsets.symmetric(
-                                    horizontal: 8,
-                                    vertical: 8,
-                                  )
-                                : EdgeInsets.zero,
-                        sliver: widget.useGridView
-                            ? SliverGrid(
-                                gridDelegate: DeviceProfile.usesFocusUi
-                                    // 电视/桌面：按宽度自适应列数，避免两列海报被拉满整屏
-                                    ? const SliverGridDelegateWithMaxCrossAxisExtent(
-                                        maxCrossAxisExtent: 200,
-                                        childAspectRatio: 0.68,
-                                        crossAxisSpacing: 16,
-                                        mainAxisSpacing: 16,
+              : _dramas.isEmpty && _loadError != null
+                  ? Center(
+                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      Text(_loadError!, textAlign: TextAlign.center),
+                      const SizedBox(height: 16),
+                      TextButton(onPressed: _loadData, child: const Text('重试')),
+                    ]))
+                  : RefreshIndicator(
+                      onRefresh: () async {
+                        setState(() {
+                          _dramas.clear();
+                          _sessionId = null;
+                          _nextOffset = null;
+                          _hasMore = true;
+                        });
+                        await _loadData();
+                      },
+                      color: const Color(0xFFFF2442),
+                      child: CustomScrollView(
+                        controller: _scrollController,
+                        physics: const BouncingScrollPhysics(
+                          parent: AlwaysScrollableScrollPhysics(),
+                        ),
+                        slivers: [
+                          SliverPadding(
+                            padding: DeviceProfile.isTv
+                                ? const EdgeInsets.fromLTRB(32, 12, 32, 20)
+                                : widget.useGridView
+                                    ? const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 8,
                                       )
-                                    : const SliverGridDelegateWithFixedCrossAxisCount(
-                                        crossAxisCount: 2,
-                                        childAspectRatio: 0.68,
-                                        crossAxisSpacing: 8,
-                                        mainAxisSpacing: 8,
-                                      ),
-                                delegate: SliverChildBuilderDelegate((
-                                  context,
-                                  index,
-                                ) {
-                                  return _XHSCard(
-                                    drama: _dramas[index],
-                                    apiClient: widget.apiClient,
-                                    downloadService: widget.downloadService,
-                                  );
-                                }, childCount: _dramas.length),
-                              )
-                            : SliverList(
-                                delegate: SliverChildBuilderDelegate((
-                                  context,
-                                  index,
-                                ) {
-                                  return _RankListItem(
-                                    drama: _dramas[index],
-                                    apiClient: widget.apiClient,
-                                    downloadService: widget.downloadService,
-                                    rank: widget.showRanking ? index + 1 : null,
-                                  );
-                                }, childCount: _dramas.length),
-                              ),
+                                    : EdgeInsets.zero,
+                            sliver: widget.useGridView
+                                ? SliverGrid(
+                                    gridDelegate: DeviceProfile.usesFocusUi
+                                        // 电视/桌面：按宽度自适应列数，避免两列海报被拉满整屏
+                                        ? const SliverGridDelegateWithMaxCrossAxisExtent(
+                                            maxCrossAxisExtent: 200,
+                                            childAspectRatio: 0.68,
+                                            crossAxisSpacing: 16,
+                                            mainAxisSpacing: 16,
+                                          )
+                                        : const SliverGridDelegateWithFixedCrossAxisCount(
+                                            crossAxisCount: 2,
+                                            childAspectRatio: 0.68,
+                                            crossAxisSpacing: 8,
+                                            mainAxisSpacing: 8,
+                                          ),
+                                    delegate: SliverChildBuilderDelegate((
+                                      context,
+                                      index,
+                                    ) {
+                                      return _XHSCard(
+                                        drama: _dramas[index],
+                                        apiClient: widget.apiClient,
+                                        downloadService: widget.downloadService,
+                                      );
+                                    }, childCount: _dramas.length),
+                                  )
+                                : SliverList(
+                                    delegate: SliverChildBuilderDelegate((
+                                      context,
+                                      index,
+                                    ) {
+                                      return _RankListItem(
+                                        drama: _dramas[index],
+                                        apiClient: widget.apiClient,
+                                        downloadService: widget.downloadService,
+                                        rank: widget.showRanking
+                                            ? index + 1
+                                            : null,
+                                      );
+                                    }, childCount: _dramas.length),
+                                  ),
+                          ),
+                          SliverToBoxAdapter(child: _buildFooter()),
+                        ],
                       ),
-                      SliverToBoxAdapter(child: _buildFooter()),
-                    ],
-                  ),
-                ),
+                    ),
         ),
       ],
     );

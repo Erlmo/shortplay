@@ -959,8 +959,7 @@ class _PanelTextScale<T> extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(label,
-              style: const TextStyle(color: _pnMuted, fontSize: 13)),
+          Text(label, style: const TextStyle(color: _pnMuted, fontSize: 13)),
           const SizedBox(height: 6),
           if (spread)
             // Flexible + scaleDown：窄屏 / 大字号时整排等比缩小，不会溢出

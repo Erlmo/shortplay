@@ -11,6 +11,7 @@ import '../widgets/tv_tap.dart';
 import '../widgets/app_notice.dart';
 import '../widgets/app_update_dialog.dart';
 import 'share_link_page.dart';
+import 'tv_share_link_page.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({
@@ -128,12 +129,12 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
               const SizedBox(height: 20),
               _TvSettingsRow(
-                  icon: Icons.link_rounded,
-                  title: '分享链接识别',
-                  subtitle: '粘贴分享链接，快速找到想看的短剧',
+                  icon: Icons.qr_code_scanner_rounded,
+                  title: '手机扫码播放',
+                  subtitle: '手机扫码输入分享链接，电视识别后播放',
                   onTap: () => Navigator.of(context).push<void>(
                       MaterialPageRoute(
-                          builder: (_) => ShareLinkPage(
+                          builder: (_) => TvShareLinkPage(
                               apiClient: widget.apiClient,
                               downloadService: widget.downloadService)))),
               const SizedBox(height: 12),

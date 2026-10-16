@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/drama.dart';
 import 'tv_tap.dart';
+import 'expandable_synopsis.dart';
 
 /// 电视详情页：信息与操作集中在上方，选集区独立占用下方空间。
 class TvDramaDetailView extends StatelessWidget {
@@ -27,7 +28,7 @@ class TvDramaDetailView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF4F5F8),
+      backgroundColor: const Color(0xFFF6F7FB),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(32, 18, 32, 22),
@@ -60,8 +61,12 @@ class TvDramaDetailView extends StatelessWidget {
                 child: LayoutBuilder(builder: (context, constraints) {
                   final heroHeight = episodes == null
                       ? constraints.maxHeight.clamp(180.0, 300.0)
-                      : (constraints.maxHeight * .52).clamp(180.0, 250.0);
-                  return Column(children: [
+                      : (constraints.maxHeight * .46).clamp(170.0, 225.0);
+                  final episodeHeight =
+                      (constraints.maxHeight - heroHeight - 20)
+                          .clamp(180.0, 320.0);
+                  return SingleChildScrollView(
+                      child: Column(children: [
                     SizedBox(
                       height: heroHeight,
                       child: Row(
@@ -94,18 +99,20 @@ class TvDramaDetailView extends StatelessWidget {
                     ),
                     if (episodes != null) ...[
                       const SizedBox(height: 20),
-                      Expanded(
+                      SizedBox(
+                          height: episodeHeight,
                           child: Container(
-                        padding: const EdgeInsets.fromLTRB(18, 14, 18, 0),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(18),
-                          border: Border.all(color: const Color(0xFFE6E9EF)),
-                        ),
-                        child: episodes,
-                      )),
+                            padding: const EdgeInsets.fromLTRB(18, 14, 18, 0),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(18),
+                              border:
+                                  Border.all(color: const Color(0xFFEEF0F5)),
+                            ),
+                            child: episodes,
+                          )),
                     ],
-                  ]);
+                  ]));
                 }),
               ),
             ],
@@ -151,30 +158,8 @@ class TvDramaDetailView extends StatelessWidget {
           ]),
           if (drama.intro.isNotEmpty) ...[
             const SizedBox(height: 12),
-            TvTap(
-              focusScale: 1,
-              onTap: () => showDialog<void>(
-                  context: context,
-                  builder: (context) => AlertDialog(
-                        title: const Text('剧情简介'),
-                        content:
-                            SingleChildScrollView(child: Text(drama.intro)),
-                        actions: [
-                          TextButton(
-                              autofocus: true,
-                              onPressed: () => Navigator.of(context).pop(),
-                              child: const Text('关闭'))
-                        ],
-                      )),
-              child: Padding(
-                padding: const EdgeInsets.all(4),
-                child: Text(drama.intro,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 13, height: 1.6, color: Color(0xFF747B88))),
-              ),
-            ),
+            ExpandableSynopsis(
+                key: ValueKey('synopsis-${drama.id}'), text: drama.intro),
           ],
         ]),
       )),

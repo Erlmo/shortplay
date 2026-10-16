@@ -40,6 +40,7 @@ Future<void> showHgEpisodePanel({
   required List<Episode> episodes,
   required ValueListenable<int> episodeNotifier,
   required ValueChanged<int> onSelectEpisode,
+  Future<Map<String, String>> Function()? loadTitles,
 }) {
   Widget panel(BuildContext context) => HgEpisodePanel(
         landscape: landscape,
@@ -49,6 +50,7 @@ Future<void> showHgEpisodePanel({
         status: status,
         episodes: episodes,
         episodeNotifier: episodeNotifier,
+        loadTitles: loadTitles,
         onSelect: (index) {
           Navigator.of(context).pop();
           onSelectEpisode(index);
@@ -112,6 +114,7 @@ class HgEpisodePanel extends StatefulWidget {
     required this.episodes,
     required this.episodeNotifier,
     required this.onSelect,
+    this.loadTitles,
   });
 
   final bool landscape;
@@ -119,6 +122,7 @@ class HgEpisodePanel extends StatefulWidget {
   final List<Episode> episodes;
   final ValueListenable<int> episodeNotifier;
   final ValueChanged<int> onSelect;
+  final Future<Map<String, String>> Function()? loadTitles;
 
   @override
   State<HgEpisodePanel> createState() => _HgEpisodePanelState();
@@ -128,6 +132,9 @@ class _HgEpisodePanelState extends State<HgEpisodePanel> {
   late int _range = widget.episodeNotifier.value ~/ _kRange;
   bool _titleMode = false;
   bool _introExpanded = false;
+  bool _titleLoading = false;
+  String? _titleError;
+  Map<String, String>? _titles;
   final _tabs = ScrollController();
 
   int get _rangeCount => (widget.episodes.length + _kRange - 1) ~/ _kRange;
@@ -183,7 +190,7 @@ class _HgEpisodePanelState extends State<HgEpisodePanel> {
             child: ValueListenableBuilder<int>(
               valueListenable: widget.episodeNotifier,
               builder: (context, current, _) =>
-                  _titleMode ? _titleList(current) : _grid(current),
+                  _titleMode ? _titleContent(current) : _grid(current),
             ),
           ),
         ],
@@ -347,7 +354,10 @@ class _HgEpisodePanelState extends State<HgEpisodePanel> {
         ),
         GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onTap: () => setState(() => _titleMode = !_titleMode),
+          onTap: () {
+            setState(() => _titleMode = !_titleMode);
+            if (_titleMode && _titles == null && !_titleLoading) _loadTitles();
+          },
           child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 16, 0),
             child: Row(children: [
@@ -416,6 +426,42 @@ class _HgEpisodePanelState extends State<HgEpisodePanel> {
     );
   }
 
+  Future<void> _loadTitles() async {
+    final loader = widget.loadTitles;
+    if (loader == null || _titleLoading) return;
+    setState(() {
+      _titleLoading = true;
+      _titleError = null;
+    });
+    try {
+      final titles = await loader();
+      if (mounted) setState(() => _titles = titles);
+    } catch (_) {
+      if (mounted) setState(() => _titleError = '分集标题加载失败，点击重试');
+    } finally {
+      if (mounted) setState(() => _titleLoading = false);
+    }
+  }
+
+  Widget _titleContent(int current) => Column(children: [
+        if (_titleLoading)
+          const Padding(
+              padding: EdgeInsets.symmetric(vertical: 10),
+              child: Text('正在加载分集标题…',
+                  style: TextStyle(color: _kGray70, fontSize: 12))),
+        if (_titleError != null)
+          TextButton(
+              onPressed: _loadTitles,
+              child: Text(_titleError!,
+                  style: const TextStyle(color: _kGray70, fontSize: 12))),
+        if (_titles != null && _titles!.isEmpty)
+          const Padding(
+              padding: EdgeInsets.symmetric(vertical: 10),
+              child: Text('此剧暂未提供分集标题',
+                  style: TextStyle(color: _kGray70, fontSize: 12))),
+        Expanded(child: _titleList(current)),
+      ]);
+
   Widget _titleList(int current) {
     final indexes = _indexesInRange;
     return ListView.separated(
@@ -426,7 +472,7 @@ class _HgEpisodePanelState extends State<HgEpisodePanel> {
         final index = indexes[i];
         final ep = widget.episodes[index];
         final selected = index == current;
-        final name = ep.name.trim();
+        final name = (_titles?[ep.url] ?? ep.name).trim();
         return GestureDetector(
           onTap: () => widget.onSelect(index),
           child: Container(

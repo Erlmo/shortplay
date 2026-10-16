@@ -9,7 +9,9 @@ void main() {
     final missing = <String>[];
     for (final tag in kDanmakuEmojiMap.keys) {
       final asset = danmakuEmojiAsset(tag);
-      if (asset == null || !File(asset).existsSync()) missing.add('$tag → $asset');
+      if (asset == null || !File(asset).existsSync()) {
+        missing.add('$tag → $asset');
+      }
     }
     expect(missing, isEmpty);
     expect(danmakuEmojiAsset('[微笑]'), 'assets/danmaku_emoji/01.webp');

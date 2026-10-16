@@ -11,20 +11,20 @@ class PlayerDanmakuController extends ChangeNotifier {
       : _service = DanmakuService(apiClient: apiClient);
 
   final DanmakuService _service;
-
   bool _disposed = false;
-
+  int _generation = 0;
   bool enabled = true;
   List<DanmakuComment> comments = const [];
 
   void _safeNotify() {
-    if (_disposed) return;
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   @override
   void dispose() {
     _disposed = true;
+    _generation++;
+    _service.dispose();
     super.dispose();
   }
 
@@ -37,33 +37,42 @@ class PlayerDanmakuController extends ChangeNotifier {
   Future<void> toggle({
     required bool isOfflinePlayback,
     required Episode? currentEpisode,
+    required String bookId,
     required int durationMs,
+    int positionMs = 0,
   }) async {
     enabled = !enabled;
     _safeNotify();
     final prefs = await SharedPreferences.getInstance();
+    if (_disposed) return;
     await prefs.setBool('danmaku_enabled', enabled);
-
-    if (!enabled || comments.isNotEmpty) return;
-    if (currentEpisode == null) return;
+    if (!enabled || _disposed || currentEpisode == null) return;
     await loadForEpisode(
       episode: currentEpisode,
+      bookId: bookId,
       durationMs: durationMs,
+      positionMs: positionMs,
       isOfflinePlayback: isOfflinePlayback,
     );
   }
 
   Future<void> loadForEpisode({
     required Episode episode,
+    required String bookId,
     required int durationMs,
     required bool isOfflinePlayback,
+    int positionMs = 0,
   }) async {
-    if (isOfflinePlayback) return;
+    if (_disposed || isOfflinePlayback || !enabled) return;
     final groupId = episode.url.trim();
     if (groupId.isEmpty) return;
-    final dur = durationMs > 0 ? durationMs : 180000;
-    await _service.loadForEpisode(groupId: groupId, durationMs: dur);
-    if (_disposed) return;
+    final generation = _generation;
+    await _service.loadForEpisode(
+        groupId: groupId,
+        bookId: bookId,
+        durationMs: durationMs,
+        positionMs: positionMs);
+    if (_disposed || generation != _generation) return;
     comments = _service.comments;
     _safeNotify();
   }
@@ -72,16 +81,24 @@ class PlayerDanmakuController extends ChangeNotifier {
     required int positionMs,
     required bool isTheaterResource,
     required bool isOfflinePlayback,
+    int? durationMs,
+    bool seek = false,
   }) async {
-    if (!isTheaterResource || isOfflinePlayback) return;
-    await _service.ensureLoadedUpTo(positionMs);
-    if (_disposed) return;
+    if (_disposed || !enabled || !isTheaterResource || isOfflinePlayback) {
+      return;
+    }
+    final generation = _generation;
+    await _service.ensureLoadedUpTo(positionMs,
+        seek: seek, durationMs: durationMs);
+    if (_disposed || generation != _generation) return;
     if (_service.commentCount == comments.length) return;
     comments = _service.comments;
     _safeNotify();
   }
 
   void clearComments() {
+    _generation++;
+    _service.reset();
     if (comments.isEmpty) return;
     comments = const [];
     _safeNotify();
