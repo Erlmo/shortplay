@@ -311,7 +311,9 @@ private final class PlayerInstance: NSObject, FlutterTexture {
         if let filePath = fileUrl {
             // 本地文件或普通 URL，直接创建 AVPlayerItem
             let url: URL
-            if filePath.hasPrefix("http://") || filePath.hasPrefix("https://") {
+            if filePath.hasPrefix("http://") ||
+                filePath.hasPrefix("https://") ||
+                filePath.hasPrefix("file://") {
                 url = URL(string: filePath)!
             } else {
                 url = URL(fileURLWithPath: filePath)

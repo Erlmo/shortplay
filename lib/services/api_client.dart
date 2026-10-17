@@ -11,6 +11,7 @@ import '../models/drama.dart';
 import '../models/drama_season.dart';
 import '../models/episode.dart';
 import '../models/fq_video.dart';
+import '../models/search_suggestion.dart';
 import 'sign_interceptor.dart';
 
 class ApiException implements Exception {
@@ -105,6 +106,31 @@ class ApiClient {
 
     if (lastError is ApiException) throw lastError;
     throw ApiException('请求失败');
+  }
+
+  Future<SearchSuggestionResult> fetchSearchSuggestions(
+    String keyword, {
+    CancelToken? cancelToken,
+  }) async {
+    final query = keyword.trim();
+    if (query.isEmpty) {
+      return const SearchSuggestionResult(query: '', items: []);
+    }
+    try {
+      final response = await _dio.get(
+        ApiConfig.noveSearchSuggest,
+        queryParameters: {'key': query},
+        cancelToken: cancelToken,
+      );
+      final data = _decode(response)['data'];
+      if (data is! Map<String, dynamic>) {
+        throw ApiException('解析搜索联想失败');
+      }
+      return SearchSuggestionResult.fromJson(data);
+    } on DioException catch (error) {
+      if (CancelToken.isCancel(error)) rethrow;
+      throw ApiException('搜索联想暂不可用，可直接输入片名搜索');
+    }
   }
 
   Future<({List<Drama> dramas, bool hasMore})> search(

@@ -155,6 +155,123 @@ void main() {
     expect(controller.comments, isEmpty);
   });
 
+  test('下一批请求尚未返回时控制器立即交付已收到的弹幕', () async {
+    final first = Completer<DanmakuResponse>();
+    final second = Completer<DanmakuResponse>();
+    final secondStarted = Completer<void>();
+    final client = _Api((call) {
+      if (call.start == 0) return first.future;
+      secondStarted.complete();
+      return second.future;
+    });
+    final controller = PlayerDanmakuController(apiClient: client);
+    addTearDown(controller.dispose);
+    addTearDown(() => client.dio.close(force: true));
+    final snapshots = <List<String>>[];
+    controller.addListener(() {
+      snapshots.add(controller.comments.map((c) => c.id).toList());
+    });
+    final loading = controller.loadForEpisode(
+      episode: Episode(index: 1, name: '第1集', size: 0, url: 'episode'),
+      bookId: 'series',
+      durationMs: 120000,
+      isOfflinePlayback: false,
+    );
+    final progressing = controller.ensureLoadedUpTo(
+      positionMs: 5000,
+      isTheaterResource: true,
+      isOfflinePlayback: false,
+    );
+    first.complete(_batch(7000, comments: [_comment('first', 5000)]));
+    await secondStarted.future;
+    try {
+      expect(client.calls.map((c) => c.start), [0, 7000]);
+      expect(controller.comments.map((c) => c.id), ['first']);
+      expect(snapshots, [
+        <String>['first']
+      ]);
+    } finally {
+      second.complete(_batch(15000, comments: [_comment('second', 7000)]));
+      await Future.wait([loading, progressing]);
+    }
+    expect(snapshots, [
+      <String>['first'],
+      <String>['first', 'second']
+    ]);
+  });
+
+  test('逐批交付期间换集取消旧预取且旧响应不再通知页面', () async {
+    final oldNext = Completer<DanmakuResponse>();
+    final oldStarted = Completer<void>();
+    final client = _Api((call) {
+      if (call.groupId == 'new') {
+        return _batch(10000, comments: [_comment('new', 0)]);
+      }
+      if (call.start == 0) {
+        return _batch(7000, comments: [_comment('old-first', 0)]);
+      }
+      oldStarted.complete();
+      return oldNext.future;
+    });
+    final controller = PlayerDanmakuController(apiClient: client);
+    addTearDown(controller.dispose);
+    addTearDown(() => client.dio.close(force: true));
+    final snapshots = <List<String>>[];
+    controller.addListener(() {
+      snapshots.add(controller.comments.map((c) => c.id).toList());
+    });
+    Future<void> loadGroup(String groupId) => controller.loadForEpisode(
+          episode: Episode(index: 1, name: '第1集', size: 0, url: groupId),
+          bookId: 'series',
+          durationMs: 120000,
+          isOfflinePlayback: false,
+        );
+    await loadGroup('old');
+    final prefetch = controller.ensureLoadedUpTo(
+      positionMs: 4000,
+      isTheaterResource: true,
+      isOfflinePlayback: false,
+    );
+    await oldStarted.future;
+    final oldToken = client.calls.last.cancel!;
+    try {
+      await loadGroup('new');
+      expect(oldToken.isCancelled, isTrue);
+      expect(controller.comments.map((c) => c.id), ['new']);
+    } finally {
+      oldNext.complete(_batch(14000, comments: [_comment('old-late', 7000)]));
+      await prefetch;
+    }
+    expect(snapshots, [
+      <String>['old-first'],
+      <String>[],
+      <String>['new']
+    ]);
+  });
+
+  test('逐批通知中清空会话不会继续旧集预取', () async {
+    final client =
+        _Api((_) => _batch(7000, comments: [_comment('first', 5000)]));
+    final controller = PlayerDanmakuController(apiClient: client);
+    addTearDown(controller.dispose);
+    addTearDown(() => client.dio.close(force: true));
+    var notifications = 0;
+    controller.addListener(() {
+      notifications++;
+      if (controller.comments.isNotEmpty) controller.clearComments();
+    });
+    await controller.loadForEpisode(
+      episode: Episode(index: 1, name: '第1集', size: 0, url: 'episode'),
+      bookId: 'series',
+      durationMs: 120000,
+      positionMs: 5000,
+      isOfflinePlayback: false,
+    );
+    expect(controller.comments, isEmpty);
+    expect(notifications, 2);
+    expect(client.calls.length, 1);
+  });
+
   test('采用服务端next_query边界，缺失才兼容cursor', () {
     final decoded = DanmakuResponse.fromJson({
       'data': {

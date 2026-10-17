@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../models/drama_season.dart';
 import '../../models/episode.dart';
 
 // ─── 红果选集面板 ────────────────────────────────────────────────────────
@@ -13,7 +15,7 @@ import '../../models/episode.dart';
 //    36×4 拖动条；同时播放画面缩到面板上方（见 PlayerPage）。
 //  · 横屏：右侧 390dp 全高侧栏。
 //  · 头部：44×62 封面(圆角4) + 剧名 16sp + “›”，下方状态灰字；简介两行。
-//  · 分段 Tab：每段 30 集（1-30、31-60…），44dp 高；右侧“序号选集/标题选集”切换。
+//  · 分段 Tab：每段 30 集（1-30、31-60…），44dp 高；右侧季数入口，标题/数字显示通过图标切换。
 //  · 序号模式 6 列、左右 16dp、间距 8dp；当前集用品牌橙 #FA7705。
 
 const kHgPanelBg = Color(0xFF1C1C1C);
@@ -41,6 +43,9 @@ Future<void> showHgEpisodePanel({
   required ValueListenable<int> episodeNotifier,
   required ValueChanged<int> onSelectEpisode,
   Future<Map<String, String>> Function()? loadTitles,
+  Future<DramaSeasons> Function()? loadSeasons,
+  int? currentDramaId,
+  ValueChanged<DramaSeason>? onSelectSeason,
 }) {
   Widget panel(BuildContext context) => HgEpisodePanel(
         landscape: landscape,
@@ -51,6 +56,12 @@ Future<void> showHgEpisodePanel({
         episodes: episodes,
         episodeNotifier: episodeNotifier,
         loadTitles: loadTitles,
+        loadSeasons: loadSeasons,
+        currentDramaId: currentDramaId,
+        onSelectSeason: (season) {
+          Navigator.of(context).pop();
+          onSelectSeason?.call(season);
+        },
         onSelect: (index) {
           Navigator.of(context).pop();
           onSelectEpisode(index);
@@ -115,6 +126,9 @@ class HgEpisodePanel extends StatefulWidget {
     required this.episodeNotifier,
     required this.onSelect,
     this.loadTitles,
+    this.loadSeasons,
+    this.currentDramaId,
+    this.onSelectSeason,
   });
 
   final bool landscape;
@@ -123,6 +137,9 @@ class HgEpisodePanel extends StatefulWidget {
   final ValueListenable<int> episodeNotifier;
   final ValueChanged<int> onSelect;
   final Future<Map<String, String>> Function()? loadTitles;
+  final Future<DramaSeasons> Function()? loadSeasons;
+  final int? currentDramaId;
+  final ValueChanged<DramaSeason>? onSelectSeason;
 
   @override
   State<HgEpisodePanel> createState() => _HgEpisodePanelState();
@@ -131,6 +148,10 @@ class HgEpisodePanel extends StatefulWidget {
 class _HgEpisodePanelState extends State<HgEpisodePanel> {
   late int _range = widget.episodeNotifier.value ~/ _kRange;
   bool _titleMode = false;
+  bool _seasonMode = false;
+  bool _seasonsLoading = false;
+  bool _seasonsFailed = false;
+  List<DramaSeason>? _seasons;
   bool _introExpanded = false;
   bool _titleLoading = false;
   String? _titleError;
@@ -142,6 +163,7 @@ class _HgEpisodePanelState extends State<HgEpisodePanel> {
   @override
   void initState() {
     super.initState();
+    if (widget.loadSeasons != null) unawaited(_loadSeasons());
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollTabIntoView());
   }
 
@@ -187,11 +209,13 @@ class _HgEpisodePanelState extends State<HgEpisodePanel> {
           if (widget.intro.trim().isNotEmpty) _intro(),
           _rangeBar(),
           Expanded(
-            child: ValueListenableBuilder<int>(
-              valueListenable: widget.episodeNotifier,
-              builder: (context, current, _) =>
-                  _titleMode ? _titleContent(current) : _grid(current),
-            ),
+            child: _seasonMode
+                ? _seasonContent()
+                : ValueListenableBuilder<int>(
+                    valueListenable: widget.episodeNotifier,
+                    builder: (context, current, _) =>
+                        _titleMode ? _titleContent(current) : _grid(current),
+                  ),
           ),
         ],
       ),
@@ -322,54 +346,208 @@ class _HgEpisodePanelState extends State<HgEpisodePanel> {
       height: 44,
       child: Row(children: [
         Expanded(
-          child: _rangeCount <= 1
-              ? const SizedBox.shrink()
-              : ListView.separated(
-                  controller: _tabs,
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  itemCount: _rangeCount,
-                  separatorBuilder: (_, __) => const SizedBox(width: 20),
-                  itemBuilder: (context, i) {
-                    final selected = i == _range;
-                    final from = i * _kRange + 1;
-                    final to = math.min(n, (i + 1) * _kRange);
-                    return GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTap: () => setState(() => _range = i),
-                      child: Center(
-                        child: Text(
-                          '$from-$to',
-                          style: TextStyle(
-                            color: selected ? Colors.white : _kGray40,
-                            fontSize: 14,
-                            fontWeight:
-                                selected ? FontWeight.w600 : FontWeight.w400,
+          child: _seasonMode
+              ? const Padding(
+                  padding: EdgeInsets.only(left: 16),
+                  child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text('相关季',
+                          style: TextStyle(color: _kText, fontSize: 14))),
+                )
+              : _rangeCount <= 1
+                  ? const SizedBox.shrink()
+                  : ListView.separated(
+                      controller: _tabs,
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      itemCount: _rangeCount,
+                      separatorBuilder: (_, __) => const SizedBox(width: 20),
+                      itemBuilder: (context, i) {
+                        final selected = i == _range;
+                        final from = i * _kRange + 1;
+                        final to = math.min(n, (i + 1) * _kRange);
+                        return GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () => setState(() => _range = i),
+                          child: Center(
+                            child: Text(
+                              '$from-$to',
+                              style: TextStyle(
+                                color: selected ? Colors.white : _kGray40,
+                                fontSize: 14,
+                                fontWeight: selected
+                                    ? FontWeight.w600
+                                    : FontWeight.w400,
+                              ),
+                            ),
                           ),
-                        ),
-                      ),
-                    );
-                  },
-                ),
+                        );
+                      },
+                    ),
         ),
-        GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () {
-            setState(() => _titleMode = !_titleMode);
-            if (_titleMode && _titles == null && !_titleLoading) _loadTitles();
-          },
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 16, 0),
-            child: Row(children: [
-              Icon(_titleMode ? Icons.grid_view_rounded : Icons.notes_rounded,
-                  color: _kGray70, size: 18),
+        if (!_seasonMode)
+          IconButton(
+            tooltip: _titleMode ? '切换为数字选集' : '切换为标题选集',
+            onPressed: () {
+              setState(() => _titleMode = !_titleMode);
+              if (_titleMode && _titles == null && !_titleLoading) {
+                unawaited(_loadTitles());
+              }
+            },
+            icon: Icon(
+                _titleMode ? Icons.grid_view_rounded : Icons.notes_rounded,
+                color: _kGray70,
+                size: 18),
+          ),
+        if (widget.loadSeasons != null)
+          TextButton(
+            key: const ValueKey('player-season-toggle'),
+            onPressed: () => setState(() => _seasonMode = !_seasonMode),
+            style: TextButton.styleFrom(
+                foregroundColor: _kGray70,
+                padding: const EdgeInsets.symmetric(horizontal: 12)),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Text(
+                  _seasonMode
+                      ? '返回选集'
+                      : (_seasons == null ? '选季' : '共${_seasons!.length}季'),
+                  style: const TextStyle(fontSize: 14)),
               const SizedBox(width: 2),
-              Text(_titleMode ? '序号选集' : '标题选集',
-                  style: const TextStyle(color: _kGray70, fontSize: 14)),
+              Icon(
+                  _seasonMode
+                      ? Icons.keyboard_arrow_up_rounded
+                      : Icons.keyboard_arrow_down_rounded,
+                  size: 18),
             ]),
           ),
-        ),
       ]),
+    );
+  }
+
+  Future<void> _loadSeasons() async {
+    final loader = widget.loadSeasons;
+    if (loader == null || _seasonsLoading) return;
+    setState(() {
+      _seasonsLoading = true;
+      _seasonsFailed = false;
+    });
+    try {
+      final result = await loader();
+      if (!mounted) return;
+      final seasons = result.seasons.toList();
+      final currentId = widget.currentDramaId;
+      if (currentId != null &&
+          currentId > 0 &&
+          !seasons.any((season) => season.id == currentId)) {
+        seasons.add(DramaSeason(
+            id: currentId,
+            title: widget.dramaName,
+            cover: widget.cover,
+            order: result.currentSeason > 0 ? result.currentSeason : 1,
+            episodeCount: widget.episodes.length));
+      }
+      seasons.sort((a, b) => a.order.compareTo(b.order));
+      setState(() => _seasons = seasons);
+    } catch (_) {
+      if (mounted) setState(() => _seasonsFailed = true);
+    } finally {
+      if (mounted) setState(() => _seasonsLoading = false);
+    }
+  }
+
+  Widget _seasonContent() {
+    if (_seasonsLoading) {
+      return const Center(
+          child: Text('正在加载相关季…',
+              style: TextStyle(color: _kGray70, fontSize: 14)));
+    }
+    if (_seasonsFailed) {
+      return Center(
+          child: TextButton(
+              onPressed: _loadSeasons,
+              child: const Text('相关季加载失败，点击重试',
+                  style: TextStyle(color: _kGray70))));
+    }
+    final seasons = _seasons ?? const <DramaSeason>[];
+    if (seasons.isEmpty) {
+      return const Center(
+          child: Text('暂无相关季', style: TextStyle(color: _kGray70)));
+    }
+    return ListView.separated(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+      itemCount: seasons.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 8),
+      itemBuilder: (context, index) {
+        final season = seasons[index];
+        final current = season.id == widget.currentDramaId;
+        return Material(
+          color: current ? const Color(0x1AFA7705) : _kCellBg,
+          borderRadius: BorderRadius.circular(8),
+          child: InkWell(
+            key: ValueKey('player-season-${season.id}'),
+            borderRadius: BorderRadius.circular(8),
+            onTap: () {
+              if (current) {
+                setState(() => _seasonMode = false);
+                return;
+              }
+              widget.onSelectSeason?.call(season);
+            },
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(children: [
+                Container(
+                  width: 52,
+                  height: 44,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                      color: current
+                          ? const Color(0x26FA7705)
+                          : const Color(0x0FFFFFFF),
+                      borderRadius: BorderRadius.circular(6)),
+                  child: Text('第${season.order}季',
+                      style: TextStyle(
+                          color: current ? kHgBrand : _kText,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600)),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                    child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                      Text(
+                          season.title.isEmpty
+                              ? '第${season.order}季'
+                              : season.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              color: current ? kHgBrand : _kText,
+                              fontSize: 14)),
+                      const SizedBox(height: 4),
+                      Text(
+                          current
+                              ? '正在播放'
+                              : (season.episodeCount > 0
+                                  ? '共${season.episodeCount}集'
+                                  : '点击播放'),
+                          style:
+                              const TextStyle(color: _kGray40, fontSize: 12)),
+                    ])),
+                const SizedBox(width: 8),
+                Icon(
+                    current
+                        ? Icons.equalizer_rounded
+                        : Icons.play_arrow_rounded,
+                    color: current ? kHgBrand : _kGray70,
+                    size: 20),
+              ]),
+            ),
+          ),
+        );
+      },
     );
   }
 

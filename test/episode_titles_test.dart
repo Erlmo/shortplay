@@ -104,7 +104,7 @@ void main() {
       return result.future;
     }, (i) => selected = i);
     expect(requests, 0);
-    await tester.tap(find.text('标题选集'));
+    await tester.tap(find.byTooltip('切换为标题选集'));
     await tester.pump();
     expect(requests, 1);
     expect(find.text('正在加载分集标题…'), findsOneWidget);
@@ -113,9 +113,9 @@ void main() {
     expect(find.text('长安初遇'), findsOneWidget);
     await tester.tap(find.text('重逢故人'));
     expect(selected, 1);
-    await tester.tap(find.text('序号选集'));
+    await tester.tap(find.byTooltip('切换为数字选集'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('标题选集'));
+    await tester.tap(find.byTooltip('切换为标题选集'));
     await tester.pumpAndSettle();
     expect(requests, 1);
   });
@@ -127,14 +127,14 @@ void main() {
       if (requests == 1) throw ApiException('网络异常');
       return {};
     }, (_) {});
-    await tester.tap(find.text('标题选集'));
+    await tester.tap(find.byTooltip('切换为标题选集'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('分集标题加载失败，点击重试'));
     await tester.pumpAndSettle();
     expect(requests, 2);
     expect(find.text('此剧暂未提供分集标题'), findsOneWidget);
     expect(find.text('第1集'), findsOneWidget);
-    await tester.tap(find.text('序号选集'));
+    await tester.tap(find.byTooltip('切换为数字选集'));
     await tester.pumpAndSettle();
     expect(find.text('1'), findsOneWidget);
   });

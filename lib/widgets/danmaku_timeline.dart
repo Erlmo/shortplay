@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 
 /// 红果 7.3.9.70 Meteor 普通滚动弹幕的静态证据适配。
-/// 证据与未覆盖的业务特效见 build/reverse-hongguo-73970/danmaku/render-findings.md。
+/// 调度证据：build/reverse-hongguo-73970/danmaku/queue-handoff-reaudit/。
 class DanmakuCue {
   const DanmakuCue({
     required this.id,
@@ -19,24 +19,20 @@ class DanmakuCue {
 }
 
 class DanmakuPlacement {
-  const DanmakuPlacement(this.cue, this.track, this.startMs, this.speed);
+  DanmakuPlacement(this.cue, this.track, this.startMs, this.speed, this.x);
 
   final DanmakuCue cue;
   final int track;
   final int startMs;
+  // 未乘播放倍速的像素/毫秒；倍速变化时保留位置，仅调整后续运动。
   final double speed;
-
-  double xAt(double positionMs, double viewportWidth) =>
-      viewportWidth - (positionMs - startMs) * speed;
-
-  bool visibleAt(double positionMs, double viewportWidth) =>
-      positionMs >= startMs && xAt(positionMs, viewportWidth) + cue.width > 0;
+  double x;
 }
 
-/// 采用媒体时间排版，渲染掉帧、暂停、请求晚返回不会改变弹幕的出现时刻。
-/// 默认缓冲超过 8 项时清理已等待 4000 ms 的普通项；
-/// 未拥堵时不会无条件删除迟到项。16 ms 为 Flutter 排版采样。
-/// 特殊置顶/互动/中心停留弹幕不属于本适配器覆盖范围。
+/// 媒体时间只决定入队、淘汰；已上屏项按真实渲染帧移动。
+/// 对应 uu7.b.n -> BaseRenderLayer.j/a -> DragonScrollLine.e/a。
+/// 普通数据更新重定位 provider，保留正在滚动和待排的项；只有 seek 清轨。
+/// 未开启 APK 默认关闭的 seekOpt 回溯/特殊弹幕实验。
 class DanmakuTimeline {
   DanmakuTimeline({
     required this.viewportWidth,
@@ -45,95 +41,143 @@ class DanmakuTimeline {
     this.gap = 48,
   });
 
-  static const stepMs = 16;
+  static const maxFrameMs = 16;
   static const maxWaitMs = 4000;
   static const maxPending = 8;
   final double viewportWidth;
   final int trackCount;
   final int durationMs;
   final double gap;
-  final List<DanmakuPlacement> placements = [];
 
-  void layout(Iterable<DanmakuCue> source) {
-    placements.clear();
-    if (!viewportWidth.isFinite ||
-        viewportWidth <= 0 ||
-        trackCount <= 0 ||
-        durationMs <= 0) {
-      return;
+  List<DanmakuCue> _source = const [];
+  final List<DanmakuCue> _pending = [];
+  final List<DanmakuPlacement> placements = [];
+  final Set<String> _delivered = {};
+  final Map<String, int> _order = {};
+  int _next = 0;
+  Duration? _lastFrame;
+
+  bool get _valid =>
+      viewportWidth.isFinite &&
+      viewportWidth > 0 &&
+      trackCount > 0 &&
+      durationMs > 0;
+
+  /// 对应 controller.l(current,list) / provider.d + e：更新完整数据和读取游标，
+  /// 不从零模拟历史轨道，也不把迟到旧项塞进普通8条缓冲去挤掉在屏项。
+  void setSource(Iterable<DanmakuCue> source,
+      {required int positionMs, bool seek = false}) {
+    if (seek) {
+      placements.clear();
+      _pending.clear();
+      _delivered.clear();
+      _lastFrame = null;
     }
-    final cues = source
+    _source = source
         .where((cue) => cue.width.isFinite && cue.width > 0 && cue.atMs >= 0)
         .toList();
-    // 稳定排序保证相同时间/权重按接口次序，而非随机抖动。
-    final order = <DanmakuCue, int>{
-      for (var i = 0; i < cues.length; i++) cues[i]: i,
-    };
-    cues.sort((a, b) {
-      final byTime = a.atMs.compareTo(b.atMs);
-      return byTime != 0 ? byTime : order[a]!.compareTo(order[b]!);
+    _order.clear();
+    for (var i = 0; i < _source.length; i++) {
+      _order[_source[i].id] = i;
+    }
+    _source.sort((a, b) {
+      final result = a.atMs.compareTo(b.atMs);
+      return result != 0 ? result : _order[a.id]!.compareTo(_order[b.id]!);
     });
-    int compareEviction(DanmakuCue a, DanmakuCue b) {
-      var result = a.weight.compareTo(b.weight);
-      if (result == 0) result = a.atMs.compareTo(b.atMs);
-      return result != 0 ? result : order[a]!.compareTo(order[b]!);
+    var low = 0;
+    var high = _source.length;
+    while (low < high) {
+      final mid = (low + high) ~/ 2;
+      if (_source[mid].atMs < positionMs) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
     }
-
-    final last = List<DanmakuPlacement?>.filled(trackCount, null);
-    final pending = <DanmakuCue>[];
-    var next = 0;
-    var time = 0;
-    while (next < cues.length || pending.isNotEmpty) {
-      if (pending.isEmpty && next < cues.length) {
-        time = math.max(time, (cues[next].atMs / stepMs).ceil() * stepMs);
-      }
-      var received = false;
-      while (next < cues.length && cues[next].atMs <= time) {
-        pending.add(cues[next++]);
-        received = true;
-      }
-      if (received && pending.length > maxPending) {
-        pending.removeWhere(
-            (cue) => !cue.forceInsert && time - cue.atMs > maxWaitMs);
-      }
-      // Meteor 默认关闭 sort_refactor：保持入队顺序，仅溢出时淘汰低权重。
-      while (pending.length > maxPending) {
-        final removable = pending.where((cue) => !cue.forceInsert);
-        if (removable.isEmpty) break;
-        final discard =
-            removable.reduce((a, b) => compareEviction(a, b) <= 0 ? a : b);
-        pending.remove(discard);
-      }
-      final waiting = <DanmakuCue>[];
-      for (final cue in pending) {
-        final speed = (viewportWidth + cue.width) / durationMs;
-        var placed = false;
-        for (var track = 0; track < trackCount; track++) {
-          final previous = last[track];
-          if (previous != null && !_fits(previous, time, speed)) continue;
-          final placement = DanmakuPlacement(cue, track, time, speed);
-          placements.add(placement);
-          last[track] = placement;
-          placed = true;
-          break;
-        }
-        if (!placed) waiting.add(cue);
-      }
-      pending
-        ..clear()
-        ..addAll(waiting);
-      time += stepMs;
-    }
+    _next = low;
   }
 
-  bool _fits(DanmakuPlacement previous, int time, double speed) {
-    final tail =
-        previous.xAt(time.toDouble(), viewportWidth) + previous.cue.width;
-    if (tail <= 0) return true;
+  void tick({
+    required int positionMs,
+    required Duration elapsed,
+    required bool isPlaying,
+    double playbackSpeed = 1,
+  }) {
+    if (!_valid) return;
+    final previousFrame = _lastFrame;
+    // DragonScrollLine 构造 t=16；后续帧 min(now-last,16)。Flutter 使用单调时钟。
+    final deltaMs = previousFrame == null
+        ? maxFrameMs.toDouble()
+        : ((elapsed - previousFrame).inMicroseconds / 1000)
+            .clamp(0.0, maxFrameMs.toDouble());
+    _lastFrame = elapsed;
+
+    var received = false;
+    while (_next < _source.length && _source[_next].atMs <= positionMs) {
+      final cue = _source[_next++];
+      if (!_delivered.add(cue.id)) continue;
+      _pending.add(cue);
+      received = true;
+    }
+    // BaseRenderLayer.j：仅有新项入队且普通缓冲溢出时清过期，再淘汰低权重。
+    if (received && _pending.length > maxPending) {
+      _pending.removeWhere(
+          (cue) => !cue.forceInsert && positionMs - cue.atMs > maxWaitMs);
+      while (_pending.length > maxPending) {
+        DanmakuCue? discard;
+        for (final cue in _pending) {
+          if (cue.forceInsert) continue;
+          if (discard == null || _compareEviction(cue, discard) < 0) {
+            discard = cue;
+          }
+        }
+        if (discard == null) break;
+        _pending.remove(discard);
+      }
+    }
+
+    // 重试待排项在运动之前，成功入轨才设置实际入场时刻和右侧起点。
+    final last = List<DanmakuPlacement?>.filled(trackCount, null);
+    for (final placement in placements) {
+      last[placement.track] = placement;
+    }
+    _pending.removeWhere((cue) {
+      final speed = (viewportWidth + cue.width) / durationMs;
+      for (var track = 0; track < trackCount; track++) {
+        final previous = last[track];
+        if (previous != null && !_fits(previous, speed)) continue;
+        final placement =
+            DanmakuPlacement(cue, track, positionMs, speed, viewportWidth);
+        placements.add(placement);
+        last[track] = placement;
+        return true;
+      }
+      return false;
+    });
+
+    // 不用 position-start 计算坐标：媒体锚点更新、批次追加和掉帧不会清空屏幕。
+    if (isPlaying) {
+      for (final placement in placements) {
+        placement.x -= placement.speed * playbackSpeed * deltaMs;
+      }
+    }
+    placements
+        .removeWhere((placement) => placement.x + placement.cue.width < 0);
+  }
+
+  int _compareEviction(DanmakuCue a, DanmakuCue b) {
+    var result = a.weight.compareTo(b.weight);
+    if (result == 0) result = a.atMs.compareTo(b.atMs);
+    return result != 0
+        ? result
+        : (_order[a.id] ?? 0).compareTo(_order[b.id] ?? 0);
+  }
+
+  bool _fits(DanmakuPlacement previous, double speed) {
+    final tail = previous.x + previous.cue.width;
     final room = viewportWidth - tail - gap;
     if (room < 0) return false;
     if (previous.speed >= speed) return true;
-    // 后条更快时，校验前条退出屏幕前不会被追上（含最小间距）。
     return room >= (speed - previous.speed) * (tail / previous.speed);
   }
 }

@@ -26,9 +26,10 @@ class _DanmakuRequest {
 /// 对应 APK DanmakuRequestHelper 的区间缓存、服务端边界预取与精确 seek。
 /// 网络取消/会话代数是 Flutter 侧适配，防止换集时旧请求污染当前时间轴。
 class DanmakuService {
-  DanmakuService({required this.apiClient});
+  DanmakuService({required this.apiClient, this.onCommentsChanged});
 
   final ApiClient apiClient;
+  final ValueChanged<List<DanmakuComment>>? onCommentsChanged;
   final List<DanmakuComment> _comments = [];
   final List<_DanmakuWindow> _windows = [];
   String _groupId = '';
@@ -54,6 +55,7 @@ class DanmakuService {
       _windows.fold(0, (end, w) => w.endMs > end ? w.endMs : end);
 
   void reset() {
+    final hadComments = _comments.isNotEmpty;
     _generation++;
     _cancelToken?.cancel('episode changed');
     _cancelToken = null;
@@ -68,6 +70,7 @@ class DanmakuService {
     _pendingSeekMs = null;
     _attemptsRemaining = 3;
     lastError = null;
+    if (hadComments && !_disposed) onCommentsChanged?.call(comments);
   }
 
   void dispose() {
@@ -203,6 +206,7 @@ class DanmakuService {
           _windows.add(_DanmakuWindow(
               start, cacheEnd, end, response.cursor, response.hasMore));
         }
+        final previousCount = _comments.length;
         final known = {for (final c in _comments) c.id};
         for (final comment in response.comments) {
           if (comment.content.isEmpty) continue;
@@ -220,6 +224,13 @@ class DanmakuService {
         });
         debugPrint('[DANMAKU] loaded ${response.comments.length}, '
             'total: ${_comments.length}, interval: ${request.startMs}-$end');
+        // APK 每批成功先交给 DataManager / View，再完成并接续下一请求。
+        // 不让后续预取或 seek 的网络等待压住已经到达的这一批。
+        if (_comments.length != previousCount) {
+          onCommentsChanged?.call(comments);
+        }
+        // 通知期间页面可能已退出或切集，不能再读取新会话的等待状态。
+        if (generation != _generation || _disposed) return;
         final seekPosition = _pendingSeekMs;
         _pendingSeekMs = null;
         final seek = seekPosition != null;

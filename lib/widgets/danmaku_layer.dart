@@ -51,6 +51,7 @@ class _DanmakuItem {
 class _EmojiImages {
   static final Map<String, ui.Image> cache = {};
   static Future<void>? _loading;
+  static bool loaded = false;
 
   static Future<void> load() => _loading ??= _loadAll();
 
@@ -66,12 +67,12 @@ class _EmojiImages {
         debugPrint('[DANMAKU] 表情图片加载失败 $asset: $e');
       }
     }));
+    loaded = true;
   }
 }
 
-/// 红果 APK 静态默认 Meteor 普通滚动路径，采用媒体时间排版、
-/// 缓冲溢出时清理超过 4000 ms 的普通项，并防同轨追尾。
-/// 不再按帧区间触发后永久跳过迟到数据。
+/// 红果 APK 静态默认 Meteor 普通滚动路径：媒体时间入队，逐帧移动。
+/// 分批更新保留在屏/待排项；缓冲溢出才淘汰过期或低权重普通项。
 /// APK 宿主静态默认竖屏 2 行，远程实验/用户配置可覆盖；横屏默认上 1/4 区域。
 /// 这不是互动/特殊弹幕或远程实验配置的一比一复刻。
 class DanmakuLayer extends StatefulWidget {
@@ -115,16 +116,19 @@ class _DanmakuLayerState extends State<DanmakuLayer>
   late final Ticker _ticker;
   DanmakuTimeline? _timeline;
   String? _layoutSignature;
-  double _viewportWidth = 0;
   List<(String, String, int, int, bool)> _commentSnapshot = [];
   int _dataGeneration = 0;
+  int _sourceGeneration = -1;
+  bool _resetTimeline = false;
+  Duration _lastTickElapsed = Duration.zero;
+  bool _emojiReady = _EmojiImages.loaded;
 
   @override
   void initState() {
     super.initState();
     unawaited(_EmojiImages.load().then((_) {
       if (!mounted) return;
-      setState(() => _layoutSignature = null);
+      setState(() => _emojiReady = true);
     }));
     _ticker = createTicker(_onTick)..start();
   }
@@ -134,7 +138,9 @@ class _DanmakuLayerState extends State<DanmakuLayer>
     super.didUpdateWidget(oldWidget);
     if (!_sameComments()) {
       _dataGeneration++;
-      _layoutSignature = null;
+    }
+    if (oldWidget.seekGeneration != widget.seekGeneration) {
+      _resetTimeline = true;
     }
     if (oldWidget.seekGeneration != widget.seekGeneration ||
         oldWidget.playbackSpeed != widget.playbackSpeed ||
@@ -178,10 +184,17 @@ class _DanmakuLayerState extends State<DanmakuLayer>
   }
 
   void _onTick(Duration elapsed) {
+    _lastTickElapsed = elapsed;
     final timeline = _timeline;
     if (timeline == null) return;
     final position = _clock.read(
       positionMs: widget.getPositionMs(),
+      elapsed: elapsed,
+      isPlaying: widget.isPlaying,
+      playbackSpeed: widget.playbackSpeed,
+    );
+    timeline.tick(
+      positionMs: position.floor(),
       elapsed: elapsed,
       isPlaying: widget.isPlaying,
       playbackSpeed: widget.playbackSpeed,
@@ -191,10 +204,9 @@ class _DanmakuLayerState extends State<DanmakuLayer>
     }
     if (widget.visible) {
       for (final placement in timeline.placements) {
-        if (!placement.visibleAt(position, _viewportWidth)) continue;
         final item = _items[placement.cue.id];
         if (item == null) continue;
-        item.x = placement.xAt(position, _viewportWidth);
+        item.x = placement.x;
         _tracks[placement.track].add(item);
       }
     }
@@ -202,6 +214,8 @@ class _DanmakuLayerState extends State<DanmakuLayer>
   }
 
   void _configure(Size size, double trackHeight) {
+    // 字形资源就绪后再首次入队，避免图片解码完成时清掉在屏轨道。
+    if (!_emojiReady) return;
     final landscape = size.width > size.height;
     // nl2.e.a() 使用 getRealMetrics 的屏幕高度，而非弹幕容器高度。
     final view = View.of(context);
@@ -212,10 +226,26 @@ class _DanmakuLayerState extends State<DanmakuLayer>
     final duration = widget.durationMs ?? (landscape ? 12000 : 10000);
     final scale = MediaQuery.textScalerOf(context).scale(widget.fontSize);
     final pixelRatio = MediaQuery.devicePixelRatioOf(context);
-    final signature =
-        '${size.width}:$tracks:$duration:$scale:$pixelRatio:$_dataGeneration';
-    if (_layoutSignature == signature) return;
-    _layoutSignature = signature;
+    final signature = '${size.width}:$tracks:$duration:$scale:$pixelRatio';
+    final geometryChanged = _layoutSignature != signature;
+    if (geometryChanged) {
+      _layoutSignature = signature;
+      _disposeItems();
+      for (var i = 0; i < tracks; i++) {
+        _tracks.add([]);
+      }
+      _timeline = DanmakuTimeline(
+        viewportWidth: size.width,
+        trackCount: tracks,
+        durationMs: duration,
+      );
+    }
+    if (!geometryChanged &&
+        !_resetTimeline &&
+        _sourceGeneration == _dataGeneration) {
+      return;
+    }
+    _sourceGeneration = _dataGeneration;
     _commentSnapshot = widget.comments
         .map((comment) => (
               comment.id,
@@ -225,25 +255,18 @@ class _DanmakuLayerState extends State<DanmakuLayer>
               comment.forceInsert,
             ))
         .toList();
-    _viewportWidth = size.width;
-    _disposeItems();
-    for (var i = 0; i < tracks; i++) {
-      _tracks.add([]);
-    }
     final cues = <DanmakuCue>[];
+    final known = <String>{};
     for (var index = 0; index < widget.comments.length; index++) {
       final comment = widget.comments[index];
-      // 上游缺失 ID 时仍保留不同条目；顺序作为重复文本的区分依据。
       final id = comment.id.isEmpty
           ? 'missing:${comment.fireAtMs}:${comment.content}:$index'
           : comment.id;
-      if (_items.containsKey(id)) continue;
-      final item = _measure(comment.content.replaceAll('\n', ' '));
-      if (item.width <= 0) {
-        item.dispose();
-        continue;
-      }
-      _items[id] = item;
+      if (!known.add(id)) continue;
+      // 普通追加只测量新项，不销毁当前轨道所引用的文字/表情。
+      final item = _items.putIfAbsent(
+          id, () => _measure(comment.content.replaceAll('\n', ' ')));
+      if (item.width <= 0) continue;
       cues.add(DanmakuCue(
         id: id,
         atMs: comment.fireAtMs,
@@ -252,11 +275,20 @@ class _DanmakuLayerState extends State<DanmakuLayer>
         forceInsert: comment.forceInsert,
       ));
     }
-    _timeline = DanmakuTimeline(
-      viewportWidth: size.width,
-      trackCount: tracks,
-      durationMs: duration,
-    )..layout(cues);
+    final position = _clock.read(
+      positionMs: widget.getPositionMs(),
+      elapsed: _lastTickElapsed,
+      isPlaying: widget.isPlaying,
+      playbackSpeed: widget.playbackSpeed,
+    );
+    _timeline!
+        .setSource(cues, positionMs: position.floor(), seek: _resetTimeline);
+    if (_resetTimeline) {
+      for (final track in _tracks) {
+        track.clear();
+      }
+    }
+    _resetTimeline = false;
   }
 
   _DanmakuItem _measure(String content) {

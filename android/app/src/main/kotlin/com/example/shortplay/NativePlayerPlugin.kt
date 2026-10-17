@@ -7,6 +7,7 @@ import android.os.Looper
 import android.view.Surface
 import android.view.WindowManager
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
@@ -21,6 +22,7 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.view.TextureRegistry
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
@@ -215,7 +217,14 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         result.success(mapOf("playerId" to playerId, "textureId" to -1))
 
         if (keyHex.isEmpty()) {
-            handler.post { createPlayerWithUri(playerId, cdnUrl) }
+            handler.post {
+                try {
+                    createPlayerWithUri(playerId, cdnUrl)
+                } catch (error: Exception) {
+                    disposePlayer(playerId)
+                    sendEvent(playerId, "error", error.message ?: "无法打开视频")
+                }
+            }
         } else {
             CryptoNative.ensureInit()
             backgroundExecutor.execute {
@@ -230,20 +239,27 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
     }
 
     private fun createPlayerWithUri(playerId: Int, uri: String) {
+        val parsedUri = Uri.parse(uri)
+        val mediaUri = if (parsedUri.scheme.isNullOrEmpty() || parsedUri.scheme == "file") {
+            val file = File(if (parsedUri.scheme == "file") parsedUri.path.orEmpty() else uri)
+            require(file.isFile && file.canRead() && file.length() > 0) {
+                "本地缓存无法读取，请重新下载"
+            }
+            Uri.fromFile(file)
+        } else {
+            parsedUri
+        }
         val textureEntry = textureRegistry.createSurfaceTexture()
         val surface = Surface(textureEntry.surfaceTexture())
-
         val player = ExoPlayer.Builder(flutterBinding.applicationContext).build()
+        players[playerId] = PlayerInstance(playerId, player, textureEntry, null, surface)
+        setupPlayerListener(playerId, player)
         player.setVideoSurface(surface)
 
-        val mediaItem = MediaItem.fromUri(uri)
+        val mediaItem = MediaItem.fromUri(mediaUri)
         player.setMediaItem(mediaItem)
         player.prepare()
 
-        setupPlayerListener(playerId, player)
-
-        val instance = PlayerInstance(playerId, player, textureEntry, null, surface)
-        players[playerId] = instance
         sendEvent(playerId, "created", textureEntry.id())
     }
 
@@ -262,13 +278,10 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         }
         val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
             .createMediaSource(MediaItem.fromUri("crypto://$cdnUrl"))
+        players[playerId] = PlayerInstance(playerId, player, textureEntry, slot, surface)
+        setupPlayerListener(playerId, player)
         player.setMediaSource(mediaSource)
         player.prepare()
-
-        setupPlayerListener(playerId, player)
-
-        val instance = PlayerInstance(playerId, player, textureEntry, slot, surface)
-        players[playerId] = instance
         sendEvent(playerId, "created", textureEntry.id())
     }
 
@@ -276,6 +289,10 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         var firstFrameSent = false
 
         player.addListener(object : Player.Listener {
+            override fun onPlayerError(error: PlaybackException) {
+                sendEvent(playerId, "error", "${error.errorCodeName}: ${error.cause?.message ?: error.message}")
+            }
+
             override fun onPlaybackStateChanged(playbackState: Int) {
                 when (playbackState) {
                     Player.STATE_BUFFERING -> sendEvent(playerId, "buffering", true)

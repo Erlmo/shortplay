@@ -181,7 +181,7 @@ extension _HgLayouts on PlayerControlsOverlay {
               ),
             ),
           ),
-          // 细线位置不变，扩展上下触摸范围，避免手指偏离后点到视频或选集栏。
+          // 细线位置不变，触摸范围限制在上下 12dp，避免覆盖选集栏。
           Positioned(
             // 时间预览插入/移除时保留 Slider，避免手势被卸载提前取消。
             key: const ValueKey('portrait-playback-progress'),

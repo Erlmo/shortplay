@@ -136,12 +136,12 @@ void main() {
         expect(
             tester.getRect(find.byType(ClipRRect)).bottom, screen.height - 64);
         expect(tester.getCenter(find.byType(Slider)).dy, screen.height - 64);
-        expect(tester.getSize(find.byType(Slider)).height, 48);
+        expect(tester.getSize(find.byType(Slider)).height, 24);
         expect(tester.getCenter(find.byTooltip('全屏')).dy, screen.height - 32);
       }
       final trackY = screen.height - 64;
-      // 起手点偏离细线 20dp、且未准确按中圆点时，仍可拖动进度。
-      for (final dy in [-20.0, 20.0]) {
+      // 不用准确按中圆点；开始拖动后移出缩小的触摸区也不能中断。
+      for (final dy in [-8.0, 8.0]) {
         final count = seekEnds.length;
         final gesture = await tester.startGesture(Offset(100, trackY + dy));
         // 按住寻找圆点的过程中不能触发视频长按倍速。
@@ -167,10 +167,14 @@ void main() {
       expect(speedPresses, 0);
       expect(episodeTaps, 0);
       expect(pageChanges, 0);
-      // 扩大的触摸区域不盖住选集文字所在的栏中部。
-      await tester.tapAt(Offset(90, trackY + 32));
-      await tester.pumpAndSettle();
-      expect(episodeTaps, 1);
+      // 之前会被进度条拦截的栏上部，以及文字中部，都应打开选集。
+      final seekCount = seekEnds.length;
+      for (final dy in [20.0, 32.0, 44.0]) {
+        await tester.tapAt(Offset(90, trackY + dy));
+        await tester.pumpAndSettle();
+      }
+      expect(episodeTaps, 3);
+      expect(seekEnds.length, seekCount);
       await tester.tapAt(const Offset(300, 500));
       await tester.pumpAndSettle();
       expect(videoTaps, 1);

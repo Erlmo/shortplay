@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../models/episode.dart';
 import '../services/crypto_native_channel.dart';
 import '../services/native_player.dart';
+import '../services/offline_playback_cache.dart';
 import '../services/theater_video_preload_manager.dart';
 import 'player_page.dart';
 
@@ -42,8 +43,13 @@ mixin PlayerPreloadMixin on State<PlayerPage> {
     while (_disposeQueue.isNotEmpty) {
       final p = _disposeQueue.removeAt(0);
       // 先暂停再销毁，确保音频立即停止
-      await p.pause();
-      await p.dispose();
+      try {
+        await p.pause();
+      } catch (e) {
+        debugPrint('[Player] 暂停待释放播放器失败: $e');
+      } finally {
+        await p.dispose();
+      }
     }
     _draining = false;
   }
@@ -70,8 +76,13 @@ mixin PlayerPreloadMixin on State<PlayerPage> {
     String keyHex;
 
     if (isOfflinePlayback) {
-      cdnUrl = videoId;
-      keyHex = '';
+      try {
+        cdnUrl = await OfflinePlaybackCache.playableFileUri(videoId);
+        keyHex = '';
+      } catch (e) {
+        debugPrint('[Player] 本地缓存不可用: $e');
+        return;
+      }
     } else {
       try {
         final url =
@@ -125,13 +136,9 @@ mixin PlayerPreloadMixin on State<PlayerPage> {
     unawaited(player.play());
 
     try {
-      if (!player.firstFrameRendered) {
-        await player.firstFrameStream
-            .firstWhere((v) => v)
-            .timeout(const Duration(seconds: 10));
-      }
-    } on TimeoutException {
-      debugPrint('[Player] prepareNext 超时');
+      await player.waitForFirstFrame(timeout: const Duration(seconds: 10));
+    } catch (e) {
+      debugPrint('[Player] prepareNext 失败: $e');
       unawaited(player.dispose());
       return;
     }
@@ -161,7 +168,7 @@ mixin PlayerPreloadMixin on State<PlayerPage> {
   }
 
   void _preloadData(int current, int target) {
-    if (target < 0 || target >= episodes.length) return;
+    if (isOfflinePlayback || target < 0 || target >= episodes.length) return;
     preloadManager.preloadEpisode(
       episodes: episodes,
       currentIndex: current,
@@ -171,7 +178,7 @@ mixin PlayerPreloadMixin on State<PlayerPage> {
   }
 
   void preloadHeaderOnly(int current, int target) {
-    if (target < 0 || target >= episodes.length) return;
+    if (isOfflinePlayback || target < 0 || target >= episodes.length) return;
     preloadManager.preloadEpisodeHeaderOnly(
       episodes: episodes,
       currentIndex: current,

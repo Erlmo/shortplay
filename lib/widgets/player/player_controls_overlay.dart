@@ -67,7 +67,7 @@ class PlayerControlsOverlay extends StatelessWidget {
   });
 
   static const double _seekThumbRadius = 6;
-  static const double _portraitSeekTouchHeight = 48;
+  static const double _portraitSeekTouchHeight = 24;
 
   final dynamic player;
   final bool playerInitialized;

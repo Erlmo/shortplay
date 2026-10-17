@@ -27,7 +27,8 @@ android {
         minSdkVersion = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
-        versionName = flutter.versionName
+        // Android 单独升到 3.2.1，iOS 继续使用 pubspec.yaml 中的 3.2.0。
+        versionName = "3.2.1"
     }
 
     // 支持 arm64-v8a 和 armeabi-v7a（32 位：老手机和大量电视盒子）。

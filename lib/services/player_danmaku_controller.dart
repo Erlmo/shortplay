@@ -7,12 +7,15 @@ import 'api_client.dart';
 import 'danmaku_service.dart';
 
 class PlayerDanmakuController extends ChangeNotifier {
-  PlayerDanmakuController({required ApiClient apiClient})
-      : _service = DanmakuService(apiClient: apiClient);
+  PlayerDanmakuController({required ApiClient apiClient}) {
+    _service = DanmakuService(
+      apiClient: apiClient,
+      onCommentsChanged: _onCommentsChanged,
+    );
+  }
 
-  final DanmakuService _service;
+  late final DanmakuService _service;
   bool _disposed = false;
-  int _generation = 0;
   bool enabled = true;
   List<DanmakuComment> comments = const [];
 
@@ -20,10 +23,15 @@ class PlayerDanmakuController extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
+  void _onCommentsChanged(List<DanmakuComment> snapshot) {
+    if (_disposed) return;
+    comments = snapshot;
+    _safeNotify();
+  }
+
   @override
   void dispose() {
     _disposed = true;
-    _generation++;
     _service.dispose();
     super.dispose();
   }
@@ -66,15 +74,11 @@ class PlayerDanmakuController extends ChangeNotifier {
     if (_disposed || isOfflinePlayback || !enabled) return;
     final groupId = episode.url.trim();
     if (groupId.isEmpty) return;
-    final generation = _generation;
     await _service.loadForEpisode(
         groupId: groupId,
         bookId: bookId,
         durationMs: durationMs,
         positionMs: positionMs);
-    if (_disposed || generation != _generation) return;
-    comments = _service.comments;
-    _safeNotify();
   }
 
   Future<void> ensureLoadedUpTo({
@@ -87,17 +91,11 @@ class PlayerDanmakuController extends ChangeNotifier {
     if (_disposed || !enabled || !isTheaterResource || isOfflinePlayback) {
       return;
     }
-    final generation = _generation;
     await _service.ensureLoadedUpTo(positionMs,
         seek: seek, durationMs: durationMs);
-    if (_disposed || generation != _generation) return;
-    if (_service.commentCount == comments.length) return;
-    comments = _service.comments;
-    _safeNotify();
   }
 
   void clearComments() {
-    _generation++;
     _service.reset();
     if (comments.isEmpty) return;
     comments = const [];

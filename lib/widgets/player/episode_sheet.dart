@@ -1,10 +1,11 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../models/drama_season.dart';
 import '../../models/episode.dart';
+import '../../services/device_profile.dart';
 import '../../services/download_service.dart';
 import '../episode_selector.dart';
-import '../../services/device_profile.dart';
 import '../tv_side_panel.dart';
 import 'hg_episode_panel.dart';
 
@@ -19,6 +20,9 @@ Future<void> showPlayerEpisodeSheet({
   String intro = '',
   String status = '',
   Future<Map<String, String>> Function()? loadTitles,
+  Future<DramaSeasons> Function()? loadSeasons,
+  int? currentDramaId,
+  ValueChanged<DramaSeason>? onSelectSeason,
 }) {
   // 手机、平板、桌面（macOS 等）：红果选集面板；宽窗口 / 横屏全屏用右侧侧栏。
   // 只有电视保留遥控器焦点版的侧边面板。
@@ -35,6 +39,9 @@ Future<void> showPlayerEpisodeSheet({
       episodeNotifier: episodeNotifier,
       onSelectEpisode: onSelectEpisode,
       loadTitles: loadTitles,
+      loadSeasons: loadSeasons,
+      currentDramaId: currentDramaId,
+      onSelectSeason: onSelectSeason,
     );
   }
   // 电视：右侧全高深色面板（遥控器焦点）
