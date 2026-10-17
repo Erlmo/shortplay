@@ -2,25 +2,38 @@ import 'package:flutter/material.dart';
 
 import 'tv_tap.dart';
 
-/// 两行简介与就地展开，切换到另一季时恢复折叠。
+/// 简介就地展开/收起，切换到另一季时恢复页面配置的默认状态。
 class ExpandableSynopsis extends StatefulWidget {
   const ExpandableSynopsis(
-      {super.key, required this.text, this.showHeading = true});
+      {super.key,
+      required this.text,
+      this.showHeading = true,
+      this.initiallyExpanded = false});
 
   final String text;
   final bool showHeading;
+  final bool initiallyExpanded;
 
   @override
   State<ExpandableSynopsis> createState() => _ExpandableSynopsisState();
 }
 
 class _ExpandableSynopsisState extends State<ExpandableSynopsis> {
-  bool _expanded = false;
+  late bool _expanded;
+
+  @override
+  void initState() {
+    super.initState();
+    _expanded = widget.initiallyExpanded;
+  }
 
   @override
   void didUpdateWidget(ExpandableSynopsis oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.text != widget.text) _expanded = false;
+    if (oldWidget.text != widget.text ||
+        oldWidget.initiallyExpanded != widget.initiallyExpanded) {
+      _expanded = widget.initiallyExpanded;
+    }
   }
 
   @override

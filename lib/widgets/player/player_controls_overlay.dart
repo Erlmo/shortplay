@@ -62,9 +62,12 @@ class PlayerControlsOverlay extends StatelessWidget {
     this.dramaTags = const [],
     this.dramaIntro = '',
     this.onNextEpisode,
+    this.isVideoFilled = false,
+    this.onToggleVideoFit,
   });
 
   static const double _seekThumbRadius = 6;
+  static const double _portraitSeekTouchHeight = 48;
 
   final dynamic player;
   final bool playerInitialized;
@@ -116,6 +119,8 @@ class PlayerControlsOverlay extends StatelessWidget {
 
   /// 横屏“下一集”按钮；最后一集时为 null。
   final VoidCallback? onNextEpisode;
+  final bool isVideoFilled;
+  final VoidCallback? onToggleVideoFit;
 
   @override
   Widget build(BuildContext context) {
@@ -202,17 +207,26 @@ class PlayerControlsOverlay extends StatelessWidget {
                   ],
                 ),
               ),
-              child: _PlaybackProgressBar(
-                player: player,
-                positionMsNotifier: positionMsNotifier,
-                playingNotifier: playingNotifier,
-                seekingPositionMs: seekingPositionMs,
-                onTogglePlay: onTogglePlay,
-                onSeekStart: onSeekStart,
-                onSeekChanged: onSeekChanged,
-                onSeekEnd: onSeekEnd,
-                durationMsNotifier: durationMsNotifier,
-              ),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                if (media.orientation == Orientation.landscape &&
+                    onToggleVideoFit != null &&
+                    playerInitialized)
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: _videoFitButton,
+                  ),
+                _PlaybackProgressBar(
+                  player: player,
+                  positionMsNotifier: positionMsNotifier,
+                  playingNotifier: playingNotifier,
+                  seekingPositionMs: seekingPositionMs,
+                  onTogglePlay: onTogglePlay,
+                  onSeekStart: onSeekStart,
+                  onSeekChanged: onSeekChanged,
+                  onSeekEnd: onSeekEnd,
+                  durationMsNotifier: durationMsNotifier,
+                ),
+              ]),
             ),
           ),
       ],
@@ -517,6 +531,14 @@ class _PlaybackProgressBarState extends State<_PlaybackProgressBar> {
   bool _dragging = false;
   double _dragValue = 0;
   double? _seekTarget;
+  int? _seekPointer;
+  double? _pointerFraction;
+
+  void _updateDragValue(double value) {
+    if (_dragValue == value) return;
+    setState(() => _dragValue = value);
+    widget.onSeekChanged(value);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -583,7 +605,7 @@ class _PlaybackProgressBarState extends State<_PlaybackProgressBar> {
     final value = posMs.clamp(0.0, max);
 
     final thin = widget.sliderOnly;
-    return SliderTheme(
+    final slider = SliderTheme(
       data: SliderTheme.of(ctx).copyWith(
         trackHeight: thin
             ? (widget.edgeToEdge ? (_dragging ? 3 : 1) : (_dragging ? 4 : 2))
@@ -604,6 +626,7 @@ class _PlaybackProgressBarState extends State<_PlaybackProgressBar> {
         overlayColor: Colors.white.withValues(alpha: 0.12),
       ),
       child: Slider(
+        allowedInteraction: SliderInteraction.tapAndSlide,
         min: 0,
         max: max,
         value: value,
@@ -620,20 +643,55 @@ class _PlaybackProgressBarState extends State<_PlaybackProgressBar> {
         onChanged: durationMs <= 0
             ? null
             : (v) {
-                setState(() => _dragValue = v);
-                widget.onSeekChanged(v);
+                _updateDragValue(widget.edgeToEdge && _pointerFraction != null
+                    ? _pointerFraction! * max
+                    : v);
               },
         onChangeEnd: durationMs <= 0
             ? null
             : (v) {
+                final target = _dragValue;
                 setState(() {
                   _dragging = false;
-                  _seekTarget = v;
+                  _seekTarget = target;
                 });
-                widget.onSeekEnd(v);
+                widget.onSeekEnd(target);
               },
       ),
     );
+    if (!widget.edgeToEdge) return slider;
+
+    // 保留 Slider 的手势仲裁、键盘和无障碍操作；触摸拖动按绝对位置计算，
+    // 避免起拖阈值及移动事件的相对位移累积让圆点落后于手指。
+    return LayoutBuilder(builder: (context, constraints) {
+      void recordPosition(int pointer, double x) {
+        if (_seekPointer != pointer || constraints.maxWidth <= 0) return;
+        final fraction = (x / constraints.maxWidth).clamp(0.0, 1.0);
+        _pointerFraction = Directionality.of(context) == TextDirection.rtl
+            ? 1 - fraction
+            : fraction;
+        if (_dragging) _updateDragValue(_pointerFraction! * max);
+      }
+
+      void releasePointer(int pointer) {
+        if (_seekPointer != pointer) return;
+        _seekPointer = null;
+        _pointerFraction = null;
+      }
+
+      return Listener(
+        onPointerDown: (event) {
+          if (_seekPointer != null) return;
+          _seekPointer = event.pointer;
+          recordPosition(event.pointer, event.localPosition.dx);
+        },
+        onPointerMove: (event) =>
+            recordPosition(event.pointer, event.localPosition.dx),
+        onPointerUp: (event) => releasePointer(event.pointer),
+        onPointerCancel: (event) => releasePointer(event.pointer),
+        child: slider,
+      );
+    });
   }
 
   String _fmt(Duration d) {

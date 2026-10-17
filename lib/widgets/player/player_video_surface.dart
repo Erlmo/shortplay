@@ -2,14 +2,10 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-/// 视频画面的缩放规则（与红果短剧播放器一致，见 j65/h.java onLayout）：
-/// - 竖屏手机：底部留出固定高度的控件栏（[phoneBottomBarHeight]），画面区域
-///   是“屏幕顶端（透明状态栏压在画面上）到控件栏上沿”；
-///   * 竖版片源：在画面区域里**铺满裁切**（ASPECT_FILL），不设裁切上限，
-///     画面下沿永远贴着控件栏，两者无缝衔接；
-///   * 横版片源（宽/高 ≥ [landscapeRatio]）：完整显示（按宽撑满）。
-/// - 横屏全屏、手机横过来、宽屏设备（屏幕宽/高 > [wideScreenBoundary]，
-///   如平板 / 折叠屏 / 电视 / 桌面宽窗口）：完整显示。
+/// 按用户要求启用红果 j65.u 的裁切优化分支（模式7）：
+/// 竖屏普通片源先铺满，整轴裁掉比例超过15%则完整显示；横向片源按宽。
+/// 手机底栏单独保留固定高度，留白属于画面区域，不扩展控件栏。
+/// 横屏默认完整显示，可由用户切换为等比例铺满。
 class PlayerVideoSurface extends StatelessWidget {
   const PlayerVideoSurface({
     super.key,
@@ -17,12 +13,14 @@ class PlayerVideoSurface extends StatelessWidget {
     required this.videoWidth,
     required this.videoHeight,
     required this.isLandscapeFullScreen,
+    this.fillScreen = false,
   });
 
   final int textureId;
   final int videoWidth;
   final int videoHeight;
   final bool isLandscapeFullScreen;
+  final bool fillScreen;
 
   /// 片源宽/高达到此值视为横版片源（红果 landscape_ratio 默认 1.666）。
   static const double landscapeRatio = 1.666;
@@ -30,9 +28,11 @@ class PlayerVideoSurface extends StatelessWidget {
   /// 屏幕宽/高超过此值视为宽屏设备（红果 wide_screen_boundary 默认 0.8）。
   static const double wideScreenBoundary = 0.8;
 
-  /// 播放页已自动隐藏底部系统条，控件栏固定 56dp。
+  /// 用户要求底栏比原56dp增加8dp；这是本项目布局适配，并非红果默认值。
   /// iOS 隐藏 Home 指示条后仍可能保留安全区，不能再叠加到栏高。
-  static const double phoneBottomBarHeight = 56;
+  static const double phoneBottomBarHeight = 64;
+
+  static const double cropThreshold = 0.15;
 
   /// 画面区域底部两个角的圆角半径。圆角外露出的是控件栏的底色，
   /// 看起来像控件栏向上托住画面，两者衔接成一体（红果做法）。
@@ -49,21 +49,29 @@ class PlayerVideoSurface extends StatelessWidget {
   static bool usesPhoneLayout(Size size, bool isLandscapeFullScreen) =>
       !isLandscapeFullScreen && size.width / size.height <= wideScreenBoundary;
 
-  /// 竖屏手机 + 竖版片源：画面在整块屏幕坐标里的位置（铺满控件栏以上区域）。
-  static Rect phoneFillRect(Size box, double width, double height) {
-    final areaH = phoneVideoAreaHeight(box);
-    final scale = math.max(box.width / width, areaH / height);
-    final drawW = width * scale;
-    final drawH = height * scale;
-    return Rect.fromLTWH(
-        (box.width - drawW) / 2, (areaH - drawH) / 2, drawW, drawH);
+  static Rect _scaledRect(
+      Size area, double width, double height, double scale) {
+    final w = width * scale;
+    final h = height * scale;
+    return Rect.fromLTWH((area.width - w) / 2, (area.height - h) / 2, w, h);
   }
 
-  /// 该片源在竖屏手机上是否铺满裁切（否则完整显示）。
-  static bool fillsOnPhone(int videoWidth, int videoHeight) =>
-      videoWidth > 0 &&
-      videoHeight > 0 &&
-      videoWidth / videoHeight < landscapeRatio;
+  /// 裁切比例以放大后的画面为分母，左右/上下两侧合计，而非每侧15%。
+  static Rect phoneVideoRect(Size box, double width, double height) {
+    final area = Size(box.width, math.max(0, phoneVideoAreaHeight(box)));
+    final coverScale = math.max(area.width / width, area.height / height);
+    final cover = _scaledRect(area, width, height, coverScale);
+    if (width / height >= landscapeRatio) {
+      return _scaledRect(area, width, height, area.width / width);
+    }
+    final cutX = (cover.width - area.width) / cover.width;
+    final cutY = (cover.height - area.height) / cover.height;
+    if (cutX > cropThreshold || cutY > cropThreshold) {
+      final fitScale = math.min(area.width / width, area.height / height);
+      return _scaledRect(area, width, height, fitScale);
+    }
+    return cover;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -78,17 +86,18 @@ class PlayerVideoSurface extends StatelessWidget {
 
     return LayoutBuilder(builder: (context, constraints) {
       final box = Size(constraints.maxWidth, constraints.maxHeight);
-      final fill = box.width.isFinite &&
+      final phone = box.width.isFinite &&
           box.height.isFinite &&
-          usesPhoneLayout(box, isLandscapeFullScreen) &&
-          width / height < landscapeRatio;
+          usesPhoneLayout(box, isLandscapeFullScreen);
 
-      if (!fill) {
+      if (!phone) {
         return ColoredBox(
           color: Colors.black,
           child: SizedBox.expand(
             child: FittedBox(
-              fit: BoxFit.contain,
+              fit: fillScreen && box.width > box.height
+                  ? BoxFit.cover
+                  : BoxFit.contain,
               clipBehavior: Clip.hardEdge,
               child: SizedBox(width: width, height: height, child: texture),
             ),
@@ -96,7 +105,7 @@ class PlayerVideoSurface extends StatelessWidget {
         );
       }
 
-      final r = phoneFillRect(box, width, height);
+      final r = phoneVideoRect(box, width, height);
       final areaH = phoneVideoAreaHeight(box);
       return ColoredBox(
         color: Colors.black,
@@ -120,9 +129,12 @@ class PlayerVideoSurface extends StatelessWidget {
                 borderRadius: const BorderRadius.vertical(
                   bottom: Radius.circular(phoneBarCornerRadius),
                 ),
-                child: Stack(
-                  clipBehavior: Clip.none,
-                  children: [Positioned.fromRect(rect: r, child: texture)],
+                child: ColoredBox(
+                  color: Colors.black,
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [Positioned.fromRect(rect: r, child: texture)],
+                  ),
                 ),
               ),
             ),

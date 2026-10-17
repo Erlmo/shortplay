@@ -33,6 +33,27 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('默认展开配置支持手动收起，新季简介仍默认展开', (tester) async {
+    Widget page(String text) => MaterialApp(
+            home: Scaffold(
+                body: SingleChildScrollView(
+          child: ExpandableSynopsis(
+              text: text, initiallyExpanded: true, showHeading: false),
+        )));
+    await tester.pumpWidget(page(longIntro));
+    Text synopsis() =>
+        tester.widget<Text>(find.byKey(const ValueKey('synopsis-text')));
+    expect(synopsis().maxLines, isNull);
+    await tester.tap(find.text('收起'));
+    await tester.pumpAndSettle();
+    expect(synopsis().maxLines, 2);
+    await tester.pumpWidget(page('下一季：$longIntro'));
+    await tester.pumpAndSettle();
+    expect(synopsis().maxLines, isNull);
+    expect(find.text('收起'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('短简介不出现多余的展开按钮', (tester) async {
     await tester.pumpWidget(const MaterialApp(
         home: Scaffold(

@@ -7,12 +7,15 @@ import 'package:flutter/services.dart';
 
 import '../models/drama.dart';
 import '../models/drama_season.dart';
+import '../models/episode.dart';
 import '../services/api_client.dart';
 import '../services/device_profile.dart';
 import '../services/download_service.dart';
 import '../services/playback_history_store.dart';
 import '../services/theater_video_preload_manager.dart';
 import '../widgets/app_notice.dart';
+import '../widgets/detail_action_bar.dart';
+import '../widgets/detail_episode_strip.dart';
 import '../widgets/episode_selector.dart';
 import '../widgets/expandable_synopsis.dart';
 import '../widgets/related_seasons.dart';
@@ -206,7 +209,7 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
           apiClient: apiClient,
           downloadService: widget.downloadService,
           initialEpisodeIndex:
-              episodeIndex ?? (resume ? _lastEpisodeIndex : null),
+              episodeIndex ?? (resume ? (_lastEpisodeIndex ?? 0) : 0),
           initialPositionMs: resume ? _lastPositionMs : null,
           prefetchedEpisodes: _prefetchedEpisodes,
           preloadManager: _detailPreloadManager,
@@ -334,22 +337,23 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
         slivers: [
           _buildSliverAppBar(context, size),
           SliverPadding(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
             sliver: SliverList(
                 delegate: SliverChildListDelegate([
               _buildImmersiveHeader(),
               if (drama.intro.isNotEmpty) ...[
-                const SizedBox(height: 12),
+                const SizedBox(height: 8),
                 ExpandableSynopsis(
                     key: ValueKey('synopsis-${drama.id}'),
                     text: drama.intro,
-                    showHeading: false),
+                    showHeading: false,
+                    initiallyExpanded: true),
               ],
               if (_prefetchedEpisodes != null) ...[
                 const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 20),
-                    child: Divider(height: 1, color: Color(0xFFEEEFF2))),
-                _buildWideEpisodeGrid(embedded: true),
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    child: Divider(height: 1, color: Color(0xFFF3F4F6))),
+                _buildCompactEpisodes(),
               ],
             ])),
           ),
@@ -363,122 +367,171 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
     final title = suffix == null || suffix.start == 0
         ? drama.name
         : drama.name.substring(0, suffix.start).trim();
-    final seasonLabel = suffix?.group(0);
-    final metadata = [
-      if (seasonLabel != null) seasonLabel,
-      if (drama.status.isNotEmpty) drama.status
-    ].join(' · ');
-    final tags = (drama.pureCategoryTags ?? '')
-        .split(RegExp(r'[,，·]'))
-        .map((s) => s.trim())
-        .where((s) => s.isNotEmpty)
-        .take(2);
+    final tags = <String>{
+      ...(drama.pureCategoryTags ?? '').split(RegExp(r'[,，·]')),
+      ...drama.tags,
+    }.map((tag) => tag.trim()).where((tag) => tag.isNotEmpty).take(3);
+    final metadata = {
+      if (drama.status.isNotEmpty) drama.status,
+      if (drama.subTitle?.isNotEmpty ?? false) drama.subTitle!,
+    }.join(' · ');
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(title,
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-              fontSize: 25,
-              height: 1.3,
-              fontWeight: FontWeight.w700,
-              letterSpacing: -.5,
-              color: Color(0xFF252832))),
-      const SizedBox(height: 10),
-      Wrap(
-          spacing: 10,
-          runSpacing: 8,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          children: [
-            if (metadata.isNotEmpty)
-              Text(metadata,
-                  style:
-                      const TextStyle(fontSize: 12, color: Color(0xFF7D8290))),
-            if (drama.score?.isNotEmpty ?? false)
-              Row(mainAxisSize: MainAxisSize.min, children: [
-                const Icon(Icons.star_rounded,
-                    size: 16, color: Color(0xFFFF6860)),
-                const SizedBox(width: 3),
-                Text(drama.score!,
+      Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Expanded(
+          child: Text(title,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                  fontSize: 24,
+                  height: 1.25,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -.4,
+                  color: Color(0xFF111827))),
+        ),
+        if (drama.score?.isNotEmpty ?? false) ...[
+          const SizedBox(width: 10),
+          Container(
+            margin: const EdgeInsets.only(top: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFF1F0),
+              border: Border.all(color: const Color(0xFFFFE4E3)),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.star_rounded, size: 14, color: detailAccent),
+              const SizedBox(width: 2),
+              Text(drama.score!,
+                  style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: detailAccent)),
+            ]),
+          ),
+        ],
+      ]),
+      if (metadata.isNotEmpty || tags.isNotEmpty) ...[
+        const SizedBox(height: 9),
+        Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              if (metadata.isNotEmpty)
+                Text(metadata,
                     style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: Color(0xFFFF6860))),
-              ]),
-            ...tags.map((tag) => _metadataBadge(tag)),
-          ]),
+                        fontSize: 12, color: Color(0xFF6B7280))),
+              ...tags.map((tag) => Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                        color: const Color(0xFFF3F4F6),
+                        borderRadius: BorderRadius.circular(20)),
+                    child: Text(tag,
+                        style: const TextStyle(
+                            fontSize: 11, color: Color(0xFF6B7280))),
+                  )),
+            ]),
+      ],
     ]);
   }
 
-  Widget _buildImmersiveActions(BuildContext context) => Container(
-        key: const ValueKey('detail-play-bar'),
-        decoration: const BoxDecoration(
-            color: Colors.white,
-            border: Border(top: BorderSide(color: Color(0xFFEEEFF2)))),
-        child: SafeArea(
-            top: false,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 10),
-              child: Row(children: [
-                if (widget.downloadService != null &&
-                    drama.isTheaterResource) ...[
-                  TvTap(
-                      onTap:
-                          _addingDownloads ? null : () => _downloadAll(context),
-                      borderRadius: 10,
-                      child: SizedBox(
-                          width: 76,
-                          height: 48,
-                          child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                if (_addingDownloads)
-                                  const CupertinoActivityIndicator(radius: 9)
-                                else
-                                  const Icon(Icons.download_rounded,
-                                      size: 21, color: Color(0xFF343944)),
-                                const SizedBox(width: 7),
-                                const Text('缓存',
-                                    style: TextStyle(
-                                        fontSize: 13,
-                                        color: Color(0xFF343944))),
-                              ]))),
-                  const SizedBox(
-                      height: 24,
-                      child:
-                          VerticalDivider(width: 20, color: Color(0xFFEEEFF2))),
+  Future<void> _openAllEpisodes(List<Episode> episodes) async {
+    final requestedId = drama.id;
+    final season =
+        _seasons?.seasons.where((s) => s.id == requestedId).firstOrNull;
+    final index = await showDetailEpisodesSheet(
+      context: context,
+      title: drama.name,
+      seasonLabel: season == null ? '' : '第${season.order}季 · ',
+      episodes: episodes,
+    );
+    if (!mounted || requestedId != drama.id || index == null) return;
+    _startPlay(context, episodeIndex: index);
+  }
+
+  Widget _buildCompactEpisodes() => FutureBuilder<TheaterEpisodesResult>(
+        key: ValueKey('compact-episodes-${drama.id}'),
+        future: _prefetchedEpisodes,
+        builder: (context, snapshot) {
+          final episodes = snapshot.data?.toEpisodes() ?? const <Episode>[];
+          final seasonSelector = _buildSeasonSelector();
+          return Column(
+            key: const ValueKey('season-episode-selector'),
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(children: [
+                const Text('选集',
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF111827))),
+                if (episodes.isNotEmpty) ...[
                   const SizedBox(width: 8),
+                  Expanded(
+                      child: Text('全${episodes.length}集',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 12, color: Color(0xFF9CA3AF)))),
+                  TextButton(
+                    key: const ValueKey('detail-show-all'),
+                    onPressed: () => unawaited(_openAllEpisodes(episodes)),
+                    style: TextButton.styleFrom(
+                        foregroundColor: const Color(0xFF6B7280),
+                        padding: EdgeInsets.zero),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Text('全部 ${episodes.length} 集',
+                          style: const TextStyle(fontSize: 12)),
+                      const Icon(Icons.chevron_right_rounded, size: 16),
+                    ]),
+                  ),
                 ],
-                Expanded(
-                    child: Material(
-                  color: const Color(0xFFFF6860),
-                  borderRadius: BorderRadius.circular(25),
-                  child: TvTap(
-                      ink: true,
-                      borderRadius: 25,
-                      onTap: () => _startPlay(context),
-                      child: const SizedBox(
-                          height: 48,
-                          child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.play_arrow_rounded,
-                                    color: Colors.white, size: 25),
-                                SizedBox(width: 7),
-                                Text('立即播放',
-                                    style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 15,
-                                        fontWeight: FontWeight.w600)),
-                              ]))),
-                )),
               ]),
-            )),
+              if (seasonSelector != null) ...[
+                seasonSelector,
+                const SizedBox(height: 6)
+              ],
+              if (snapshot.hasError)
+                Center(
+                    child: TextButton(
+                        onPressed: () => setState(_prefetchEpisodes),
+                        child: const Text('选集加载失败，点击重试')))
+              else if (!snapshot.hasData)
+                const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Center(child: CupertinoActivityIndicator()))
+              else if (episodes.isEmpty)
+                const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                    child: Text('暂无剧集',
+                        style: TextStyle(color: Color(0xFF9CA3AF))))
+              else
+                DetailEpisodeStrip(
+                  key: ValueKey('episodes-${drama.id}'),
+                  episodes: episodes,
+                  onSelect: (index) => _startPlay(context, episodeIndex: index),
+                  onShowAll: () => unawaited(_openAllEpisodes(episodes)),
+                ),
+            ],
+          );
+        },
+      );
+
+  Widget _buildImmersiveActions(BuildContext context) => DetailActionBar(
+        key: const ValueKey('detail-play-bar'),
+        onPlay: () => _startPlay(context),
+        onDownload: widget.downloadService != null && drama.isTheaterResource
+            ? () => _downloadAll(context)
+            : null,
+        addingDownloads: _addingDownloads,
       );
 
   Widget _buildSliverAppBar(BuildContext context, Size size) {
     return SliverAppBar(
-      // 紧凑封面，首屏优先展示简介与选集。
-      expandedHeight: (size.width * .48).clamp(160.0, 210.0),
+      // 比原封面加高约 30dp，留出更自然的渐隐空间。
+      expandedHeight: (size.width * .82).clamp(240.0, 330.0) -
+          MediaQuery.paddingOf(context).top,
       pinned: true,
       backgroundColor: Colors.white,
       elevation: 0,
@@ -519,20 +572,26 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
                     )
                   : _buildGradientBg(),
             ),
-            // 全局渐变遮罩
-            Positioned.fill(
+            // 在较长距离内逐渐增大白色透明度，避免封面底部出现突兀白带。
+            const Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              height: 120,
               child: DecoratedBox(
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
                     begin: Alignment.topCenter,
                     end: Alignment.bottomCenter,
                     colors: [
-                      Color(0x26000000),
-                      Color(0x00000000),
-                      Color(0x80FFFFFF),
-                      Color(0xFFFFFFFF),
+                      Color(0x00FFFFFF),
+                      Color(0x0AFFFFFF),
+                      Color(0x33FFFFFF),
+                      Color(0x8CFFFFFF),
+                      Color(0xE6FFFFFF),
+                      Colors.white,
                     ],
-                    stops: const [0.0, 0.38, 0.75, 1.0],
+                    stops: [0.0, 0.2, 0.46, 0.7, 0.9, 1.0],
                   ),
                 ),
               ),
@@ -807,7 +866,7 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
         return EpisodeSelector(
           key: ValueKey('episodes-${drama.id}'),
           episodes: episodes,
-          activeIndex: _lastEpisodeIndex ?? -1,
+          activeIndex: 0,
           onSelect: (index) => _startPlay(context, episodeIndex: index),
           autofocusActive: false,
           softStyle: true,

@@ -24,6 +24,17 @@ String _speedLabel(double v) =>
 extension _HgLayouts on PlayerControlsOverlay {
   int get _epNo => episodeNumber ?? currentEpisodeIndex + 1;
 
+  Widget get _videoFitButton => Tooltip(
+        message: isVideoFilled ? '切换为完整显示' : '铺满屏幕（等比例裁切）',
+        child: _BareIconButton(
+          icon: isVideoFilled
+              ? Icons.fit_screen_rounded
+              : Icons.crop_free_rounded,
+          size: 24,
+          onTap: onToggleVideoFit,
+        ),
+      );
+
   Future<void> _openSettings(BuildContext context, {bool side = false}) async {
     onMenuOpened();
     final action = await showPlayerMoreSheet(
@@ -56,6 +67,10 @@ extension _HgLayouts on PlayerControlsOverlay {
     final landscapeVideo = videoWidth > 0 &&
         videoHeight > 0 &&
         videoWidth / videoHeight >= PlayerVideoSurface.landscapeRatio;
+    final videoBounds = landscapeVideo
+        ? PlayerVideoSurface.phoneVideoRect(
+            media.size, videoWidth.toDouble(), videoHeight.toDouble())
+        : Rect.zero;
 
     return Stack(
       children: [
@@ -113,9 +128,7 @@ extension _HgLayouts on PlayerControlsOverlay {
           Positioned(
             left: 0,
             right: 0,
-            top: media.size.height / 2 +
-                media.size.width * videoHeight / videoWidth / 2 +
-                8, // 按钮外圈有 8 的透明点击留白，视觉上仍距画面 16
+            top: videoBounds.bottom + 8,
             child: Center(
               child: _HgPillButton(
                 label: '全屏观看',
@@ -168,12 +181,14 @@ extension _HgLayouts on PlayerControlsOverlay {
               ),
             ),
           ),
-          // 细进度条：紧贴选集栏上沿，左右收进到圆角以内
+          // 细线位置不变，扩展上下触摸范围，避免手指偏离后点到视频或选集栏。
           Positioned(
+            // 时间预览插入/移除时保留 Slider，避免手势被卸载提前取消。
+            key: const ValueKey('portrait-playback-progress'),
             left: PlayerVideoSurface.phoneBarCornerRadius,
             right: PlayerVideoSurface.phoneBarCornerRadius,
-            top: areaH - 12,
-            height: 24,
+            top: areaH - PlayerControlsOverlay._portraitSeekTouchHeight / 2,
+            height: PlayerControlsOverlay._portraitSeekTouchHeight,
             child: _PlaybackProgressBar(
               player: player,
               positionMsNotifier: positionMsNotifier,
@@ -736,6 +751,7 @@ class _HgLandscapeLayerState extends State<_HgLandscapeLayer> {
       // 底部：进度行 + 操作行
       if (showUi)
         Positioned(
+          key: const ValueKey('landscape-playback-controls'),
           left: 0,
           right: 0,
           bottom: 0,
@@ -786,6 +802,8 @@ class _HgLandscapeLayerState extends State<_HgLandscapeLayer> {
                       onChanged: c.onSpeedChanged!,
                     ),
                   ),
+                if (c.onToggleVideoFit != null && c.playerInitialized)
+                  c._videoFitButton,
                 if (c.loadQualities != null && c.currentQuality.isNotEmpty)
                   _HgTextButton(
                       label: c.currentQuality.toUpperCase(),

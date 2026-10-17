@@ -8,9 +8,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shortplay/models/drama_season.dart';
 import 'package:shortplay/models/drama.dart';
+import 'package:shortplay/models/episode.dart';
 import 'package:shortplay/pages/drama_detail_page.dart';
 import 'package:shortplay/services/api_client.dart';
 import 'package:shortplay/services/device_profile.dart';
+import 'package:shortplay/widgets/detail_episode_strip.dart';
 import 'package:shortplay/widgets/related_seasons.dart';
 import 'package:shortplay/widgets/episode_selector.dart';
 
@@ -105,6 +107,12 @@ class _ManyEpisodesCatalog extends _Catalog {
                   realChapterOrder: '${i + 1}')));
 }
 
+List<Episode> _detailEpisodes(WidgetTester tester, bool tv) => tv
+    ? tester.widget<EpisodeSelector>(find.byType(EpisodeSelector)).episodes
+    : tester
+        .widget<DetailEpisodeStrip>(find.byType(DetailEpisodeStrip))
+        .episodes;
+
 void main() {
   test('其他季保留大整数ID、去重排序并保持可播放资源类型', () {
     final result = DramaSeasons.fromJson(_data);
@@ -163,12 +171,7 @@ void main() {
               matching: find.byKey(const ValueKey('season-episode-selector'))),
           findsOneWidget);
       final originalState = tester.state(find.byType(DramaDetailPage));
-      expect(
-          tester
-              .widget<EpisodeSelector>(find.byType(EpisodeSelector))
-              .episodes
-              .length,
-          3);
+      expect(_detailEpisodes(tester, tv).length, 3);
       if (tv) {
         final detector = find.descendant(
             of: card, matching: find.byType(FocusableActionDetector));
@@ -191,8 +194,7 @@ void main() {
               .currentId
               .toString(),
           _last);
-      final episodes =
-          tester.widget<EpisodeSelector>(find.byType(EpisodeSelector)).episodes;
+      final episodes = _detailEpisodes(tester, tv);
       expect(episodes.length, 5);
       expect(episodes.first.name, startsWith(_last));
       // 再次点击当前季不重复请求或重置当前选集。
@@ -270,7 +272,7 @@ void main() {
     expect(api.episodeRequests, [_first, _last, _first]);
     expect(tester.takeException(), isNull);
   });
-  testWidgets('窄屏详情封面紧凑，简介折叠，选集和季切换仍完整可用', (tester) async {
+  testWidgets('窄屏封面适度增高，简介默认展开，可收起及切季', (tester) async {
     SharedPreferences.setMockInitialValues({});
     await tester.binding.setSurfaceSize(const Size(360, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -295,21 +297,20 @@ void main() {
     await tester.pumpAndSettle();
     expect(
         tester.widget<SliverAppBar>(find.byType(SliverAppBar)).expandedHeight,
-        lessThanOrEqualTo(210));
-    expect(
-        tester
-            .widget<Text>(find.byKey(const ValueKey('synopsis-text')))
-            .maxLines,
-        2);
+        inInclusiveRange(290, 330));
+    Text synopsis() =>
+        tester.widget<Text>(find.byKey(const ValueKey('synopsis-text')));
+    expect(synopsis().maxLines, isNull);
+    await tester.ensureVisible(find.text('收起'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('收起'));
+    await tester.pumpAndSettle();
+    expect(synopsis().maxLines, 2);
     await tester.ensureVisible(find.text('展开'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('展开'));
     await tester.pumpAndSettle();
-    expect(
-        tester
-            .widget<Text>(find.byKey(const ValueKey('synopsis-text')))
-            .maxLines,
-        isNull);
+    expect(synopsis().maxLines, isNull);
     await tester.ensureVisible(find.text('收起'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('收起'));
@@ -327,7 +328,7 @@ void main() {
         _last);
     expect(tester.takeException(), isNull);
   });
-  testWidgets('A方案底部播放固定，当前分组完整展示并可切换集数范围', (tester) async {
+  testWidgets('手机单排选集，全部目录可切换分组，底部播放固定', (tester) async {
     SharedPreferences.setMockInitialValues({});
     await tester.binding.setSurfaceSize(const Size(390, 844));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -342,20 +343,127 @@ void main() {
     final footer = find.byKey(const ValueKey('detail-play-bar'));
     final footerTop = tester.getTopLeft(footer).dy;
     expect(find.text('立即播放').hitTestable(), findsOneWidget);
-    await tester.scrollUntilVisible(find.text('31-60'), 200,
-        scrollable: find.byType(Scrollable).first);
+    expect(find.byType(DetailEpisodeStrip), findsOneWidget);
+    expect(find.byType(EpisodeSelector), findsNothing);
+    expect(find.text('31-60'), findsNothing);
+    final strip = find.byKey(const ValueKey('detail-episode-strip'));
+    await tester.drag(strip, const Offset(-800, 0));
     await tester.pumpAndSettle();
-    final selector =
-        tester.widget<EpisodeSelector>(find.byType(EpisodeSelector));
-    expect(selector.embedded, isTrue);
-    expect(find.text('30'), findsOneWidget);
+    await tester.tap(find.text('更多 ›'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('detail-all-episodes')), findsOneWidget);
     await tester.tap(find.text('31-60'));
     await tester.pumpAndSettle();
-    expect(find.text('31'), findsOneWidget);
-    expect(find.text('60'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    final sheet = find.byKey(const ValueKey('detail-all-episodes'));
+    expect(
+        find.descendant(of: sheet, matching: find.text('31')), findsOneWidget);
+    expect(
+        find.descendant(of: sheet, matching: find.text('60')), findsOneWidget);
+    await tester.tap(find.byTooltip('关闭选集'));
+    await tester.pumpAndSettle();
+    expect(find.byType(EpisodeSelector), findsNothing);
     expect(tester.getTopLeft(footer).dy, footerTop);
     expect(find.text('立即播放').hitTestable(), findsOneWidget);
+    // 顶部“全部”入口也可重复打开，目录回到第一集所在的分组。
+    await tester.tap(find.byKey(const ValueKey('detail-show-all')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('detail-all-episodes')), findsOneWidget);
+    expect(
+        tester
+            .widget<EpisodeSelector>(find.byType(EpisodeSelector))
+            .activeIndex,
+        0);
+    await tester.tap(find.byTooltip('关闭选集'));
+    await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('单排选集点击对应索引，滑动更多时不误触播放', (tester) async {
+    final selected = <int>[];
+    var showAll = 0;
+    await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+            body: Center(
+      child: SizedBox(
+          width: 340,
+          child: DetailEpisodeStrip(
+            episodes: List.generate(
+                81, (i) => Episode(index: i + 1, name: '', url: '', size: 0)),
+            onSelect: selected.add,
+            onShowAll: () => showAll++,
+          )),
+    ))));
+    await tester.tap(find.byKey(const ValueKey('episode-2')));
+    expect(selected, [2]);
+    await tester.drag(find.byKey(const ValueKey('detail-episode-strip')),
+        const Offset(-800, 0));
+    await tester.pumpAndSettle();
+    expect(selected, [2]);
+    await tester.tap(find.text('更多 ›'));
+    expect(showAll, 1);
+  });
+
+  for (final tv in [false, true]) {
+    for (final lastIndex in [null, 42]) {
+      testWidgets(
+          '${tv ? '电视' : '手机'}详情默认第一集，${lastIndex == null ? '首次进入' : '有观看记录'}及切季一致',
+          (tester) async {
+        DeviceProfile.isTv = tv;
+        addTearDown(() => DeviceProfile.isTv = false);
+        SharedPreferences.setMockInitialValues({
+          if (lastIndex != null)
+            'playback_history_v1': jsonEncode([
+              for (final id in [_first, _last])
+                {
+                  'dramaId': int.parse(id),
+                  'dramaName': '万妖',
+                  'cover': '',
+                  'episodeIndex': lastIndex,
+                  'positionMs': 60000,
+                  'updatedAtMs': 1,
+                },
+            ]),
+        });
+        await tester.binding
+            .setSurfaceSize(tv ? const Size(960, 540) : const Size(390, 844));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final api = _ManyEpisodesCatalog();
+        addTearDown(() => api.dio.close(force: true));
+        await tester.pumpWidget(MaterialApp(
+          home: DramaDetailPage(
+            drama: DramaSeason.fromJson((_data['list'] as List)[1]).toDrama(),
+            apiClient: api,
+          ),
+        ));
+        await tester.pumpAndSettle();
+        void expectFirstEpisode() {
+          if (tv) {
+            expect(
+                tester
+                    .widget<EpisodeSelector>(find.byType(EpisodeSelector))
+                    .activeIndex,
+                0);
+          } else {
+            expect(find.byType(DetailEpisodeStrip), findsOneWidget);
+          }
+          expect(find.byKey(const ValueKey('episode-0')), findsOneWidget);
+          expect(
+              find.byWidgetPredicate((widget) =>
+                  widget is Semantics &&
+                  widget.properties.label == '第1集' &&
+                  widget.properties.selected == true),
+              findsOneWidget);
+        }
+
+        expectFirstEpisode();
+        final season = find.byKey(ValueKey('related-season-$_last'));
+        await tester.ensureVisible(season);
+        await tester.pumpAndSettle();
+        await tester.tap(season);
+        await tester.pumpAndSettle();
+        expectFirstEpisode();
+        expect(tester.takeException(), isNull);
+      });
+    }
+  }
 }

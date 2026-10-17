@@ -99,6 +99,7 @@ class _PlayerPageState extends State<PlayerPage>
   bool _swipeBlocked = false;
   Timer? _swipeBlockTimer;
   bool _userPaused = false;
+  bool _landscapeFill = false;
 
   // ─── 遥控器 / 键盘 ─────────────────────────────────────────────────────
   final FocusNode _keyFocus = FocusNode(debugLabel: 'player-keys');
@@ -1129,6 +1130,11 @@ class _PlayerPageState extends State<PlayerPage>
     setState(() {});
   }
 
+  void _onToggleVideoFit() {
+    setState(() => _landscapeFill = !_landscapeFill);
+    _systemUi.showUIAndResetTimer();
+  }
+
   void _onBack() {
     if (DeviceProfile.isTv && _systemUi.showLandscapeUI) {
       _systemUi.hideLandscapeUi();
@@ -1369,6 +1375,8 @@ class _PlayerPageState extends State<PlayerPage>
             playerInitialized: _playerInitialized,
             isLandscapeFullScreen: _systemUi.isLandscapeFullScreen,
             showLandscapeUI: _systemUi.showLandscapeUI,
+            isVideoFilled: _landscapeFill,
+            onToggleVideoFit: _onToggleVideoFit,
             isPageTransitioning: false,
             isOfflinePlayback: isOfflinePlayback,
             isTheaterResource: widget.drama.isTheaterResource,
@@ -1433,6 +1441,7 @@ class _PlayerPageState extends State<PlayerPage>
             videoWidth: pagePlayer!.videoWidth,
             videoHeight: pagePlayer.videoHeight,
             isLandscapeFullScreen: _systemUi.isLandscapeFullScreen,
+            fillScreen: _landscapeFill,
           );
 
     return Stack(
