@@ -654,6 +654,11 @@ class _DramaListTabState extends State<_DramaListTab>
   String? _sessionId;
   String? _loadError;
   int? _nextOffset;
+  int _requestGeneration = 0;
+  bool _initialPrefetchRunning = false;
+  final Set<int> _loadedOffsets = {};
+  static const _tvInitialItemTarget = 24;
+  static const _tvInitialPageLimit = 6;
   final _scrollController = ScrollController();
 
   // Filter state
@@ -677,6 +682,7 @@ class _DramaListTabState extends State<_DramaListTab>
 
   @override
   void dispose() {
+    _requestGeneration++;
     _scrollController.dispose();
     super.dispose();
   }
@@ -684,14 +690,53 @@ class _DramaListTabState extends State<_DramaListTab>
   void _onScroll() {
     if (_scrollController.position.pixels >=
         _scrollController.position.maxScrollExtent - 500) {
-      if (!_isLoading && _hasMore) {
+      if (!_isLoading &&
+          !_initialPrefetchRunning &&
+          _loadError == null &&
+          _hasMore) {
         _loadMore();
       }
     }
   }
 
   Future<void> _loadData() async {
-    if (_isLoading) return;
+    final generation = ++_requestGeneration;
+    _initialPrefetchRunning = true;
+    setState(() {
+      _dramas.clear();
+      _loadedOffsets.clear();
+      _sessionId = null;
+      _nextOffset = null;
+      _hasMore = true;
+      _isLoading = false;
+      _loadError = null;
+    });
+
+    var pageCount = 0;
+    do {
+      final loaded = await _fetchPage(generation);
+      if (!mounted || generation != _requestGeneration) return;
+      pageCount++;
+      if (!loaded ||
+          !DeviceProfile.isTv ||
+          !_hasMore ||
+          _dramas.length >= _tvInitialItemTarget ||
+          pageCount >= _tvInitialPageLimit) {
+        break;
+      }
+    } while (true);
+    _initialPrefetchRunning = false;
+  }
+
+  Future<void> _loadMore() async {
+    if (_isLoading || !_hasMore || _initialPrefetchRunning) return;
+    await _fetchPage(_requestGeneration);
+  }
+
+  Future<bool> _fetchPage(int generation) async {
+    final offset = _nextOffset;
+    final sessionId = _sessionId;
+    final type = _currentType;
     setState(() {
       _isLoading = true;
       _loadError = null;
@@ -700,54 +745,36 @@ class _DramaListTabState extends State<_DramaListTab>
     try {
       final result = await widget.fetchFunction(
         widget.apiClient,
-        null,
-        null,
-        _currentType,
+        offset,
+        sessionId,
+        type,
       );
-      if (mounted) {
-        setState(() {
-          _dramas
-            ..clear()
-            ..addAll(result.list);
-          _sessionId = result.sessionId;
-          _nextOffset = result.nextOffset;
-          _hasMore = result.hasMore;
-          _isLoading = false;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-          _hasMore = false;
-          _loadError = e is ApiException ? e.message : '加载失败，请稍后重试';
-        });
-      }
-    }
-  }
-
-  Future<void> _loadMore() async {
-    if (_isLoading || !_hasMore) return;
-    setState(() => _isLoading = true);
-
-    try {
-      final result = await widget.fetchFunction(
-        widget.apiClient,
-        _nextOffset,
-        _sessionId,
-        _currentType,
-      );
-      if (mounted) {
-        setState(() {
+      if (!mounted || generation != _requestGeneration) return false;
+      setState(() {
+        if (DeviceProfile.isTv) {
+          // 不把接口偶尔重复的同一作品计入电视首屏的补充目标。
+          final ids = _dramas.map((drama) => drama.id).toSet();
+          _dramas.addAll(result.list.where((drama) => ids.add(drama.id)));
+        } else {
           _dramas.addAll(result.list);
-          _sessionId = result.sessionId;
-          _nextOffset = result.nextOffset;
-          _hasMore = result.hasMore;
-          _isLoading = false;
-        });
-      }
+        }
+        _loadedOffsets.add(offset ?? result.offset);
+        _sessionId = result.sessionId;
+        _nextOffset = result.nextOffset;
+        // 游标必须来自接口；重复游标不能重发，否则空页会不断请求。
+        _hasMore = result.hasMore &&
+            (!DeviceProfile.isTv ||
+                !_loadedOffsets.contains(result.nextOffset));
+        _isLoading = false;
+      });
+      return true;
     } catch (e) {
-      if (mounted) setState(() => _isLoading = false);
+      if (!mounted || generation != _requestGeneration) return false;
+      setState(() {
+        _isLoading = false;
+        _loadError = e is ApiException ? e.message : '加载失败，请稍后重试';
+      });
+      return false;
     }
   }
 
@@ -757,11 +784,6 @@ class _DramaListTabState extends State<_DramaListTab>
 
     setState(() {
       _currentType = newType;
-      _dramas.clear();
-      _isLoading = false;
-      _hasMore = true;
-      _sessionId = null;
-      _nextOffset = null;
     });
     _loadData();
   }
@@ -830,15 +852,7 @@ class _DramaListTabState extends State<_DramaListTab>
                       TextButton(onPressed: _loadData, child: const Text('重试')),
                     ]))
                   : RefreshIndicator(
-                      onRefresh: () async {
-                        setState(() {
-                          _dramas.clear();
-                          _sessionId = null;
-                          _nextOffset = null;
-                          _hasMore = true;
-                        });
-                        await _loadData();
-                      },
+                      onRefresh: _loadData,
                       color: const Color(0xFFFF2442),
                       child: CustomScrollView(
                         controller: _scrollController,
@@ -915,6 +929,26 @@ class _DramaListTabState extends State<_DramaListTab>
         padding: const EdgeInsets.symmetric(vertical: 16),
         alignment: Alignment.center,
         child: const CupertinoActivityIndicator(radius: 10),
+      );
+    }
+
+    if (_loadError != null) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        child: Column(
+          children: [
+            Text(_loadError!, style: const TextStyle(color: Color(0xFF999999))),
+            const SizedBox(height: 8),
+            TvTap(
+              borderRadius: 12,
+              onTap: _loadMore,
+              child: const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                child: Text('重试加载'),
+              ),
+            ),
+          ],
+        ),
       );
     }
 

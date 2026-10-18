@@ -6,7 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:shortplay/models/drama.dart';
+import 'package:shortplay/models/search_results.dart';
+import 'package:shortplay/models/search_source.dart';
 import 'package:shortplay/models/search_suggestion.dart';
 import 'package:shortplay/pages/global_search_page.dart';
 import 'package:shortplay/pages/player_page.dart';
@@ -68,13 +69,14 @@ class _Api extends ApiClient {
 
   @override
   Future<SearchSuggestionResult> fetchSearchSuggestions(String keyword,
-          {CancelToken? cancelToken}) =>
+          {CancelToken? cancelToken,
+          SearchSource source = SearchSource.comic}) =>
       (requests[keyword] = Completer<SearchSuggestionResult>()).future;
   @override
-  Future<({List<Drama> dramas, bool hasMore})> search(String keyword,
-      {int offset = 0}) async {
-    queries.add(keyword);
-    return (dramas: <Drama>[], hasMore: false);
+  Future<SearchResultsResponse> searchResults(SearchQuery query,
+      {CancelToken? cancelToken}) async {
+    queries.add(query.query);
+    return const SearchResultsResponse(tabs: []);
   }
 }
 
@@ -101,7 +103,7 @@ void main() {
     addTearDown(() => api.dio.close(force: true));
     final result = await api.fetchSearchSuggestions(' 万妖 ');
     expect(adapter.request!.uri.toString(),
-        'http://127.0.0.1:8765/nove/search/suggest?key=%E4%B8%87%E5%A6%96');
+        'http://127.0.0.1:8765/nove/search/suggest?key=%E4%B8%87%E5%A6%96&source=hongguo_comic');
     expect(result.query, '万妖');
     final item = result.items.single;
     expect(item.name, '万妖图录传');
@@ -128,7 +130,7 @@ void main() {
     expect(item.canPlay, isFalse);
   });
 
-  test('上游播放标记关闭仍保留明确作品，文字联想的作品ID也能直接播放', () {
+  test('独立播放按钮只接受播放标记与明确视频ID，普通词条仍搜索', () {
     final rich = _data('WY');
     final row = (rich['query_result_v2'] as List).single as Map;
     row['can_play'] = false;
@@ -141,10 +143,13 @@ void main() {
       'keyword': '7690163276214176792',
       'word_type': 2,
       'show_type': 0,
+      'can_play': true,
+      'has_play_button': true,
     });
-    expect(simple.drama?.id, 7690163276214176792);
-    expect(simple.drama?.name, simple.name);
-    expect(simple.drama?.isTheaterResource, isTrue);
+    expect(simple.drama, isNull);
+    expect(simple.showPlayButton, isFalse);
+    expect(SearchSuggestionResult.fromJson(rich).items.single.showPlayButton,
+        isFalse);
     expect(SearchSuggestion.fromJson({'name': '2026', 'keyword': '2026'}).drama,
         isNull);
   });
@@ -181,8 +186,8 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  for (final type in ['卡片无播放标记', '卡片带独立播放按钮', '仅作品ID的文字结果']) {
-    testWidgets('手机联想$type点击整行直接进入播放，无二次搜索', (tester) async {
+  for (final type in ['卡片无播放标记', '卡片带独立播放按钮', '可播放且没有按钮', '仅作品ID的文字结果']) {
+    testWidgets('手机联想$type点击整行正式搜索，保留名称与纠错入口', (tester) async {
       final api = _Api();
       addTearDown(() => api.dio.close(force: true));
       await open(tester, api);
@@ -206,7 +211,7 @@ void main() {
               'query_result_v2': [
                 <String, dynamic>{
                   ...((_data('万妖')['query_result_v2'] as List).single as Map),
-                  'can_play': false,
+                  'can_play': type != '卡片无播放标记',
                   'has_play_button': type == '卡片带独立播放按钮',
                 }
               ],
@@ -216,18 +221,41 @@ void main() {
       await tester.tap(find.text('万妖图录传'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
-      expect(find.byType(PlayerPage), findsOneWidget);
-      expect(find.byType(SearchResultsPage), findsNothing);
-      expect(api.queries, isEmpty);
-      expect(api.directoryRequests, ['123456']);
-      final player = tester.widget<PlayerPage>(find.byType(PlayerPage));
-      expect(player.initialEpisodeIndex, 0);
+      expect(find.byType(PlayerPage), findsNothing);
+      expect(find.byType(SearchResultsPage), findsOneWidget);
+      expect(api.queries, ['万妖图录传']);
+      expect(api.directoryRequests, isEmpty);
+      expect(
+          tester
+              .widget<SearchResultsPage>(find.byType(SearchResultsPage))
+              .useCorrect,
+          isTrue);
       final prefs = await SharedPreferences.getInstance();
       expect(prefs.getStringList('global_search_history')!.first, '万妖图录传');
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();
     });
   }
+
+  testWidgets('手机只点独立播放按钮才直接播，整行入口不受按钮影响', (tester) async {
+    final api = _Api();
+    addTearDown(() => api.dio.close(force: true));
+    await open(tester, api);
+    await tester.enterText(find.byType(TextField), '万妖');
+    await tester.pump(const Duration(milliseconds: 210));
+    final raw = _data('万妖');
+    ((raw['query_result_v2'] as List).single as Map)['has_play_button'] = true;
+    api.requests['万妖']!.complete(SearchSuggestionResult.fromJson(raw));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('suggestion-play-123456')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.byType(PlayerPage), findsOneWidget);
+    expect(api.directoryRequests, ['123456']);
+    expect(api.queries, isEmpty);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+  });
 
   testWidgets('清空、组词与离开页面均不会显示过期联想', (tester) async {
     final api = _Api();
@@ -268,6 +296,11 @@ void main() {
     await tester.testTextInput.receiveAction(TextInputAction.search);
     await tester.pumpAndSettle();
     expect(api.queries, ['WY']);
+    expect(
+        tester
+            .widget<SearchResultsPage>(find.byType(SearchResultsPage))
+            .useCorrect,
+        isFalse);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 }

@@ -3,6 +3,7 @@ class ApiConfig {
   static const String noveBaseUrl = 'http://api.weeou.com';
   static const String noveSearch = '/nove/search';
   static const String noveSearchSuggest = '/nove/search/suggest';
+  static const String noveSearchSeason = '/nove/search/season';
   static const String noveHome = '/nove/home';
   static const String noveRank = '/nove/rank';
   static const String noveDirectory = '/nove/directory';

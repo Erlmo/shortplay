@@ -12,6 +12,9 @@ import '../models/drama_season.dart';
 import '../models/episode.dart';
 import '../models/fq_video.dart';
 import '../models/search_suggestion.dart';
+import '../models/search_source.dart';
+import '../models/search_results.dart';
+import '../models/search_series_card.dart';
 import 'sign_interceptor.dart';
 
 class ApiException implements Exception {
@@ -111,6 +114,7 @@ class ApiClient {
   Future<SearchSuggestionResult> fetchSearchSuggestions(
     String keyword, {
     CancelToken? cancelToken,
+    SearchSource source = SearchSource.comic,
   }) async {
     final query = keyword.trim();
     if (query.isEmpty) {
@@ -119,53 +123,87 @@ class ApiClient {
     try {
       final response = await _dio.get(
         ApiConfig.noveSearchSuggest,
-        queryParameters: {'key': query},
+        queryParameters: {'key': query, 'source': source.value},
         cancelToken: cancelToken,
       );
       final data = _decode(response)['data'];
       if (data is! Map<String, dynamic>) {
         throw ApiException('解析搜索联想失败');
       }
-      return SearchSuggestionResult.fromJson(data);
+      return SearchSuggestionResult.fromJson(data, source: source);
     } on DioException catch (error) {
       if (CancelToken.isCancel(error)) rethrow;
       throw ApiException('搜索联想暂不可用，可直接输入片名搜索');
     }
   }
 
+  Future<SearchResultsResponse> searchResults(
+    SearchQuery query, {
+    CancelToken? cancelToken,
+  }) async {
+    try {
+      final response = await _dio.get(
+        ApiConfig.noveSearch,
+        queryParameters: query.toQueryParameters(),
+        cancelToken: cancelToken,
+      );
+      final decoded = _decode(response);
+      if (decoded['search_tabs'] is! List) {
+        throw ApiException('搜索返回格式错误，请更新服务端后重试');
+      }
+      return SearchResultsResponse.fromJson(decoded, source: query.source);
+    } on DioException catch (error) {
+      if (CancelToken.isCancel(error)) rethrow;
+      throw ApiException('搜索失败，请检查网络后重试');
+    }
+  }
+
+  /// 657 系列卡按原搜索详情协议加载当前季，不另查关联季目录。
+  Future<List<SearchSeriesEpisode>> fetchSearchSeason(
+    String seriesId, {
+    SearchSource source = SearchSource.comic,
+    CancelToken? cancelToken,
+  }) async {
+    try {
+      final response = await _dio.get(
+        ApiConfig.noveSearchSeason,
+        queryParameters: {'source': source.value, 'series_id': seriesId},
+        cancelToken: cancelToken,
+      );
+      final data = _decode(response)['data'];
+      final video = data is Map ? data['video_data'] : null;
+      final rawEpisodes = video is Map ? video['video_list'] : null;
+      if (rawEpisodes is! List) throw ApiException('当前季的集数信息无效');
+      final episodes = <SearchSeriesEpisode>[];
+      for (final raw in rawEpisodes) {
+        if (raw is! Map) continue;
+        final episode =
+            SearchSeriesEpisode.tryParse(raw.cast<String, dynamic>());
+        if (episode != null && episode.seriesId == seriesId) {
+          episodes.add(episode);
+        }
+      }
+      if (episodes.isEmpty) throw ApiException('当前季暂无可播放集数');
+      return List.unmodifiable(episodes);
+    } on DioException catch (error) {
+      if (CancelToken.isCancel(error)) rethrow;
+      throw ApiException('加载当前季失败，请稍后重试');
+    }
+  }
+
+  /// 保留旧调用入口；新搜索页使用包含分类、分组与游标的完整响应。
   Future<({List<Drama> dramas, bool hasMore})> search(
     String keyword, {
     int offset = 0,
   }) async {
-    final uri = Uri.http(
-      Uri.parse(ApiConfig.noveBaseUrl).host,
-      ApiConfig.noveSearch,
-      {
-        'key': keyword,
-        'tab_type': '11',
-        if (offset > 0) 'offset': offset.toString(),
-      },
+    final result =
+        await searchResults(SearchQuery(query: keyword, offset: offset));
+    final tab = result.primaryTab;
+    return (
+      dramas:
+          tab?.groups.expand((group) => group.entries).toList() ?? <Drama>[],
+      hasMore: tab?.hasMore ?? false,
     );
-    final response = await _dio.getUri(uri);
-    final decoded = _decode(response);
-    final searchTabs = decoded['search_tabs'] as List? ?? [];
-    final dramaTab = searchTabs.firstWhere(
-      (tab) => tab is Map && (tab['tab_type'] == 19 || tab['tab_type'] == 11),
-      orElse: () => null,
-    );
-    if (dramaTab == null) return (dramas: <Drama>[], hasMore: false);
-    final hasMore = (dramaTab as Map)['has_more'] == true;
-    final data = dramaTab['data'] as List? ?? [];
-    final dramas = <Drama>[];
-    for (final item in data) {
-      if (item is! Map) continue;
-      final videoData = (item['video_data'] as List?)?.firstOrNull;
-      if (videoData is! Map) continue;
-      dramas.add(
-        Drama.fromTheaterSearchJson(videoData.cast<String, dynamic>()),
-      );
-    }
-    return (dramas: dramas, hasMore: hasMore);
   }
 
   /// 请求番茄官方API获取加密视频信息

@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/search_suggestion.dart';
+import '../models/search_source.dart';
 import '../services/api_client.dart';
 import '../services/device_profile.dart';
 import '../services/download_service.dart';
@@ -189,13 +190,26 @@ class _GlobalSearchPageState extends State<GlobalSearchPage> {
     await _loadHistory();
   }
 
-  void _onSearch(String keyword) {
+  void _onSearch(
+    String keyword, {
+    bool useCorrect = false,
+    SearchSource source = SearchSource.comic,
+    String? searchSourceId,
+    String? clientExtra,
+    String clickedContent = 'page_search_button',
+  }) {
     final query = keyword.trim();
     if (query.isEmpty) return;
     unawaited(_openPage(
         query,
         SearchResultsPage(
           keyword: query,
+          useCorrect: useCorrect,
+          source: source,
+          clickedContent: clickedContent,
+          searchSourceId: searchSourceId ??
+              (clickedContent == 'page_search_button' ? 'clks###' : null),
+          clientExtra: clientExtra,
           apiClient: widget.apiClient,
           downloadService: widget.downloadService,
         )));
@@ -470,8 +484,17 @@ class _GlobalSearchPageState extends State<GlobalSearchPage> {
                           key: ValueKey('suggestion-$_query-$index'),
                           suggestion: item,
                           focusNode: index == 0 ? _firstResultFocusNode : null,
-                          onSearch: () => _onSearch(item.name),
-                          onPlay: item.drama != null
+                          onSearch: () => _onSearch(item.name,
+                              useCorrect: true,
+                              source: item.source,
+                              clickedContent: 'auto',
+                              searchSourceId: item.searchSourceId.isEmpty
+                                  ? null
+                                  : item.searchSourceId,
+                              clientExtra: item.clientExtra.isEmpty
+                                  ? null
+                                  : item.clientExtra),
+                          onPlay: item.canPlay && item.drama != null
                               ? () => _playSuggestion(item)
                               : null,
                         );
@@ -539,7 +562,10 @@ class _GlobalSearchPageState extends State<GlobalSearchPage> {
                         focusNode:
                             entry.$1 == 0 ? _firstHistoryFocusNode : null,
                         borderRadius: 12,
-                        onTap: () => _onSearch(entry.$2),
+                        onTap: () => _onSearch(entry.$2,
+                            useCorrect: true,
+                            clickedContent: 'search_history',
+                            searchSourceId: 'his###'),
                         child: Container(
                           padding: EdgeInsets.symmetric(
                               horizontal: 14,

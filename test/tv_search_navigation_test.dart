@@ -5,7 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:shortplay/models/drama.dart';
+import 'package:shortplay/models/search_results.dart';
+import 'package:shortplay/models/search_source.dart';
 import 'package:shortplay/models/search_suggestion.dart';
 import 'package:shortplay/pages/global_search_page.dart';
 import 'package:shortplay/pages/player_page.dart';
@@ -17,6 +18,7 @@ class _SearchApiClient extends ApiClient {
   final List<String> queries = [];
   final List<String> directoryRequests = [];
   bool direct = false;
+  bool playButton = false;
   @override
   Future<TheaterEpisodesResult> fetchTheaterEpisodes(String seriesId) {
     directoryRequests.add(seriesId);
@@ -26,7 +28,8 @@ class _SearchApiClient extends ApiClient {
   final List<String> suggestions = [];
   @override
   Future<SearchSuggestionResult> fetchSearchSuggestions(String keyword,
-      {CancelToken? cancelToken}) async {
+      {CancelToken? cancelToken,
+      SearchSource source = SearchSource.comic}) async {
     suggestions.add(keyword);
     if (direct) {
       return SearchSuggestionResult(query: keyword, items: [
@@ -35,7 +38,10 @@ class _SearchApiClient extends ApiClient {
           'keyword': '123456',
           'word_type': 2,
           'show_type': 0,
-          'can_play': false
+          'can_play': playButton,
+          'has_play_button': playButton,
+          if (playButton)
+            'video_data': {'series_id': '123456', 'title': '万妖图录传'}
         }),
       ]);
     }
@@ -46,10 +52,10 @@ class _SearchApiClient extends ApiClient {
   }
 
   @override
-  Future<({List<Drama> dramas, bool hasMore})> search(String keyword,
-      {int offset = 0}) async {
-    queries.add(keyword);
-    return (dramas: <Drama>[], hasMore: false);
+  Future<SearchResultsResponse> searchResults(SearchQuery query,
+      {CancelToken? cancelToken}) async {
+    queries.add(query.query);
+    return const SearchResultsResponse(tabs: []);
   }
 }
 
@@ -137,7 +143,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('电视遥控确认作品联想直接播放，不再进入搜索结果页', (tester) async {
+  testWidgets('电视遥控确认含作品ID联想进入正式搜索', (tester) async {
     client.direct = true;
     await openSearch(tester);
     await tester.tap(find.byKey(const ValueKey('tv-key-W')));
@@ -148,14 +154,43 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
-    expect(find.byType(PlayerPage), findsOneWidget);
-    expect(find.byType(SearchResultsPage), findsNothing);
-    expect(client.queries, isEmpty);
-    expect(client.directoryRequests, ['123456']);
+    expect(find.byType(PlayerPage), findsNothing);
+    expect(find.byType(SearchResultsPage), findsOneWidget);
+    expect(client.queries, ['万妖图录传']);
+    expect(client.directoryRequests, isEmpty);
     expect(
-        tester.widget<PlayerPage>(find.byType(PlayerPage)).initialEpisodeIndex,
-        0);
+        tester
+            .widget<SearchResultsPage>(find.byType(SearchResultsPage))
+            .useCorrect,
+        isTrue);
     expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+  });
+
+  testWidgets('电视遥控可从联想行向右选择独立播放并向左返回', (tester) async {
+    client.direct = true;
+    client.playButton = true;
+    await openSearch(tester);
+    await tester.tap(find.byKey(const ValueKey('tv-key-W')));
+    await tester.tap(find.byKey(const ValueKey('tv-key-Y')));
+    await tester.pumpAndSettle();
+    await direction(tester, LogicalKeyboardKey.arrowRight, 6);
+    expect(Focus.of(tester.element(find.text('万妖图录传'))).hasFocus, isTrue);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pumpAndSettle();
+    expect(Focus.of(tester.element(find.text('播放'))).hasFocus, isTrue);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+    await tester.pumpAndSettle();
+    expect(Focus.of(tester.element(find.text('万妖图录传'))).hasFocus, isTrue);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.byType(PlayerPage), findsOneWidget);
+    expect(client.directoryRequests, ['123456']);
+    expect(client.queries, isEmpty);
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
   });
@@ -188,6 +223,11 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pumpAndSettle();
     expect(client.queries, ['历史短剧二']);
+    expect(
+        tester
+            .widget<SearchResultsPage>(find.byType(SearchResultsPage))
+            .useCorrect,
+        isTrue);
     Navigator.of(tester.element(find.byType(SearchResultsPage))).pop();
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('tv-keyboard-1')));

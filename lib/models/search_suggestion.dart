@@ -1,4 +1,5 @@
 import 'drama.dart';
+import 'search_source.dart';
 
 class SearchHighlightRange {
   const SearchHighlightRange(this.start, this.length);
@@ -11,6 +12,9 @@ class SearchSuggestion {
   const SearchSuggestion({
     required this.name,
     this.keyword = '',
+    this.source = SearchSource.comic,
+    this.searchSourceId = '',
+    this.clientExtra = '',
     this.highlights = const [],
     this.cover = '',
     this.drama,
@@ -21,6 +25,9 @@ class SearchSuggestion {
 
   final String name;
   final String keyword;
+  final SearchSource source;
+  final String searchSourceId;
+  final String clientExtra;
   final List<SearchHighlightRange> highlights;
   final String cover;
   final Drama? drama;
@@ -28,21 +35,19 @@ class SearchSuggestion {
   final bool hasPlayButton;
   final bool isRich;
 
+  bool get showPlayButton => canPlay && hasPlayButton && drama != null;
+
   factory SearchSuggestion.fromJson(Map<String, dynamic> json,
-      {bool allowRich = true}) {
+      {bool allowRich = true, SearchSource source = SearchSource.comic}) {
     final name = json['name']?.toString() ?? '';
     final keyword = json['keyword']?.toString() ?? '';
     final video = _map(json['video_data']);
     final detail = _map(video['video_detail']);
-    // show_type / can_play / has_play_button 是上游展示开关。
-    // 作品身份存在时直接播放，不把卡片样式开关当作本客户端的播放权限。
-    // 文字结果的 word_type=2 同样用 keyword 携带作品ID。
-    final isWork = int.tryParse(json['word_type']?.toString() ?? '') == 2;
+    // 原生播放读取video_data.series_id；keyword仅保留为联想来源。
     var id = 0;
     for (final value in [
-      detail['series_id'],
       video['series_id'],
-      if (video.isNotEmpty || isWork) keyword,
+      detail['series_id'],
     ]) {
       final candidate = int.tryParse(value?.toString() ?? '') ?? 0;
       if (candidate <= 0) continue;
@@ -91,6 +96,9 @@ class SearchSuggestion {
     return SearchSuggestion(
       name: name,
       keyword: keyword,
+      source: source,
+      searchSourceId: json['search_source_id']?.toString() ?? '',
+      clientExtra: json['client_extra']?.toString() ?? '',
       highlights: ranges,
       cover: cover,
       drama: drama,
@@ -110,7 +118,8 @@ class SearchSuggestionResult {
   final String query;
   final List<SearchSuggestion> items;
 
-  factory SearchSuggestionResult.fromJson(Map<String, dynamic> json) {
+  factory SearchSuggestionResult.fromJson(Map<String, dynamic> json,
+      {SearchSource source = SearchSource.comic}) {
     final rich = json['query_result_v2'];
     final plain = json['query_result'];
     final items = <SearchSuggestion>[];
@@ -118,14 +127,14 @@ class SearchSuggestionResult {
       for (final item in rich) {
         if (item is Map<String, dynamic>) {
           final parsed = SearchSuggestion.fromJson(item,
-              allowRich: json['use_rich'] == true);
+              allowRich: json['use_rich'] == true, source: source);
           if (parsed.name.trim().isNotEmpty) items.add(parsed);
         }
       }
     } else if (plain is List) {
       for (final item in plain) {
         if (item is String && item.trim().isNotEmpty) {
-          items.add(SearchSuggestion(name: item));
+          items.add(SearchSuggestion(name: item, source: source));
         }
       }
     }
