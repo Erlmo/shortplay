@@ -185,23 +185,50 @@ class _TvShareLinkPageState extends State<TvShareLinkPage>
       _error = null;
     });
     try {
-      final info = await widget.apiClient.fetchShareInfo(text);
-      if (!_canAct || generation != _generation) return;
-      final id = int.tryParse(info.videoId);
-      if (id == null || id <= 0) throw ApiException('未识别到有效短剧，请重新扫码发送');
+      // 鸿蒙版红果分享的是长链，服务端只认短链，先在本地提取候选 id
+      // （短链会跟随 302 拿真实长链）。
+      final localIds = await ShareLinkResolver.resolveLocalIds(text);
+      var videoId = '';
+      String? title;
       Drama? detail;
-      try {
-        detail = await widget.apiClient
-            .fetchBookInfo(info.videoId)
-            .timeout(const Duration(seconds: 6));
-      } catch (_) {/* 详情失败时保留分享标题，播放页会重新加载目录。 */}
+      for (final candidate in localIds) {
+        Drama? probe;
+        try {
+          probe = await widget.apiClient
+              .fetchBookInfo(candidate)
+              .timeout(const Duration(seconds: 6));
+        } catch (_) {
+          probe = null;
+        }
+        if (probe != null && probe.id > 0) {
+          videoId = candidate;
+          detail = probe;
+          title = probe.name;
+          break;
+        }
+      }
+      if (videoId.isEmpty) {
+        final info = await widget.apiClient.fetchShareInfo(text);
+        videoId = info.videoId;
+        title = info.title;
+        try {
+          detail = await widget.apiClient
+              .fetchBookInfo(info.videoId)
+              .timeout(const Duration(seconds: 6));
+        } catch (_) {/* 详情失败时保留分享标题，播放页会重新加载目录。 */}
+      }
+      if (!_canAct || generation != _generation) return;
+      final id = int.tryParse(videoId);
+      if (id == null || id <= 0) throw ApiException('未识别到有效短剧，请重新扫码发送');
       if (!_canAct || generation != _generation) return;
       final drama = detail != null && detail.id == id
           ? detail
           : Drama(
               id: id,
-              name:
-                  info.title ?? ShareLinkResolver.extractTitle(text) ?? '分享短剧',
+              name: (title?.trim().isNotEmpty == true
+                      ? title!.trim()
+                      : ShareLinkResolver.extractTitle(text)) ??
+                  '分享短剧',
               actors: '',
               cover: '',
               intro: '',
@@ -209,6 +236,20 @@ class _TvShareLinkPageState extends State<TvShareLinkPage>
               status: '',
               updateTime: '',
               isTheaterResource: true);
+      var initialEpisodeIndex = 0;
+      if (localIds.isNotEmpty) {
+        try {
+          final episodes = await widget.apiClient.fetchTheaterEpisodes('$id');
+          for (final candidate in localIds) {
+            final index =
+                episodes.chapters.indexWhere((c) => c.itemId == candidate);
+            if (index >= 0) {
+              initialEpisodeIndex = index;
+              break;
+            }
+          }
+        } catch (_) {/* 取不到分集就从头播。 */}
+      }
       await _api.acknowledge(session, cancelToken: _cancelToken);
       if (!mounted || !_canAct || generation != _generation) return;
       _closing = true;
@@ -217,7 +258,7 @@ class _TvShareLinkPageState extends State<TvShareLinkPage>
             drama: drama,
             apiClient: widget.apiClient,
             downloadService: widget.downloadService,
-            initialEpisodeIndex: 0),
+            initialEpisodeIndex: initialEpisodeIndex),
       ));
     } catch (error) {
       if (_canAct && generation == _generation) {
