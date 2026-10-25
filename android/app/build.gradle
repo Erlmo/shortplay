@@ -28,7 +28,7 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         // Android 使用独立版本号，iOS 继续使用 pubspec.yaml 中的版本。
-        versionName = "3.2.2"
+        versionName = "3.2.3"
     }
 
     // 支持 arm64-v8a 和 armeabi-v7a（32 位：老手机和大量电视盒子）。

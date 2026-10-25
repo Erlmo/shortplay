@@ -148,7 +148,7 @@ flutter build macos --release
 
 ### 版本号
 
-当前 Android 版本名为 **3.2.2**，在 `android/app/build.gradle` 中独立设置；iOS 使用 `pubspec.yaml` 中的 **3.2.0+16**。构建号可通过 `--build-number` 指定，发布前同时核对工程配置和实际产物。
+当前 Android 版本名为 **3.2.3**，在 `android/app/build.gradle` 中独立设置；iOS 使用 `pubspec.yaml` 中的 **3.2.0+17**。构建号可通过 `--build-number` 指定，发布前同时核对工程配置和实际产物。
 
 ## 开发与反馈
 
