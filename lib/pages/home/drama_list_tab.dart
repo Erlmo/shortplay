@@ -23,7 +23,6 @@ class DramaListTab extends StatefulWidget {
     this.useGridView = true,
     this.showRanking = false,
     this.header,
-    this.refreshSignal,
   });
 
   final ApiClient apiClient;
@@ -32,9 +31,8 @@ class DramaListTab extends StatefulWidget {
   final bool useGridView;
   final bool showRanking;
 
-  /// 列表上方的额外内容（如首页的“继续观看”），随列表一起滚动。
+  /// 列表上方的额外内容（如顶部提示），随列表一起滚动。
   final Widget? header;
-  final Listenable? refreshSignal;
   final Future<HomePageResult> Function(
     ApiClient client,
     int? offset,
@@ -60,7 +58,7 @@ class DramaListTabState extends State<DramaListTab>
   static const _tvInitialItemTarget = 24;
   static const _tvInitialPageLimit = 6;
   final _scrollController = ScrollController();
-  bool _recommendationDirty = false;
+  bool _deviceDirty = false;
 
   // Filter state
   String _currentType = 'all';
@@ -77,7 +75,6 @@ class DramaListTabState extends State<DramaListTab>
   @override
   void initState() {
     super.initState();
-    widget.refreshSignal?.addListener(_onRecommendationChanged);
     widget.apiClient.deviceRevision.addListener(_onDeviceChanged);
     WidgetsBinding.instance.addObserver(this);
     _loadData();
@@ -86,7 +83,6 @@ class DramaListTabState extends State<DramaListTab>
 
   @override
   void dispose() {
-    widget.refreshSignal?.removeListener(_onRecommendationChanged);
     widget.apiClient.deviceRevision.removeListener(_onDeviceChanged);
     appRouteObserver.unsubscribe(this);
     WidgetsBinding.instance.removeObserver(this);
@@ -105,10 +101,6 @@ class DramaListTabState extends State<DramaListTab>
   @override
   void didUpdateWidget(covariant DramaListTab oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.refreshSignal != widget.refreshSignal) {
-      oldWidget.refreshSignal?.removeListener(_onRecommendationChanged);
-      widget.refreshSignal?.addListener(_onRecommendationChanged);
-    }
     if (oldWidget.apiClient != widget.apiClient) {
       oldWidget.apiClient.deviceRevision.removeListener(_onDeviceChanged);
       widget.apiClient.deviceRevision.addListener(_onDeviceChanged);
@@ -124,31 +116,27 @@ class DramaListTabState extends State<DramaListTab>
     _initialPrefetchRunning = false;
     _isLoading = false;
     _hasMore = true;
-    _onRecommendationChanged();
+    _deviceDirty = true;
+    _refreshDeviceIfVisible();
   }
 
-  void _onRecommendationChanged() {
-    _recommendationDirty = true;
-    _refreshRecommendationsIfVisible();
-  }
-
-  void _refreshRecommendationsIfVisible() {
-    if (!mounted || !_recommendationDirty) return;
+  void _refreshDeviceIfVisible() {
+    if (!mounted || !_deviceDirty) return;
     final lifecycle = WidgetsBinding.instance.lifecycleState;
     if (ModalRoute.of(context)?.isCurrent != true ||
         (lifecycle != null && lifecycle != AppLifecycleState.resumed)) {
       return;
     }
-    _recommendationDirty = false;
+    _deviceDirty = false;
     unawaited(_loadData(preserveItems: true));
   }
 
   @override
-  void didPopNext() => _refreshRecommendationsIfVisible();
+  void didPopNext() => _refreshDeviceIfVisible();
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _refreshRecommendationsIfVisible();
+    if (state == AppLifecycleState.resumed) _refreshDeviceIfVisible();
   }
 
   void _onScroll() {
@@ -164,6 +152,7 @@ class DramaListTabState extends State<DramaListTab>
   }
 
   Future<void> _loadData({bool preserveItems = false}) async {
+    _deviceDirty = false;
     final generation = ++_requestGeneration;
     _initialPrefetchRunning = true;
     setState(() {

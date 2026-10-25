@@ -6,7 +6,6 @@ import '../../services/download_service.dart';
 import '../../widgets/notice_bar.dart';
 import '../../widgets/tv_tap.dart';
 import '../global_search_page.dart';
-import 'continue_watching_row.dart';
 import 'drama_list_tab.dart';
 
 /// 首页“首页 / 新剧 / 推荐 / 热播 / 收藏 / 热搜”六个栏目。
@@ -16,12 +15,9 @@ class HomeFeedPage extends StatefulWidget {
     required this.apiClient,
     required this.downloadService,
     required this.onTvTopBarFocusChanged,
-    this.onShowHistory,
   });
   final ValueChanged<bool> onTvTopBarFocusChanged;
 
-  /// “继续观看”里点“全部”：切到历史页。
-  final VoidCallback? onShowHistory;
   final ApiClient apiClient;
   final DownloadService downloadService;
 
@@ -92,17 +88,8 @@ class HomeFeedPageState extends State<HomeFeedPage>
   Widget _buildHomeTab() {
     return DramaListTab(
       apiClient: widget.apiClient,
-      refreshSignal: widget.apiClient.recommendationRevision,
       downloadService: widget.downloadService,
       enableFilters: false,
-      // 电视端暂不显示，避免打乱遥控器的焦点顺序
-      header: DeviceProfile.isTv
-          ? null
-          : ContinueWatchingRow(
-              apiClient: widget.apiClient,
-              downloadService: widget.downloadService,
-              onShowAll: widget.onShowHistory,
-            ),
       fetchFunction: (client, offset, sessionId, type) =>
           client.fetchHomePage(offset: offset, sessionId: sessionId),
     );

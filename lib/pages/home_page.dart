@@ -7,6 +7,7 @@ import '../services/device_profile.dart';
 import '../services/download_service.dart';
 import '../widgets/tv_tap.dart';
 import 'cache_page.dart';
+import 'home/continue_watching_bar.dart';
 import 'home/home_feed_page.dart';
 import 'play_history_page.dart';
 import 'settings_page.dart';
@@ -50,7 +51,6 @@ class _HomePageState extends State<HomePage> {
         },
         apiClient: widget.apiClient,
         downloadService: widget.downloadService,
-        onShowHistory: () => _selectPage(1),
       ),
       PlayHistoryPage(
         key: _playHistoryKey,
@@ -86,14 +86,30 @@ class _HomePageState extends State<HomePage> {
     return Scaffold(
       backgroundColor:
           DeviceProfile.isTv ? const Color(0xFFF4F5F8) : Colors.white,
-      body: IndexedStack(
-        index: _currentIndex,
-        children: _pages.indexed
-            .map((entry) => ExcludeFocus(
-                  excluding: entry.$1 != _currentIndex,
-                  child: entry.$2,
-                ))
-            .toList(),
+      body: Stack(
+        children: [
+          IndexedStack(
+            index: _currentIndex,
+            children: _pages.indexed
+                .map((entry) => ExcludeFocus(
+                      excluding: entry.$1 != _currentIndex,
+                      child: entry.$2,
+                    ))
+                .toList(),
+          ),
+          // 电视端不显示，避免打乱遥控器的焦点顺序。
+          if (!DeviceProfile.isTv)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: ContinueWatchingBar(
+                apiClient: widget.apiClient,
+                downloadService: widget.downloadService,
+                active: _currentIndex == 0,
+              ),
+            ),
+        ],
       ),
       bottomNavigationBar: DeviceProfile.isTv
           ? _buildTvNavigation()

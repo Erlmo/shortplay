@@ -70,7 +70,6 @@ class ApiClient {
       _providedDeviceRegistration ??
           DeviceRegistrationService(registerDevice: _registerDevice);
   final Map<String, Drama> _dramaCache = {};
-  final ValueNotifier<int> recommendationRevision = ValueNotifier(0);
   final ValueNotifier<int> deviceRevision = ValueNotifier(0);
   bool _disposed = false;
   late final PlaybackReportQueue playbackReports = PlaybackReportQueue(
@@ -80,9 +79,6 @@ class ApiClient {
       return device == null ? null : _deviceOwner(device);
     },
     verifiedOwner: () async => _deviceOwner(await _requireRegisteredDevice()),
-    onAccepted: () {
-      if (!_disposed) recommendationRevision.value++;
-    },
   );
 
   /// 暴露已配置 SignInterceptor 的 Dio，供 ShareLinkResolver 等复用同一签名链路。
@@ -111,7 +107,6 @@ class ApiClient {
     if (_providedDeviceRegistration == null) _deviceRegistration.dispose();
     _dio.close(force: true);
     deviceRevision.dispose();
-    recommendationRevision.dispose();
   }
 
   static String _deviceOwner(RegisteredDevice device) =>
