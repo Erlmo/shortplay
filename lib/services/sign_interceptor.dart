@@ -8,10 +8,13 @@ import 'sign_native.dart';
 /// Dio interceptor that automatically signs requests to api.weeou.com
 /// with the X-Dusa header (computed by the native .so).
 ///
-/// Only signs requests whose host matches [ApiConfig.noveBaseUrl].
+/// Signs requests to the configured API host; defaults to [ApiConfig.noveBaseUrl].
 /// Requests to other hosts (e.g. fqnovel.com) pass through unsigned.
 class SignInterceptor extends Interceptor {
-  final _targetHost = Uri.parse(ApiConfig.noveBaseUrl).host;
+  SignInterceptor({String? targetHost})
+      : _targetHost = targetHost ?? Uri.parse(ApiConfig.noveBaseUrl).host;
+
+  final String _targetHost;
 
   @override
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) {

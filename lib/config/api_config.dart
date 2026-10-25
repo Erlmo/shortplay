@@ -1,10 +1,15 @@
 class ApiConfig {
   // Nove API配置
-  static const String noveBaseUrl = 'http://api.weeou.com';
+  static const String noveBaseUrl = String.fromEnvironment(
+    'SHORTPLAY_API_BASE_URL',
+    defaultValue: 'http://api.weeou.com',
+  );
   static const String noveSearch = '/nove/search';
   static const String noveSearchSuggest = '/nove/search/suggest';
   static const String noveSearchSeason = '/nove/search/season';
   static const String noveHome = '/nove/home';
+  static const String deviceRegister = '/device/register';
+  static const String playbackReport = '/nove/playback/report';
   static const String noveRank = '/nove/rank';
   static const String noveDirectory = '/nove/directory';
   static const String noveSeasons = '/nove/seasons';

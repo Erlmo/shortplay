@@ -17,7 +17,10 @@ extension _PlayerControls on _PlayerPageState {
     final player = _player;
     if (player == null || !_playerInitialized) return;
     if (player.playing) {
+      _sampleWatchPosition();
       _userPaused = true;
+      _syncWatchState();
+      _checkpointWatch();
       unawaited(player.pause());
       _saveHistory();
     } else {
@@ -46,6 +49,9 @@ extension _PlayerControls on _PlayerPageState {
     final player = _player;
     if (player == null || !_playerInitialized) return;
     _resumeAfterSeek = player.playing;
+    _sampleWatchPosition();
+    _watchSeeking = true;
+    _syncWatchState();
     player.pause();
     _refresh(() => _seekingPositionMs = ms);
   }
@@ -56,6 +62,8 @@ extension _PlayerControls on _PlayerPageState {
   }
 
   void _onSeekEnd(double ms) {
+    _watchSession?.seek(ms.toInt());
+    _watchSeeking = false;
     final player = _player;
     if (player != null && _playerInitialized) {
       player.seek(Duration(milliseconds: ms.toInt()));
@@ -64,6 +72,7 @@ extension _PlayerControls on _PlayerPageState {
       if (_resumeAfterSeek) {
         player.play();
       }
+      _syncWatchState();
     }
     // 横竖屏切换/翻页时 Slider 被卸载也会触发 dragEnd，此时框架处于锁定阶段，
     // 不能直接 setState。
@@ -86,6 +95,8 @@ extension _PlayerControls on _PlayerPageState {
     var target = positionMsNotifier.value + deltaMs;
     if (target < 0) target = 0;
     if (duration > 0 && target > duration - 500) target = duration - 500;
+    _sampleWatchPosition();
+    _watchSession?.seek(target);
     unawaited(player.seek(Duration(milliseconds: target)));
     positionMsNotifier.value = target;
     _onDanmakuSeek(target);
@@ -98,6 +109,8 @@ extension _PlayerControls on _PlayerPageState {
   double get _effectiveRate => _isSpeedUp ? 2.0 : _playbackSpeed;
 
   void _applyRate(double rate) {
+    _sampleWatchPosition();
+    _syncWatchState();
     if (_player != null && _playerInitialized) {
       unawaited(_player!.setRate(rate));
     }

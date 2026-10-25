@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 
 import '../config/api_config.dart';
 import '../models/api_results.dart';
@@ -11,10 +11,15 @@ import '../models/danmaku.dart';
 import '../models/drama.dart';
 import '../models/drama_season.dart';
 import '../models/fq_video.dart';
+import '../models/playback_report_book.dart';
+import '../models/registered_device.dart';
 import '../models/search_suggestion.dart';
 import '../models/search_source.dart';
 import '../models/search_results.dart';
 import '../models/search_series_card.dart';
+import 'device_registration_service.dart';
+import 'device_request_interceptor.dart';
+import 'playback_report_queue.dart';
 import 'sign_interceptor.dart';
 
 export '../models/api_results.dart';
@@ -30,8 +35,12 @@ class ApiException implements Exception {
 }
 
 class ApiClient {
-  ApiClient({Dio? dio, String? baseUrl})
-      : _dio = dio ??
+  ApiClient({
+    Dio? dio,
+    String? baseUrl,
+    DeviceRegistrationService? deviceRegistrationService,
+  })  : _providedDeviceRegistration = deviceRegistrationService,
+        _dio = dio ??
             Dio(
               BaseOptions(
                 baseUrl: baseUrl ?? ApiConfig.noveBaseUrl,
@@ -40,14 +49,124 @@ class ApiClient {
                 sendTimeout: ApiConfig.sendTimeout,
               ),
             ) {
-    _dio.interceptors.add(SignInterceptor());
+    if (_dio.options.baseUrl.isEmpty) {
+      _dio.options.baseUrl = baseUrl ?? ApiConfig.noveBaseUrl;
+    }
+    // 身份注入必须先于签名，也先于复用 Dio 上已有的业务拦截器。
+    _dio.interceptors.insertAll(0, [
+      DeviceRequestInterceptor(
+        ensureDevice: _deviceRegistration.ensureRequestDevice,
+        ensureRegisteredDevice: _requireRegisteredDevice,
+        baseUrl: _dio.options.baseUrl,
+      ),
+      SignInterceptor(targetHost: Uri.parse(_dio.options.baseUrl).host),
+    ]);
+    _deviceRegistration.addListener(_onDeviceRegistered);
   }
 
   final Dio _dio;
+  final DeviceRegistrationService? _providedDeviceRegistration;
+  late final DeviceRegistrationService _deviceRegistration =
+      _providedDeviceRegistration ??
+          DeviceRegistrationService(registerDevice: _registerDevice);
   final Map<String, Drama> _dramaCache = {};
+  final ValueNotifier<int> recommendationRevision = ValueNotifier(0);
+  final ValueNotifier<int> deviceRevision = ValueNotifier(0);
+  bool _disposed = false;
+  late final PlaybackReportQueue playbackReports = PlaybackReportQueue(
+    sender: reportPlaybackBooks,
+    currentOwner: () async {
+      final device = await _deviceRegistration.readCachedDevice();
+      return device == null ? null : _deviceOwner(device);
+    },
+    verifiedOwner: () async => _deviceOwner(await _requireRegisteredDevice()),
+    onAccepted: () {
+      if (!_disposed) recommendationRevision.value++;
+    },
+  );
 
   /// 暴露已配置 SignInterceptor 的 Dio，供 ShareLinkResolver 等复用同一签名链路。
   Dio get dio => _dio;
+
+  /// 启动时提前准备设备；所有业务请求复用同一个注册任务。
+  Future<void> initializeDevice() async {
+    await _deviceRegistration.ensureRequestDevice();
+    unawaited(playbackReports.flush());
+  }
+
+  /// 前台恢复时立即尝试补办注册，其余时间由服务内部退避重试。
+  Future<void> retryDeviceRegistration() =>
+      _deviceRegistration.retryRegistration();
+
+  void _onDeviceRegistered() {
+    if (_disposed) return;
+    deviceRevision.value++;
+    unawaited(playbackReports.flush(force: true));
+  }
+
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    _deviceRegistration.removeListener(_onDeviceRegistered);
+    if (_providedDeviceRegistration == null) _deviceRegistration.dispose();
+    _dio.close(force: true);
+    deviceRevision.dispose();
+    recommendationRevision.dispose();
+  }
+
+  static String _deviceOwner(RegisteredDevice device) =>
+      '${device.deviceId}:${device.installId}';
+
+  Future<void> reportPlaybackBooks(
+    List<PlaybackReportBook> books,
+    String owner,
+  ) async {
+    if (books.isEmpty || books.length > PlaybackReportQueue.maxBatchSize) {
+      throw ApiException('观看记录批次无效');
+    }
+    final device = await _requireRegisteredDevice();
+    if (_deviceOwner(device) != owner) {
+      throw ApiException('观看记录所属设备已变更');
+    }
+    final response = await _dio.post(
+      ApiConfig.playbackReport,
+      data: {
+        'books': books.map((book) => book.toJson()).toList(),
+        'write_mode': 1
+      },
+    );
+    final data = _decode(response)['data'];
+    if (data is! Map ||
+        data['accepted'] != true ||
+        data['count'] != books.length) {
+      throw ApiException('观看记录尚未确认同步');
+    }
+  }
+
+  Future<RegisteredDevice> _requireRegisteredDevice() async {
+    try {
+      final device = await _deviceRegistration.readCachedDevice();
+      if (device == null) {
+        throw ApiException('独立设备尚未注册，观看记录已保留，稍后同步');
+      }
+      return device;
+    } on DeviceRegistrationException catch (error) {
+      throw ApiException(error.message);
+    }
+  }
+
+  Future<Map<String, dynamic>> _registerDevice() async {
+    try {
+      final response = await _dio.post(ApiConfig.deviceRegister);
+      final data = _decode(response)['data'];
+      if (data is! Map<String, dynamic>) {
+        throw ApiException('设备注册信息无效，请稍后重试');
+      }
+      return data;
+    } on DioException {
+      throw ApiException('连接设备注册服务失败，请稍后重试');
+    }
+  }
 
   Future<AppUpdate?> checkAppUpdate({
     required String device,
@@ -211,28 +330,27 @@ class ApiClient {
   /// 请求番茄官方API获取加密视频信息
   Future<List<FqVideoItem>> fetchFqVideoModel(String videoId) async {
     final requestTimer = Stopwatch()..start();
-    // iid / device_id 每次随机生成（番茄风控按设备维度限流，固定值易被封）。
-    // 同一组值同时用于签名请求与番茄请求，保证服务端签名的 URL 与实际请求逐字一致。
-    // 以下 9 个参数为实测的最小必需集：缺签名服务强制项(iid/device_id/aid/
-    // version_code/version_name/device_brand/os_version/cdid)会签名失败；
-    // 缺 device_platform 番茄返回空；update_version_code 缺失时服务端不下发
-    // 1080p 档位。
-    final iid = _randomNumericId(19);
-    final deviceId = _randomNumericId(16);
-    final queryString = 'iid=$iid'
-        '&device_id=$deviceId'
-        '&aid=${ApiConfig.fqAid}'
-        '&version_code=72132'
-        '&version_name=7.2.1.32'
-        '&update_version_code=72132'
-        '&device_brand=Xiaomi'
-        '&os_version=13'
-        '&device_platform=android'
-        '&cdid=75e2081b-d8bf-4767-91e8-3424546b4d2e';
-    final fullUrl =
-        'https://${ApiConfig.fqVideoHost}${ApiConfig.fqVideoPath}?$queryString';
+    final device = await _deviceRegistration.ensureRequestDevice();
+    // 一次安装的所有接口共用身份；签名与实际视频请求使用完全相同的 URL。
+    final fullUrl = Uri.https(
+      ApiConfig.fqVideoHost,
+      ApiConfig.fqVideoPath,
+      {
+        'iid': device.installId,
+        'device_id': device.deviceId,
+        'aid': ApiConfig.fqAid,
+        'version_code': '72132',
+        'version_name': '7.2.1.32',
+        'update_version_code': '72132',
+        'device_brand': device.deviceBrand,
+        'device_type': device.deviceModel,
+        'os_version': device.osVersion,
+        'device_platform': 'android',
+        'cdid': device.cdid,
+      },
+    ).toString();
 
-    final candidates = await _requestFqVideoModel(videoId, fullUrl);
+    final candidates = await _requestFqVideoModel(videoId, fullUrl, device);
     final items = candidates.where((item) => !_isByteVc2(item)).toList();
     if (items.length == candidates.length) return items;
 
@@ -251,6 +369,7 @@ class ApiClient {
       final legacyItems = await _requestFqVideoModel(
         videoId,
         legacyUrl,
+        device,
         cancelToken: legacyCancel,
       ).timeout(legacyTimeout, onTimeout: () {
         legacyCancel.cancel('兼容视频补充请求超时');
@@ -281,15 +400,19 @@ class ApiClient {
 
   Future<List<FqVideoItem>> _requestFqVideoModel(
     String videoId,
-    String fullUrl, {
+    String fullUrl,
+    RegisteredDevice device, {
     CancelToken? cancelToken,
   }) async {
     // 1. 获取算法签名
     final signResponse = await _dio.post(
-      '${ApiConfig.noveBaseUrl}${ApiConfig.algorithmSign}',
+      ApiConfig.algorithmSign,
       data: {'url': fullUrl},
       cancelToken: cancelToken,
-      options: Options(headers: {'Content-Type': 'application/json'}),
+      options: Options(
+        headers: {'Content-Type': 'application/json'},
+        extra: {DeviceRequestInterceptor.deviceSnapshotKey: device},
+      ),
     );
     final signDecoded = _asJsonMap(signResponse.data);
     if (signDecoded['code'] != 0) {
@@ -300,7 +423,8 @@ class ApiClient {
     // 2. 请求番茄视频API
     final fqHeaders = <String, String>{
       'Host': ApiConfig.fqVideoHost,
-      'user-agent': ApiConfig.fqUserAgent,
+      'user-agent': _videoUserAgent(fullUrl),
+      'Cookie': 'install_id=${Uri.parse(fullUrl).queryParameters['iid']}',
       'content-type': 'application/json; charset=utf-8',
       'accept': 'application/json; charset=utf-8,application/x-protobuf',
       'x-ss-dp': ApiConfig.fqAid,
@@ -372,20 +496,18 @@ class ApiClient {
     return items;
   }
 
-  /// 生成 [length] 位随机数字字符串，首位非 0（用于 iid / device_id）。
-  static final Random _idRandom = Random();
-  String _randomNumericId(int length) {
-    final buffer = StringBuffer()..write(1 + _idRandom.nextInt(9));
-    for (var i = 1; i < length; i++) {
-      buffer.write(_idRandom.nextInt(10));
-    }
-    return buffer.toString();
+  String _videoUserAgent(String url) {
+    final query = Uri.parse(url).queryParameters;
+    return 'com.dragon.read/72132 (Linux; U; Android ${query['os_version']}; '
+        'zh_CN; ${query['device_type']}; Build/TKQ1.221114.001; '
+        'Cronet/TTNetVersion:04657795 2026-01-23 '
+        'QuicVersion:c67e9834 2025-09-08)';
   }
 
   /// 请求服务端解密spade_a获取AES key
   Future<String> fetchDecryptKey(String spadeA) async {
     final response = await _dio.post(
-      '${ApiConfig.noveBaseUrl}${ApiConfig.algorithmSpade}',
+      ApiConfig.algorithmSpade,
       data: {'spade_a': spadeA},
       options: Options(headers: {'Content-Type': 'application/json'}),
     );
@@ -410,7 +532,7 @@ class ApiClient {
     final Response<dynamic> response;
     try {
       response = await _dio.post(
-        '${ApiConfig.noveBaseUrl}${ApiConfig.noveShare}',
+        ApiConfig.noveShare,
         data: {'text': text},
         options: Options(headers: {'Content-Type': 'application/json'}),
       );
@@ -463,12 +585,8 @@ class ApiClient {
     }
     if (cursor != null && cursor.isNotEmpty) params['cursor'] = cursor;
 
-    final uri = Uri.http(
-      Uri.parse(ApiConfig.noveBaseUrl).host,
-      ApiConfig.noveDanmaku,
-      params,
-    );
-    final response = await _dio.getUri(uri, cancelToken: cancelToken);
+    final response = await _dio.get(ApiConfig.noveDanmaku,
+        queryParameters: params, cancelToken: cancelToken);
     final decoded = _decode(response);
     return DanmakuResponse.fromJson(decoded);
   }
@@ -495,12 +613,8 @@ class ApiClient {
   }
 
   Future<TheaterEpisodesResult> _fetchTheaterEpisodes(String seriesId) async {
-    final uri = Uri.http(
-      Uri.parse(ApiConfig.noveBaseUrl).host,
-      ApiConfig.noveDirectory,
-      {'book_id': seriesId},
-    );
-    final response = await _dio.getUri(uri);
+    final response = await _dio
+        .get(ApiConfig.noveDirectory, queryParameters: {'book_id': seriesId});
     final decoded = _decode(response);
     final data = decoded['data'] as Map<String, dynamic>? ?? {};
     final lists = data['lists'] as List? ?? [];
@@ -583,15 +697,13 @@ class ApiClient {
   Future<HomePageResult> fetchHomePage({int? offset, String? sessionId}) async {
     final params = <String, String>{};
     if (offset != null && offset > 0) params['offset'] = offset.toString();
-    if (sessionId != null && sessionId.isNotEmpty)
+    if (sessionId != null && sessionId.isNotEmpty) {
       params['session_id'] = sessionId;
-
-    final uri = Uri.http(
-      Uri.parse(ApiConfig.noveBaseUrl).host,
+    }
+    final response = await _dio.get(
       ApiConfig.noveHome,
-      params,
+      queryParameters: params,
     );
-    final response = await _dio.getUri(uri);
     final decoded = _decode(response);
     final data = decoded['data'] as Map<String, dynamic>? ?? {};
     return HomePageResult.fromJson(data);
@@ -611,14 +723,9 @@ class ApiClient {
     if (sessionId != null && sessionId.isNotEmpty)
       params['session_id'] = sessionId;
 
-    final uri = Uri.http(
-      Uri.parse(ApiConfig.noveBaseUrl).host,
-      ApiConfig.noveRank,
-      params,
-    );
     late final Response response;
     try {
-      response = await _dio.getUri(uri);
+      response = await _dio.get(ApiConfig.noveRank, queryParameters: params);
     } on DioException catch (error) {
       if (CancelToken.isCancel(error)) rethrow;
       final body = error.response?.data;
@@ -642,12 +749,8 @@ class ApiClient {
     if (sessionId != null && sessionId.isNotEmpty)
       params['session_id'] = sessionId;
 
-    final uri = Uri.http(
-      Uri.parse(ApiConfig.noveBaseUrl).host,
-      ApiConfig.noveRank,
-      params,
-    );
-    final response = await _dio.getUri(uri);
+    final response =
+        await _dio.get(ApiConfig.noveRank, queryParameters: params);
     final decoded = _decode(response);
     final data = decoded['data'] as Map<String, dynamic>? ?? {};
     return NewPlayResult.fromJson(data);
@@ -655,11 +758,7 @@ class ApiClient {
 
   /// 获取滚动公告列表。X-Dusa 由 SignInterceptor 对 api.weeou.com 自动签名。
   Future<List<String>> fetchNotice() async {
-    final uri = Uri.http(
-      Uri.parse(ApiConfig.noveBaseUrl).host,
-      ApiConfig.notice,
-    );
-    final response = await _dio.getUri(uri);
+    final response = await _dio.get(ApiConfig.notice);
     final decoded = _decode(response);
     final data = decoded['data'] as List? ?? [];
     return data.map((e) => e.toString()).where((e) => e.isNotEmpty).toList();

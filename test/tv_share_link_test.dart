@@ -6,7 +6,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:qr_flutter/qr_flutter.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shortplay/models/fq_video.dart';
 import 'package:shortplay/pages/player_page.dart';
 import 'package:shortplay/pages/settings_page.dart';
@@ -15,6 +14,8 @@ import 'package:shortplay/pages/tv_share_link_page.dart';
 import 'package:shortplay/services/api_client.dart';
 import 'package:shortplay/services/device_profile.dart';
 import 'package:shortplay/services/tv_link_api.dart';
+
+import 'support/registered_device.dart';
 
 import 'support/no_app_updates.dart';
 
@@ -91,7 +92,7 @@ void main() {
   late _Shares shares;
   late _Relay relay;
   setUp(() {
-    SharedPreferences.setMockInitialValues({});
+    seedRegisteredDevice();
     DeviceProfile.isTv = true;
     shares = _Shares();
     relay = _Relay(shares);
@@ -129,6 +130,8 @@ void main() {
     shares.dio.httpClientAdapter = _Adapter((request) {
       expect(request.uri.path, '/tvlink/create');
       expect(request.method, 'POST');
+      expect(
+          request.queryParameters, {'client_device': testRegisteredDeviceJson});
       return ResponseBody.fromString(
           jsonEncode({
             'code': 0,

@@ -8,6 +8,7 @@ import '../models/drama.dart';
 import '../models/drama_season.dart';
 import '../models/episode.dart';
 import '../models/playback_record.dart';
+import '../models/playback_report_book.dart';
 import '../models/workflow_step.dart';
 import '../services/api_client.dart';
 import '../services/app_route_observer.dart';
@@ -17,6 +18,7 @@ import '../services/download_service.dart';
 import '../services/native_player.dart';
 import '../services/offline_playback_cache.dart';
 import '../services/playback_history_store.dart';
+import '../services/playback_report_session.dart';
 import '../services/player_danmaku_controller.dart';
 import '../services/player_sleep_timer.dart';
 import '../services/player_system_ui_controller.dart';
@@ -38,6 +40,7 @@ part 'player_page/seasons.dart'; // 跨季连播与切季
 part 'player_page/controls.dart'; // 播放控制、菜单、选集、翻页回调
 part 'player_page/keyboard.dart'; // 遥控器 / 键盘
 part 'player_page/view.dart'; // 剧集页 UI 构建
+part 'player_page/reporting.dart'; // 实际观看采样、上报队列和生命周期
 
 class PlayerPage extends StatefulWidget {
   const PlayerPage({
@@ -109,6 +112,14 @@ class _PlayerPageState extends State<PlayerPage>
   StreamSubscription<bool>? _playingSub;
   StreamSubscription<bool>? _completedSub;
   StreamSubscription<Duration>? _durationSub;
+  StreamSubscription<bool>? _bufferingSub;
+
+  PlaybackReportSession? _watchSession;
+  Timer? _watchCheckpointTimer;
+  bool _watchForeground = true;
+  bool _watchVisible = true;
+  bool _watchSeeking = false;
+  bool _watchTailCheckpointed = false;
 
   final positionMsNotifier = ValueNotifier<int>(0);
   final playingNotifier = ValueNotifier<bool>(false);
@@ -197,6 +208,9 @@ class _PlayerPageState extends State<PlayerPage>
       duration: const Duration(milliseconds: 260),
     );
     WidgetsBinding.instance.addObserver(this);
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    _watchForeground =
+        lifecycle == null || lifecycle == AppLifecycleState.resumed;
     _systemUi = PlayerSystemUiController();
     _systemUi.addListener(_onSystemUiChanged);
     _sleepTimer = PlayerSleepTimer(onElapsed: _stopForSleep);
@@ -234,6 +248,10 @@ class _PlayerPageState extends State<PlayerPage>
   // 否则旧播放器会在后面继续出声，与新页音频叠加。
   @override
   void didPushNext() {
+    _sampleWatchPosition();
+    _watchVisible = false;
+    _syncWatchState();
+    _checkpointWatch();
     if (_player != null && playingNotifier.value && !_userPaused) {
       _pausedByRoute = true;
       _player!.pause();
@@ -243,6 +261,9 @@ class _PlayerPageState extends State<PlayerPage>
   // 上层路由弹出、本页重新可见：恢复之前因覆盖而暂停的播放。
   @override
   void didPopNext() {
+    _watchVisible = true;
+    _syncWatchState();
+    unawaited(widget.apiClient.playbackReports.flush(force: true));
     _sleepTimer.checkDeadline();
     if (_sleepStopped) return;
     if (_pausedByRoute) {
@@ -254,6 +275,7 @@ class _PlayerPageState extends State<PlayerPage>
 
   @override
   void dispose() {
+    _finishWatchSession();
     // 退出播放页：记下当前集和进度（定时停止时已经保存过）。
     if (_playerInitialized && !_sleepStopped) _saveHistory();
     _episodeShrink.dispose();
@@ -283,6 +305,10 @@ class _PlayerPageState extends State<PlayerPage>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _sampleWatchPosition();
+    _watchForeground = state == AppLifecycleState.resumed;
+    _syncWatchState();
+    if (!_watchForeground) _checkpointWatch();
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
       if (_player != null && playingNotifier.value && !_userPaused) {

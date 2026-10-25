@@ -20,6 +20,10 @@ void main() async {
       downloadService: DownloadService(apiClient: apiClient),
     ),
   );
+  // 不阻塞界面启动；注册失败先用默认设备取数据，后台继续重试。
+  unawaited(apiClient.initializeDevice().catchError((Object error) {
+    debugPrint('设备初始化失败，可重试加载');
+  }));
 }
 
 class ShortPlayApp extends StatefulWidget {
@@ -58,6 +62,10 @@ class _ShortPlayAppState extends State<ShortPlayApp>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(widget.apiClient.retryDeviceRegistration());
+      unawaited(widget.apiClient.playbackReports.flush(force: true));
+    }
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
       // 生命周期回调无法 await，捕获保存错误以免成为未处理的 Future。

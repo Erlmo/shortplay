@@ -92,6 +92,7 @@ class HomeFeedPageState extends State<HomeFeedPage>
   Widget _buildHomeTab() {
     return DramaListTab(
       apiClient: widget.apiClient,
+      refreshSignal: widget.apiClient.recommendationRevision,
       downloadService: widget.downloadService,
       enableFilters: false,
       // 电视端暂不显示，避免打乱遥控器的焦点顺序

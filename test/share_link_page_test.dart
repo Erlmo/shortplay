@@ -3,12 +3,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shortplay/models/drama.dart';
 import 'package:shortplay/models/fq_video.dart';
 import 'package:shortplay/pages/player_page.dart';
 import 'package:shortplay/pages/share_link_page.dart';
 import 'package:shortplay/services/api_client.dart';
+
+import 'support/registered_device.dart';
 
 typedef _ShareInfo = ({String videoId, String? title});
 
@@ -64,7 +65,7 @@ void main() {
   setUp(() {
     apiClient = _ShareApiClient();
     clipboardText = null;
-    SharedPreferences.setMockInitialValues({});
+    seedRegisteredDevice();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SystemChannels.platform, (call) async {
       if (call.method == 'Clipboard.getData') {
@@ -79,7 +80,7 @@ void main() {
   });
 
   tearDown(() {
-    apiClient.dio.close(force: true);
+    apiClient.dispose();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SystemChannels.platform, null);
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
