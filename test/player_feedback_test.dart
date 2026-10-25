@@ -264,9 +264,9 @@ void main() {
           abovePlayerControls: true);
       await tester.pumpAndSettle();
       expect(find.text('缓存任务已添加'), findsNothing);
-      expect(find.byIcon(Icons.error_outline_rounded), findsOneWidget);
+      expect(find.byIcon(Icons.priority_high_rounded), findsOneWidget);
       expect(find.byType(AppNoticeCard), findsOneWidget);
-      await tester.tap(find.byTooltip('关闭提示'));
+      await tester.tap(find.byType(AppNoticeCard));
       await tester.pumpAndSettle();
       expect(find.byType(AppNoticeCard), findsNothing);
       expect(tester.takeException(), isNull);

@@ -1,14 +1,11 @@
 import 'package:flutter/material.dart';
 
-import '../models/drama.dart';
-import '../models/episode.dart';
 import '../models/playback_record.dart';
 import '../services/api_client.dart';
 import '../services/download_service.dart';
-import '../services/offline_playback_cache.dart';
 import '../services/playback_history_store.dart';
-import 'player_page.dart';
 import '../widgets/tv_tap.dart';
+import 'playback_record_launcher.dart';
 
 class PlayHistoryPage extends StatefulWidget {
   const PlayHistoryPage({
@@ -33,10 +30,20 @@ class PlayHistoryPageState extends State<PlayHistoryPage> {
   void initState() {
     super.initState();
     _load();
+    PlaybackHistoryStore.revision.addListener(_onHistoryChanged);
   }
 
-  Future<void> _load() async {
-    setState(() => _loading = true);
+  @override
+  void dispose() {
+    PlaybackHistoryStore.revision.removeListener(_onHistoryChanged);
+    super.dispose();
+  }
+
+  // 播放页退出 / 定时保存进度后静默刷新，不闪加载圈。
+  void _onHistoryChanged() => _load(silent: true);
+
+  Future<void> _load({bool silent = false}) async {
+    if (!silent) setState(() => _loading = true);
     final rawItems = await PlaybackHistoryStore.load();
     if (!mounted) return;
 
@@ -97,46 +104,12 @@ class PlayHistoryPageState extends State<PlayHistoryPage> {
   }
 
   void _openRecord(PlaybackRecord record) {
-    final drama = Drama(
-      id: record.dramaId,
-      name: record.dramaName,
-      actors: '',
-      cover: record.cover,
-      intro: '',
-      tags: const [],
-      status: '',
-      updateTime: '',
-      isTheaterResource: record.dramaId != 0,
-    );
-
-    // 检查是否有本地缓存
-    final ds = widget.downloadService;
-    List<Episode>? offlineEpisodes;
-    if (ds != null) {
-      final group = ds.groups[record.dramaId.toString()];
-      if (group != null) {
-        final completed = OfflinePlaybackCache.completedEpisodesFromGroup(
-          group,
-        );
-        if (completed.isNotEmpty) offlineEpisodes = completed;
-      }
-    }
-
-    Navigator.of(context)
-        .push(
-          MaterialPageRoute(
-            builder: (_) => PlayerPage(
-              drama: drama,
-              apiClient: widget.apiClient,
-              downloadService: ds,
-              initialEpisodeIndex: record.episodeIndex,
-              initialEpisodeNumber: record.episodeNumber,
-              initialPositionMs: record.positionMs,
-              offlineEpisodes: offlineEpisodes,
-            ),
-          ),
-        )
-        .then((_) => _load());
+    openPlaybackRecord(
+      context,
+      record: record,
+      apiClient: widget.apiClient,
+      downloadService: widget.downloadService,
+    ).then((_) => _load());
   }
 
   String _formatMs(int ms) {

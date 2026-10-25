@@ -84,13 +84,17 @@ class TheaterVideoPreloadManager {
     return completer.future;
   }
 
-  void clear() {
+  /// 清掉解析与预热记录。[keepVideoIds] 里的视频保留：切到下一季时首集已经
+  /// 提前预热过，保留它的解析结果（CDN 地址）才能命中 native 预热缓存。
+  void clear({Iterable<String> keepVideoIds = const []}) {
     _generation++;
-    _preloadedUrls.clear();
-    _sourceUrls.clear();
-    _resolved.clear();
-    _fullPrewarmed.clear();
-    _headerPrewarmed.clear();
+    final keep = keepVideoIds.toSet();
+    bool drop(String videoId) => !keep.contains(videoId);
+    _preloadedUrls.removeWhere((videoId, _) => drop(videoId));
+    _sourceUrls.removeWhere((videoId, _) => drop(videoId));
+    _resolved.removeWhere((videoId, _) => drop(videoId));
+    _fullPrewarmed.removeWhere(drop);
+    _headerPrewarmed.removeWhere(drop);
     _preloadingEpisodeIndexes.clear();
   }
 

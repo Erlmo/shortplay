@@ -60,4 +60,11 @@ class DramaSeasons {
             int.tryParse(json['current_season']?.toString() ?? '') ?? 0,
         seasons: List.unmodifiable(seasons));
   }
+
+  /// 按季序排在 [seasonId] 之后的那一季；当前季不在列表里或已是最后一季时为 null。
+  DramaSeason? nextAfter(int seasonId) {
+    final index = seasons.indexWhere((season) => season.id == seasonId);
+    if (index < 0 || index + 1 >= seasons.length) return null;
+    return seasons[index + 1];
+  }
 }

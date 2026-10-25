@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/playback_record.dart';
@@ -7,6 +8,10 @@ import '../models/playback_record.dart';
 class PlaybackHistoryStore {
   static const String _key = 'playback_history_v1';
   static const int _maxItems = 50;
+
+  /// 每次写入后自增。首页“继续观看”、历史页、详情页监听它来刷新，
+  /// 不用等页面返回时再手动重载（退出播放页时的保存晚于路由返回）。
+  static final ValueNotifier<int> revision = ValueNotifier<int>(0);
 
   static Future<List<PlaybackRecord>> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -46,6 +51,12 @@ class PlaybackHistoryStore {
         episodeNumber: record.episodeNumber,
         positionMs: record.positionMs,
         updatedAtMs: record.updatedAtMs,
+        // 同一集内的保存沿用已知的时长 / 集数
+        durationMs: record.durationMs ??
+            (existing?.episodeIndex == record.episodeIndex
+                ? existing?.durationMs
+                : null),
+        episodeCount: record.episodeCount ?? existing?.episodeCount,
       ),
     );
     if (items.length > _maxItems) {
@@ -69,6 +80,7 @@ class PlaybackHistoryStore {
   static Future<void> clear() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_key);
+    revision.value++;
   }
 
   static Future<void> _save(List<PlaybackRecord> items) async {
@@ -77,5 +89,6 @@ class PlaybackHistoryStore {
       items.map((e) => e.toJson()).toList(growable: false),
     );
     await prefs.setString(_key, raw);
+    revision.value++;
   }
 }
