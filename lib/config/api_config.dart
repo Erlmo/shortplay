@@ -8,8 +8,6 @@ class ApiConfig {
   static const String noveSearchSuggest = '/nove/search/suggest';
   static const String noveSearchSeason = '/nove/search/season';
   static const String noveHome = '/nove/home';
-  static const String deviceRegister = '/device/register';
-  static const String playbackReport = '/nove/playback/report';
   static const String noveRank = '/nove/rank';
   static const String noveDirectory = '/nove/directory';
   static const String noveSeasons = '/nove/seasons';
@@ -19,7 +17,8 @@ class ApiConfig {
   static const String appUpdate = '/update/check';
 
   // 番茄视频API配置
-  static const String fqVideoHost = 'api3-normal-sinfonlinea.fqnovel.com';
+  static const String fqVideoHost = 'api3-normal-lf.fqnovel.com';
+  static const String fqVideoFallbackHost = 'reading.snssdk.com';
   static const String fqVideoPath = '/novel/player/video_model/v1/';
   static const String algorithmSign = '/algorithm/sign';
   static const String algorithmSpade = '/algorithm/spade';

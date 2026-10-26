@@ -4,24 +4,18 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:shortplay/config/api_config.dart';
-import 'package:shortplay/models/registered_device.dart';
 import 'package:shortplay/services/api_client.dart';
-import 'package:shortplay/services/device_registration_service.dart';
-
-import 'support/registered_device.dart';
 
 class _VideoModelAdapter implements HttpClientAdapter {
   _VideoModelAdapter(this.videoList, this.legacyVideoList,
-      {this.legacyFails = false, this.legacyGate, this.onFirstVideo});
+      {this.legacyFails = false, this.legacyGate});
 
   final Object videoList;
   final Object legacyVideoList;
   final bool legacyFails;
   final Future<void>? legacyGate;
-  final Future<void> Function()? onFirstVideo;
   final List<String> signedUrls = [];
   final List<RequestOptions> signRequests = [];
   final List<RequestOptions> videoRequests = [];
@@ -40,7 +34,6 @@ class _VideoModelAdapter implements HttpClientAdapter {
     } else if (options.uri.host == ApiConfig.fqVideoHost &&
         options.uri.path == ApiConfig.fqVideoPath) {
       videoRequests.add(options);
-      if (videoRequests.length == 1) await onFirstVideo?.call();
       final legacy =
           !options.uri.queryParameters.containsKey('update_version_code');
       if (legacy && legacyGate != null) await legacyGate;
@@ -118,26 +111,27 @@ Object _videoList(bool nested, List<(String, String)> streams, String source) {
 
 void _expectIndependentlySignedRequests(_VideoModelAdapter adapter, int count) {
   expect(adapter.videoRequests, hasLength(count));
+  expect(adapter.signRequests, hasLength(count));
   expect(adapter.signedUrls,
       adapter.videoRequests.map((request) => request.uri.toString()));
+  final firstQuery = adapter.videoRequests.first.uri.queryParameters;
+  expect(firstQuery['iid'], matches(RegExp(r'^[1-9][0-9]{18}$')));
+  expect(firstQuery['device_id'], matches(RegExp(r'^[1-9][0-9]{15}$')));
   for (final request in adapter.videoRequests.indexed) {
-    final query = request.$2.uri.queryParameters;
-    expect(query['device_id'], testRegisteredDevice['device_id']);
-    expect(query['iid'], testRegisteredDevice['install_id']);
-    expect(query['cdid'], testRegisteredDevice['cdid']);
-    expect(query['device_brand'], testRegisteredDevice['device_brand']);
-    expect(query['device_type'], testRegisteredDevice['device_model']);
-    expect(query['os_version'], testRegisteredDevice['os_version']);
+    final video = request.$2;
+    final sign = adapter.signRequests[request.$1];
+    final query = video.uri.queryParameters;
+    expect(query['iid'], firstQuery['iid']);
+    expect(query['device_id'], firstQuery['device_id']);
+    expect(query['cdid'], firstQuery['cdid']);
+    expect(query['device_brand'], 'Xiaomi');
+    expect(query['os_version'], '13');
     expect(query, isNot(contains('client_device')));
-    expect(request.$2.headers['Cookie'],
-        'install_id=${testRegisteredDevice['install_id']}');
-    expect(request.$2.headers['user-agent'],
-        contains('Android 12; zh_CN; TEST-DEVICE;'));
-    expect(
-        request.$2.headers['x-test-signature'], 'signature-${request.$1 + 1}');
-  }
-  for (final request in adapter.signRequests) {
-    expect(request.queryParameters['client_device'], testRegisteredDeviceJson);
+    expect(sign.queryParameters, isNot(contains('client_device')));
+    expect(video.headers.keys.map((key) => key.toLowerCase()),
+        isNot(contains('cookie')));
+    expect(video.headers['user-agent'], ApiConfig.fqUserAgent);
+    expect(video.headers['x-test-signature'], 'signature-${request.$1 + 1}');
   }
   expect(adapter.videoRequests.first.uri.queryParameters['update_version_code'],
       '72132');
@@ -148,72 +142,6 @@ void _expectIndependentlySignedRequests(_VideoModelAdapter adapter, int count) {
 }
 
 void main() {
-  test('默认设备解析期间注册成功，兼容补充视频的签名仍与原URL身份一致', () async {
-    SharedPreferences.setMockInitialValues({});
-    var available = false;
-    final service = DeviceRegistrationService(registerDevice: () async {
-      if (!available) throw StateError('暂不可用');
-      return testRegisteredDevice;
-    });
-    await service.ensureRequestDevice();
-    final adapter = _VideoModelAdapter(
-      _videoList(false, [('1080p', 'bytevc1'), ('720p', 'bytevc2')], 'current'),
-      _videoList(false, [('720p', 'bytevc1')], 'legacy'),
-      onFirstVideo: () async {
-        available = true;
-        await service.retryRegistration();
-      },
-    );
-    final client = ApiClient(
-      dio: Dio()..httpClientAdapter = adapter,
-      deviceRegistrationService: service,
-    );
-    try {
-      final items = await client.fetchFqVideoModel('video-1');
-      expect(items.map((item) => item.definition), ['1080p', '720p']);
-      expect(service.isUsingDefaultDevice, isFalse);
-      expect(adapter.signRequests, hasLength(2));
-      for (final request in adapter.signRequests) {
-        final identity = jsonDecode(request.queryParameters['client_device']);
-        final videoQuery =
-            Uri.parse((request.data as Map)['url'] as String).queryParameters;
-        expect(identity, RegisteredDevice.defaultDevice.toJson());
-        expect(identity['device_id'], videoQuery['device_id']);
-        expect(identity['install_id'], videoQuery['iid']);
-      }
-      await client.fetchFqVideoModel('video-2');
-      expect(
-          jsonDecode(
-              adapter.signRequests.last.queryParameters['client_device']),
-          testRegisteredDevice);
-    } finally {
-      client.dispose();
-      service.dispose();
-    }
-  });
-
-  test('连续解析不同集复用注册设备，签名接口和视频URL保持同一身份', () async {
-    final (client, adapter) = _client(false, [('1080p', 'bytevc1')]);
-    await client.fetchFqVideoModel('video-1');
-    await client.fetchFqVideoModel('video-2');
-    expect(adapter.videoRequests, hasLength(2));
-    expect(adapter.signRequests, hasLength(2));
-    expect(adapter.signedUrls,
-        adapter.videoRequests.map((request) => request.uri.toString()));
-    final first = adapter.videoRequests.first.uri.queryParameters;
-    final second = adapter.videoRequests.last.uri.queryParameters;
-    for (final key in ['device_id', 'iid', 'cdid']) {
-      expect(first[key], second[key]);
-    }
-    expect(first['device_id'], testRegisteredDevice['device_id']);
-    expect(first['iid'], testRegisteredDevice['install_id']);
-    expect(first['cdid'], testRegisteredDevice['cdid']);
-    for (final request in adapter.signRequests) {
-      expect(
-          request.queryParameters['client_device'], testRegisteredDeviceJson);
-    }
-  });
-
   testWidgets('兼容补充请求挂起时及时返回已有 1080P，不耗尽调用方十秒期限', (tester) async {
     final gate = Completer<void>();
     final (client, adapter) = _client(

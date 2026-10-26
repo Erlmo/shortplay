@@ -3,8 +3,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shortplay/models/search_source.dart';
 import 'package:shortplay/services/api_client.dart';
 
-import 'support/registered_device.dart';
-
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -51,7 +49,6 @@ void main() {
     expect(request!.queryParameters, {
       'source': SearchSource.comic.value,
       'series_id': '7690163276214176792',
-      'client_device': testRegisteredDeviceJson,
     });
     expect(episodes.map((episode) => episode.vid), ['v-13-7', 'v-13-9']);
     expect(episodes.map((episode) => episode.number), [7, 9]);

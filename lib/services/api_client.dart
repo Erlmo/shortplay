@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart';
 
 import '../config/api_config.dart';
 import '../models/api_results.dart';
@@ -11,15 +11,10 @@ import '../models/danmaku.dart';
 import '../models/drama.dart';
 import '../models/drama_season.dart';
 import '../models/fq_video.dart';
-import '../models/playback_report_book.dart';
-import '../models/registered_device.dart';
 import '../models/search_suggestion.dart';
 import '../models/search_source.dart';
 import '../models/search_results.dart';
 import '../models/search_series_card.dart';
-import 'device_registration_service.dart';
-import 'device_request_interceptor.dart';
-import 'playback_report_queue.dart';
 import 'sign_interceptor.dart';
 
 export '../models/api_results.dart';
@@ -34,13 +29,15 @@ class ApiException implements Exception {
   String toString() => 'ApiException(message: $message, code: $code)';
 }
 
+class _EmptyVideoResponseException extends ApiException {
+  _EmptyVideoResponseException() : super('视频服务暂时返回空数据，请稍后重试');
+}
+
 class ApiClient {
   ApiClient({
     Dio? dio,
     String? baseUrl,
-    DeviceRegistrationService? deviceRegistrationService,
-  })  : _providedDeviceRegistration = deviceRegistrationService,
-        _dio = dio ??
+  }) : _dio = dio ??
             Dio(
               BaseOptions(
                 baseUrl: baseUrl ?? ApiConfig.noveBaseUrl,
@@ -52,115 +49,23 @@ class ApiClient {
     if (_dio.options.baseUrl.isEmpty) {
       _dio.options.baseUrl = baseUrl ?? ApiConfig.noveBaseUrl;
     }
-    // 身份注入必须先于签名，也先于复用 Dio 上已有的业务拦截器。
-    _dio.interceptors.insertAll(0, [
-      DeviceRequestInterceptor(
-        ensureDevice: _deviceRegistration.ensureRequestDevice,
-        ensureRegisteredDevice: _requireRegisteredDevice,
-        baseUrl: _dio.options.baseUrl,
-      ),
+    _dio.interceptors.insert(
+      0,
       SignInterceptor(targetHost: Uri.parse(_dio.options.baseUrl).host),
-    ]);
-    _deviceRegistration.addListener(_onDeviceRegistered);
+    );
   }
 
   final Dio _dio;
-  final DeviceRegistrationService? _providedDeviceRegistration;
-  late final DeviceRegistrationService _deviceRegistration =
-      _providedDeviceRegistration ??
-          DeviceRegistrationService(registerDevice: _registerDevice);
   final Map<String, Drama> _dramaCache = {};
-  final ValueNotifier<int> deviceRevision = ValueNotifier(0);
   bool _disposed = false;
-  late final PlaybackReportQueue playbackReports = PlaybackReportQueue(
-    sender: reportPlaybackBooks,
-    currentOwner: () async {
-      final device = await _deviceRegistration.readCachedDevice();
-      return device == null ? null : _deviceOwner(device);
-    },
-    verifiedOwner: () async => _deviceOwner(await _requireRegisteredDevice()),
-  );
 
   /// 暴露已配置 SignInterceptor 的 Dio，供 ShareLinkResolver 等复用同一签名链路。
   Dio get dio => _dio;
 
-  /// 启动时提前准备设备；所有业务请求复用同一个注册任务。
-  Future<void> initializeDevice() async {
-    await _deviceRegistration.ensureRequestDevice();
-    unawaited(playbackReports.flush());
-  }
-
-  /// 前台恢复时立即尝试补办注册，其余时间由服务内部退避重试。
-  Future<void> retryDeviceRegistration() =>
-      _deviceRegistration.retryRegistration();
-
-  void _onDeviceRegistered() {
-    if (_disposed) return;
-    deviceRevision.value++;
-    unawaited(playbackReports.flush(force: true));
-  }
-
   void dispose() {
     if (_disposed) return;
     _disposed = true;
-    _deviceRegistration.removeListener(_onDeviceRegistered);
-    if (_providedDeviceRegistration == null) _deviceRegistration.dispose();
     _dio.close(force: true);
-    deviceRevision.dispose();
-  }
-
-  static String _deviceOwner(RegisteredDevice device) =>
-      '${device.deviceId}:${device.installId}';
-
-  Future<void> reportPlaybackBooks(
-    List<PlaybackReportBook> books,
-    String owner,
-  ) async {
-    if (books.isEmpty || books.length > PlaybackReportQueue.maxBatchSize) {
-      throw ApiException('观看记录批次无效');
-    }
-    final device = await _requireRegisteredDevice();
-    if (_deviceOwner(device) != owner) {
-      throw ApiException('观看记录所属设备已变更');
-    }
-    final response = await _dio.post(
-      ApiConfig.playbackReport,
-      data: {
-        'books': books.map((book) => book.toJson()).toList(),
-        'write_mode': 1
-      },
-    );
-    final data = _decode(response)['data'];
-    if (data is! Map ||
-        data['accepted'] != true ||
-        data['count'] != books.length) {
-      throw ApiException('观看记录尚未确认同步');
-    }
-  }
-
-  Future<RegisteredDevice> _requireRegisteredDevice() async {
-    try {
-      final device = await _deviceRegistration.readCachedDevice();
-      if (device == null) {
-        throw ApiException('独立设备尚未注册，观看记录已保留，稍后同步');
-      }
-      return device;
-    } on DeviceRegistrationException catch (error) {
-      throw ApiException(error.message);
-    }
-  }
-
-  Future<Map<String, dynamic>> _registerDevice() async {
-    try {
-      final response = await _dio.post(ApiConfig.deviceRegister);
-      final data = _decode(response)['data'];
-      if (data is! Map<String, dynamic>) {
-        throw ApiException('设备注册信息无效，请稍后重试');
-      }
-      return data;
-    } on DioException {
-      throw ApiException('连接设备注册服务失败，请稍后重试');
-    }
   }
 
   Future<AppUpdate?> checkAppUpdate({
@@ -325,27 +230,27 @@ class ApiClient {
   /// 请求番茄官方API获取加密视频信息
   Future<List<FqVideoItem>> fetchFqVideoModel(String videoId) async {
     final requestTimer = Stopwatch()..start();
-    final device = await _deviceRegistration.ensureRequestDevice();
-    // 一次安装的所有接口共用身份；签名与实际视频请求使用完全相同的 URL。
+    // 恢复设备改造前的解析参数；同一次解析及其兼容请求共用临时编号。
+    final iid = _randomNumericId(19);
+    final deviceId = _randomNumericId(16);
     final fullUrl = Uri.https(
       ApiConfig.fqVideoHost,
       ApiConfig.fqVideoPath,
       {
-        'iid': device.installId,
-        'device_id': device.deviceId,
+        'iid': iid,
+        'device_id': deviceId,
         'aid': ApiConfig.fqAid,
         'version_code': '72132',
         'version_name': '7.2.1.32',
         'update_version_code': '72132',
-        'device_brand': device.deviceBrand,
-        'device_type': device.deviceModel,
-        'os_version': device.osVersion,
+        'device_brand': 'Xiaomi',
+        'os_version': '13',
         'device_platform': 'android',
-        'cdid': device.cdid,
+        'cdid': '75e2081b-d8bf-4767-91e8-3424546b4d2e',
       },
     ).toString();
 
-    final candidates = await _requestFqVideoModel(videoId, fullUrl, device);
+    final candidates = await _requestFqVideoModel(videoId, fullUrl);
     final items = candidates.where((item) => !_isByteVc2(item)).toList();
     if (items.length == candidates.length) return items;
 
@@ -364,7 +269,6 @@ class ApiClient {
       final legacyItems = await _requestFqVideoModel(
         videoId,
         legacyUrl,
-        device,
         cancelToken: legacyCancel,
       ).timeout(legacyTimeout, onTimeout: () {
         legacyCancel.cancel('兼容视频补充请求超时');
@@ -395,8 +299,32 @@ class ApiClient {
 
   Future<List<FqVideoItem>> _requestFqVideoModel(
     String videoId,
-    String fullUrl,
-    RegisteredDevice device, {
+    String fullUrl, {
+    CancelToken? cancelToken,
+  }) async {
+    try {
+      return await _requestFqVideoModelAtHost(
+        videoId,
+        fullUrl,
+        cancelToken: cancelToken,
+      );
+    } on _EmptyVideoResponseException {
+      // 部分视频域名会返回 HTTP 200 空响应；切换域名后重新签名，
+      // 保留本次解析的临时参数。
+      final fallbackUrl = Uri.parse(fullUrl)
+          .replace(host: ApiConfig.fqVideoFallbackHost)
+          .toString();
+      return _requestFqVideoModelAtHost(
+        videoId,
+        fallbackUrl,
+        cancelToken: cancelToken,
+      );
+    }
+  }
+
+  Future<List<FqVideoItem>> _requestFqVideoModelAtHost(
+    String videoId,
+    String fullUrl, {
     CancelToken? cancelToken,
   }) async {
     // 1. 获取算法签名
@@ -406,7 +334,6 @@ class ApiClient {
       cancelToken: cancelToken,
       options: Options(
         headers: {'Content-Type': 'application/json'},
-        extra: {DeviceRequestInterceptor.deviceSnapshotKey: device},
       ),
     );
     final signDecoded = _asJsonMap(signResponse.data);
@@ -417,9 +344,8 @@ class ApiClient {
 
     // 2. 请求番茄视频API
     final fqHeaders = <String, String>{
-      'Host': ApiConfig.fqVideoHost,
-      'user-agent': _videoUserAgent(fullUrl),
-      'Cookie': 'install_id=${Uri.parse(fullUrl).queryParameters['iid']}',
+      'Host': Uri.parse(fullUrl).host,
+      'user-agent': ApiConfig.fqUserAgent,
       'content-type': 'application/json; charset=utf-8',
       'accept': 'application/json; charset=utf-8,application/x-protobuf',
       'x-ss-dp': ApiConfig.fqAid,
@@ -453,7 +379,12 @@ class ApiClient {
       cancelToken: cancelToken,
       options: Options(headers: fqHeaders),
     );
-    final fqDecoded = _asJsonMap(fqResponse.data);
+    final responseData = fqResponse.data;
+    if (responseData == null ||
+        (responseData is String && responseData.trim().isEmpty)) {
+      throw _EmptyVideoResponseException();
+    }
+    final fqDecoded = _asJsonMap(responseData);
     if (fqDecoded['code'] != 0) {
       throw ApiException('获取视频信息失败: ${fqDecoded['message'] ?? ''}');
     }
@@ -491,12 +422,14 @@ class ApiClient {
     return items;
   }
 
-  String _videoUserAgent(String url) {
-    final query = Uri.parse(url).queryParameters;
-    return 'com.dragon.read/72132 (Linux; U; Android ${query['os_version']}; '
-        'zh_CN; ${query['device_type']}; Build/TKQ1.221114.001; '
-        'Cronet/TTNetVersion:04657795 2026-01-23 '
-        'QuicVersion:c67e9834 2025-09-08)';
+  static final Random _idRandom = Random();
+
+  String _randomNumericId(int length) {
+    final buffer = StringBuffer()..write(1 + _idRandom.nextInt(9));
+    for (var i = 1; i < length; i++) {
+      buffer.write(_idRandom.nextInt(10));
+    }
+    return buffer.toString();
   }
 
   /// 请求服务端解密spade_a获取AES key
@@ -504,7 +437,9 @@ class ApiClient {
     final response = await _dio.post(
       ApiConfig.algorithmSpade,
       data: {'spade_a': spadeA},
-      options: Options(headers: {'Content-Type': 'application/json'}),
+      options: Options(
+        headers: {'Content-Type': 'application/json'},
+      ),
     );
     final decoded = _asJsonMap(response.data);
     if (decoded['code'] != 0) {

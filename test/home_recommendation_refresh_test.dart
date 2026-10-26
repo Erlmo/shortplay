@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:shortplay/models/drama.dart';
 import 'package:shortplay/pages/home/home_drama_card.dart';
@@ -15,31 +16,15 @@ import 'package:shortplay/services/download_service.dart';
 class _HomeApi extends ApiClient {
   _HomeApi({this.hasMore = false}) : super(baseUrl: 'https://home.test') {
     dio.interceptors.add(InterceptorsWrapper(onRequest: (request, handler) {
-      if (request.path != '/nove/playback/report') {
-        handler.reject(DioException(
-          requestOptions: request,
-          error: StateError('未预期的网络请求: ${request.path}'),
-        ));
-        return;
-      }
-      acceptedReports++;
-      handler.resolve(Response(
+      handler.reject(DioException(
         requestOptions: request,
-        statusCode: 200,
-        data: {
-          'code': 0,
-          'data': {
-            'accepted': true,
-            'count': ((request.data as Map)['books'] as List).length,
-          },
-        },
+        error: StateError('未预期的网络请求: ${request.path}'),
       ));
     }));
   }
 
   final bool hasMore;
   final homeRequests = <({int? offset, String? sessionId})>[];
-  int acceptedReports = 0;
   String recommendationLabel = '原推荐';
 
   @override
@@ -125,15 +110,6 @@ List<String> _visibleDramaNames(WidgetTester tester) => tester
     .map((card) => card.drama.name)
     .toList();
 
-Future<void> _queueWatch(_HomeApi api) => api.playbackReports.checkpoint(
-      bookId: '123',
-      itemId: '456',
-      positionMs: 15000,
-      playedDeltaMs: 5000,
-      vidIndex: 1,
-      timestampMs: 10000,
-    );
-
 void _openPlayer(GlobalKey<NavigatorState> navigator) {
   navigator.currentState!.push(MaterialPageRoute<void>(
     builder: (_) => const Scaffold(body: Text('播放页')),
@@ -141,9 +117,12 @@ void _openPlayer(GlobalKey<NavigatorState> navigator) {
 }
 
 void main() {
-  setUp(() => DeviceProfile.isTv = false);
+  setUp(() {
+    DeviceProfile.isTv = false;
+    SharedPreferences.setMockInitialValues({});
+  });
 
-  testWidgets('播放期间观看上报成功，返回首页保留原列表和滚动位置', (tester) async {
+  testWidgets('从播放页返回首页保留原列表和滚动位置', (tester) async {
     final api = _HomeApi();
     final downloads = DownloadService(
         apiClient: api, documentsDirectory: () async => Directory.systemTemp);
@@ -161,11 +140,6 @@ void main() {
 
       _openPlayer(navigator);
       await tester.pumpAndSettle();
-      await tester.runAsync(() async {
-        await _queueWatch(api);
-        await api.playbackReports.flush(force: true);
-      });
-      expect(api.acceptedReports, 1);
       api.recommendationLabel = '新推荐';
       expect(api.homeRequests, hasLength(1));
 
@@ -181,7 +155,7 @@ void main() {
     }
   });
 
-  testWidgets('返回首页后观看记录确认及回前台不刷新，手动刷新才更新推荐', (tester) async {
+  testWidgets('返回首页和回前台不刷新，手动刷新才更新推荐', (tester) async {
     final api = _HomeApi();
     final downloads = DownloadService(
         apiClient: api, documentsDirectory: () async => Directory.systemTemp);
@@ -195,17 +169,13 @@ void main() {
       final original = _visibleDramaNames(tester);
       _openPlayer(navigator);
       await tester.pumpAndSettle();
-      await tester.runAsync(() => _queueWatch(api));
-      expect(api.acceptedReports, 0);
 
       navigator.currentState!.pop();
       await tester.pumpAndSettle();
       api.recommendationLabel = '新推荐';
-      await tester.runAsync(() => api.playbackReports.flush(force: true));
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await tester.pumpAndSettle();
-      expect(api.acceptedReports, 1);
       expect(api.homeRequests, hasLength(1));
       expect(_homeScroll(tester).offset, offset);
       expect(_visibleDramaNames(tester), original);
@@ -239,10 +209,6 @@ void main() {
       expect(api.homeRequests, [(offset: null, sessionId: null)]);
       _openPlayer(navigator);
       await tester.pumpAndSettle();
-      await tester.runAsync(() async {
-        await _queueWatch(api);
-        await api.playbackReports.flush(force: true);
-      });
       navigator.currentState!.pop();
       await tester.pumpAndSettle();
       expect(api.homeRequests, hasLength(1));

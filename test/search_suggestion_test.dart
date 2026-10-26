@@ -15,8 +15,6 @@ import 'package:shortplay/pages/search_results_page.dart';
 import 'package:shortplay/services/api_client.dart';
 import 'package:shortplay/services/device_profile.dart';
 
-import 'support/registered_device.dart';
-
 class _Adapter implements HttpClientAdapter {
   RequestOptions? request;
   Object payload = {'code': 0, 'data': _data('万妖')};
@@ -86,7 +84,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUp(() {
     DeviceProfile.isTv = false;
-    seedRegisteredDevice();
+    SharedPreferences.setMockInitialValues({});
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
             const MethodChannel('shortplay/native_player'), (_) async => null);
@@ -104,13 +102,8 @@ void main() {
           ..httpClientAdapter = adapter);
     addTearDown(() => api.dio.close(force: true));
     final result = await api.fetchSearchSuggestions(' 万妖 ');
-    expect(adapter.request!.uri.origin, 'http://127.0.0.1:8765');
-    expect(adapter.request!.uri.path, '/nove/search/suggest');
-    expect(adapter.request!.uri.queryParameters, {
-      'key': '万妖',
-      'source': 'hongguo_comic',
-      'client_device': testRegisteredDeviceJson,
-    });
+    expect(adapter.request!.uri.toString(),
+        'http://127.0.0.1:8765/nove/search/suggest?key=%E4%B8%87%E5%A6%96&source=hongguo_comic');
     expect(result.query, '万妖');
     final item = result.items.single;
     expect(item.name, '万妖图录传');

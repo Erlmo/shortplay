@@ -14,8 +14,6 @@ import 'package:shortplay/pages/search_results_page.dart';
 import 'package:shortplay/services/api_client.dart';
 import 'package:shortplay/services/device_profile.dart';
 
-import 'support/registered_device.dart';
-
 class _SearchApiClient extends ApiClient {
   final List<String> queries = [];
   final List<String> directoryRequests = [];
@@ -65,7 +63,7 @@ void main() {
   late _SearchApiClient client;
   setUp(() {
     DeviceProfile.isTv = true;
-    seedRegisteredDevice({
+    SharedPreferences.setMockInitialValues({
       'global_search_history': ['历史短剧一', '历史短剧二'],
     });
     client = _SearchApiClient();
@@ -78,7 +76,7 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
             const MethodChannel('shortplay/native_player'), null);
-    client.dispose();
+    client.dio.close(force: true);
   });
 
   Future<void> openSearch(WidgetTester tester) async {

@@ -1,11 +1,8 @@
-import 'dart:async';
-
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import '../../models/drama.dart';
 import '../../services/api_client.dart';
-import '../../services/app_route_observer.dart';
 import '../../services/device_profile.dart';
 import '../../services/download_service.dart';
 import '../../widgets/tv_tap.dart';
@@ -45,7 +42,7 @@ class DramaListTab extends StatefulWidget {
 }
 
 class DramaListTabState extends State<DramaListTab>
-    with AutomaticKeepAliveClientMixin, RouteAware, WidgetsBindingObserver {
+    with AutomaticKeepAliveClientMixin {
   final List<Drama> _dramas = [];
   bool _isLoading = false;
   bool _hasMore = true;
@@ -58,7 +55,6 @@ class DramaListTabState extends State<DramaListTab>
   static const _tvInitialItemTarget = 24;
   static const _tvInitialPageLimit = 6;
   final _scrollController = ScrollController();
-  bool _deviceDirty = false;
 
   // Filter state
   String _currentType = 'all';
@@ -75,68 +71,15 @@ class DramaListTabState extends State<DramaListTab>
   @override
   void initState() {
     super.initState();
-    widget.apiClient.deviceRevision.addListener(_onDeviceChanged);
-    WidgetsBinding.instance.addObserver(this);
     _loadData();
     _scrollController.addListener(_onScroll);
   }
 
   @override
   void dispose() {
-    widget.apiClient.deviceRevision.removeListener(_onDeviceChanged);
-    appRouteObserver.unsubscribe(this);
-    WidgetsBinding.instance.removeObserver(this);
     _requestGeneration++;
     _scrollController.dispose();
     super.dispose();
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final route = ModalRoute.of(context);
-    if (route is PageRoute) appRouteObserver.subscribe(this, route);
-  }
-
-  @override
-  void didUpdateWidget(covariant DramaListTab oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.apiClient != widget.apiClient) {
-      oldWidget.apiClient.deviceRevision.removeListener(_onDeviceChanged);
-      widget.apiClient.deviceRevision.addListener(_onDeviceChanged);
-    }
-  }
-
-  void _onDeviceChanged() {
-    // 默认设备的游标不能交给独立设备；正在返回的旧页也不能追加进新列表。
-    _requestGeneration++;
-    _sessionId = null;
-    _nextOffset = null;
-    _loadedOffsets.clear();
-    _initialPrefetchRunning = false;
-    _isLoading = false;
-    _hasMore = true;
-    _deviceDirty = true;
-    _refreshDeviceIfVisible();
-  }
-
-  void _refreshDeviceIfVisible() {
-    if (!mounted || !_deviceDirty) return;
-    final lifecycle = WidgetsBinding.instance.lifecycleState;
-    if (ModalRoute.of(context)?.isCurrent != true ||
-        (lifecycle != null && lifecycle != AppLifecycleState.resumed)) {
-      return;
-    }
-    _deviceDirty = false;
-    unawaited(_loadData(preserveItems: true));
-  }
-
-  @override
-  void didPopNext() => _refreshDeviceIfVisible();
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _refreshDeviceIfVisible();
   }
 
   void _onScroll() {
@@ -151,12 +94,11 @@ class DramaListTabState extends State<DramaListTab>
     }
   }
 
-  Future<void> _loadData({bool preserveItems = false}) async {
-    _deviceDirty = false;
+  Future<void> _loadData() async {
     final generation = ++_requestGeneration;
     _initialPrefetchRunning = true;
     setState(() {
-      if (!preserveItems) _dramas.clear();
+      _dramas.clear();
       _loadedOffsets.clear();
       _sessionId = null;
       _nextOffset = null;
@@ -167,8 +109,7 @@ class DramaListTabState extends State<DramaListTab>
 
     var pageCount = 0;
     do {
-      final loaded = await _fetchPage(generation,
-          replaceItems: preserveItems && pageCount == 0);
+      final loaded = await _fetchPage(generation);
       if (!mounted || generation != _requestGeneration) return;
       pageCount++;
       if (!loaded ||
@@ -187,7 +128,7 @@ class DramaListTabState extends State<DramaListTab>
     await _fetchPage(_requestGeneration);
   }
 
-  Future<bool> _fetchPage(int generation, {bool replaceItems = false}) async {
+  Future<bool> _fetchPage(int generation) async {
     final offset = _nextOffset;
     final sessionId = _sessionId;
     final type = _currentType;
@@ -205,7 +146,6 @@ class DramaListTabState extends State<DramaListTab>
       );
       if (!mounted || generation != _requestGeneration) return false;
       setState(() {
-        if (replaceItems) _dramas.clear();
         if (DeviceProfile.isTv) {
           // 不把接口偶尔重复的同一作品计入电视首屏的补充目标。
           final ids = _dramas.map((drama) => drama.id).toSet();

@@ -95,7 +95,6 @@ extension _PlayerPlayback on _PlayerPageState {
 
   Future<void> _openEpisode(int index, {int? initialSeekMs}) async {
     if (_sleepStopped || index < 0 || index >= _episodes.length) return;
-    _finishWatchSession();
     final reqId = ++_requestId;
     _errorMessage = null;
     if (_preparingPlayer != null) {
@@ -288,7 +287,6 @@ extension _PlayerPlayback on _PlayerPageState {
 
   /// 新的一集开始播放后的公共收尾：订阅、弹幕、预热、预取下一季、记历史。
   void _onEpisodeStarted(NativePlayer player, int reqId, int? initialSeekMs) {
-    _beginWatchSession(player, initialSeekMs);
     _setupSubscriptions(player, reqId);
     _danmakuController.clearComments();
     _loadDanmaku(positionMs: initialSeekMs);
@@ -326,45 +324,25 @@ extension _PlayerPlayback on _PlayerPageState {
   void _setupSubscriptions(NativePlayer player, int reqId) {
     _errorSub = player.errorStream.listen((message) {
       if (!mounted || reqId != _requestId) return;
-      _finishWatchSession();
       _failLoading('播放失败: $message');
     });
     _positionSub = player.positionStream.listen((pos) {
       if (reqId != _requestId) return;
       positionMsNotifier.value = pos.inMilliseconds;
-      _watchSession?.position(pos.inMilliseconds);
-      if (!_watchTailCheckpointed &&
-          player.duration > Duration.zero &&
-          player.duration.inMilliseconds - pos.inMilliseconds <= 500) {
-        _watchTailCheckpointed = true;
-        _checkpointWatch();
-      }
       _checkPreloadThresholds(pos, player.duration);
       if (player.playing) _maybeSaveHistoryPeriodically();
     });
     _playingSub = player.playingStream.listen((playing) {
       if (reqId != _requestId) return;
       playingNotifier.value = playing;
-      _sampleWatchPosition();
-      _syncWatchState();
-      if (!playing) _checkpointWatch();
     });
     _completedSub = player.completedStream.listen((completed) {
       if (reqId != _requestId) return;
-      if (completed) {
-        _finishWatchSession(finalPositionMs: player.duration.inMilliseconds);
-        _onAutoNext();
-      }
+      if (completed) _onAutoNext();
     });
     _durationSub = player.durationStream.listen((dur) {
       if (reqId != _requestId) return;
       durationMsNotifier.value = dur.inMilliseconds;
-    });
-    _bufferingSub = player.bufferingStream.listen((buffering) {
-      if (reqId != _requestId) return;
-      _sampleWatchPosition();
-      _syncWatchState();
-      if (buffering) _checkpointWatch();
     });
   }
 
@@ -374,7 +352,6 @@ extension _PlayerPlayback on _PlayerPageState {
     _completedSub?.cancel();
     _errorSub?.cancel();
     _durationSub?.cancel();
-    _bufferingSub?.cancel();
   }
 
   void _checkPreloadThresholds(Duration position, Duration duration) {
@@ -455,7 +432,6 @@ extension _PlayerPlayback on _PlayerPageState {
 
   void _stopForSleep() {
     if (!mounted) return;
-    _finishWatchSession();
     if (!_sleepStopped) {
       _sleepPositionMs = _playerInitialized ? positionMsNotifier.value : 0;
     }

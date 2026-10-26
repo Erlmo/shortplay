@@ -95,7 +95,6 @@ extension _PlayerSeasons on _PlayerPageState {
 
   Future<void> _switchSeason(DramaSeason season) async {
     if (!mounted || isOfflinePlayback || season.id == _drama.id) return;
-    _finishWatchSession();
     if (_playerInitialized) _saveHistory();
     ++_requestId;
     ++_catalogRequestId;

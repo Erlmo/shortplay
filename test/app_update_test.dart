@@ -14,8 +14,6 @@ import 'package:shortplay/services/app_update_service.dart';
 import 'package:shortplay/services/device_profile.dart';
 import 'package:shortplay/widgets/app_update_gate.dart';
 
-import 'support/registered_device.dart';
-
 const _release = AppUpdate(
   version: '3.2.1',
   releaseNotes: '改善使用体验',
@@ -128,11 +126,7 @@ void main() {
       addTearDown(() => dio.close(force: true));
       dio.httpClientAdapter = _Adapter((options) {
         expect(options.path, '/update/check');
-        expect(options.queryParameters, {
-          'device': device,
-          'version': '3.2.0',
-          'client_device': testRegisteredDeviceJson,
-        });
+        expect(options.queryParameters, {'device': device, 'version': '3.2.0'});
         return ResponseBody.fromString(
             jsonEncode({
               'code': 0,
