@@ -73,32 +73,64 @@ class _ShareLinkPageState extends State<ShareLinkPage> {
       _error = null;
     });
     try {
-      // 传入整段分享内容，由现有接口处理短链接、口令及平台差异。
-      final info = await widget.apiClient.fetchShareInfo(text);
+      // 鸿蒙版红果分享出来的是长链（video-animation-share?...video_id=&vid=），
+      // 服务端 POST /nove/share 只认安卓版的短链，长链会解析失败。
+      // 所以先在本地把 id 提出来当候选（短链会跟随 302 拿真实长链），
+      // 逐个试 /nove/directory：能取到集数（book_info）的那个才是剧目标识，
+      // 另一个多半是集 id。
+      final localIds = await ShareLinkResolver.resolveLocalIds(text);
+      var videoId = '';
+      String? title;
+      Drama? detail;
+
+      for (final candidate in localIds) {
+        Drama? probe;
+        try {
+          probe = await widget.apiClient
+              .fetchBookInfo(candidate)
+              .timeout(const Duration(seconds: 6));
+        } catch (_) {
+          probe = null;
+        }
+        if (probe != null && probe.id > 0) {
+          videoId = candidate;
+          detail = probe;
+          title = probe.name;
+          break;
+        }
+      }
+
+      // 本地提不出可用 id 时，回落到服务端解析（安卓短链走这条）。
+      if (videoId.isEmpty) {
+        // 传入整段分享内容，由现有接口处理短链接、口令及平台差异。
+        final info = await widget.apiClient.fetchShareInfo(text);
+        videoId = info.videoId;
+        title = info.title;
+        // 顺便取一次详情：封面、简介、标签等，播放页 / 选集面板 / 观看历史 /
+        // 离线缓存都会用到。取不到（超时、旧版服务端、漫剧等）就退回只有剧名的壳。
+        try {
+          detail = await widget.apiClient
+              .fetchBookInfo(info.videoId)
+              .timeout(const Duration(seconds: 6));
+        } catch (_) {
+          detail = null;
+        }
+      }
+
       // 返回动画结束前 State 仍 mounted，此时也不能再打开结果页。
       if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
-      final id = int.tryParse(info.videoId);
+      final id = int.tryParse(videoId);
       if (id == null || id <= 0) {
         throw ApiException('未识别到有效短剧，请检查分享内容后重试');
       }
-      final title = info.title?.trim();
-      // 顺便取一次详情：封面、简介、标签等，播放页 / 选集面板 / 观看历史 /
-      // 离线缓存都会用到。取不到（超时、旧版服务端、漫剧等）就退回只有剧名的壳。
-      Drama? detail;
-      try {
-        detail = await widget.apiClient
-            .fetchBookInfo(info.videoId)
-            .timeout(const Duration(seconds: 6));
-      } catch (_) {
-        detail = null;
-      }
+      final titleText = title?.trim();
       if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
       final drama = detail != null && detail.id == id
           ? detail
           : Drama(
               id: id,
-              name: title != null && title.isNotEmpty
-                  ? title
+              name: titleText != null && titleText.isNotEmpty
+                  ? titleText
                   : ShareLinkResolver.extractTitle(text) ?? '分享短剧',
               actors: '',
               cover: '',
@@ -108,12 +140,30 @@ class _ShareLinkPageState extends State<ShareLinkPage> {
               updateTime: '',
               isTheaterResource: true,
             );
+      // 分享的是某一集时（vid 对得上分集 item_id），直接跳到那一集。
+      var initialEpisodeIndex = 0;
+      if (localIds.isNotEmpty) {
+        try {
+          final episodes = await widget.apiClient.fetchTheaterEpisodes('$id');
+          for (final candidate in localIds) {
+            final index =
+                episodes.chapters.indexWhere((c) => c.itemId == candidate);
+            if (index >= 0) {
+              initialEpisodeIndex = index;
+              break;
+            }
+          }
+        } catch (_) {
+          // 取不到分集就从头播，不影响主流程。
+        }
+      }
+      if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
       await Navigator.of(context).push<void>(MaterialPageRoute(
         builder: (_) => PlayerPage(
           drama: drama,
           apiClient: widget.apiClient,
           downloadService: widget.downloadService,
-          initialEpisodeIndex: 0,
+          initialEpisodeIndex: initialEpisodeIndex,
         ),
       ));
     } on ApiException catch (error) {
