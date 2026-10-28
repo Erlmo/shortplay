@@ -11,6 +11,9 @@ class FqVideoItem {
     required this.kid,
     required this.codec,
     this.posterUrl = '',
+    this.decryptKey = '',
+    this.expiresAt,
+    this.cacheable = true,
   });
 
   final String url;
@@ -22,8 +25,15 @@ class FqVideoItem {
   final String kid;
   final String codec;
   String posterUrl;
+  final String decryptKey;
+  final DateTime? expiresAt;
+  final bool cacheable;
 
   factory FqVideoItem.fromJson(Map<String, dynamic> json) {
+    final seconds = json['expire_time'];
+    final expiresAt = seconds is int && seconds > 0
+        ? DateTime.fromMillisecondsSinceEpoch(seconds * 1000, isUtc: true)
+        : null;
     // Format A: nested video_meta + encrypt_info (array format)
     final meta = json['video_meta'] as Map<String, dynamic>?;
     final enc = json['encrypt_info'] as Map<String, dynamic>?;
@@ -38,6 +48,9 @@ class FqVideoItem {
         spadeA: enc?['spade_a']?.toString() ?? '',
         kid: enc?['kid']?.toString() ?? '',
         codec: meta['codec_type']?.toString() ?? '',
+        decryptKey: json['decrypt_key']?.toString() ?? '',
+        expiresAt: expiresAt,
+        cacheable: json['cacheable'] != false,
       );
     }
 
@@ -58,6 +71,9 @@ class FqVideoItem {
       spadeA: json['spade_a']?.toString() ?? '',
       kid: json['kid']?.toString() ?? '',
       codec: json['codec_type']?.toString() ?? '',
+      decryptKey: json['decrypt_key']?.toString() ?? '',
+      expiresAt: expiresAt,
+      cacheable: json['cacheable'] != false,
     );
   }
 }

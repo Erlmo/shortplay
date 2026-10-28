@@ -24,6 +24,7 @@ class TheaterVideoPreloadManager {
       _selectedDefinitions[videoId] ?? '';
 
   Future<List<String>> availableDefinitions(String videoId) async {
+    _discardExpired(videoId);
     final items = _videoItems[videoId] ??
         await apiClient
             .fetchFqVideoModel(videoId)
@@ -93,6 +94,7 @@ class TheaterVideoPreloadManager {
     _preloadedUrls.removeWhere((videoId, _) => drop(videoId));
     _sourceUrls.removeWhere((videoId, _) => drop(videoId));
     _resolved.removeWhere((videoId, _) => drop(videoId));
+    _videoItems.removeWhere((videoId, _) => drop(videoId));
     _fullPrewarmed.removeWhere(drop);
     _headerPrewarmed.removeWhere(drop);
     _preloadingEpisodeIndexes.clear();
@@ -105,6 +107,7 @@ class TheaterVideoPreloadManager {
     final nextIndex = currentIndex + 1;
     if (nextIndex >= episodes.length) return true;
     final videoId = episodes[nextIndex].url.trim();
+    _discardExpired(videoId);
     return videoId.isNotEmpty && _preloadedUrls.containsKey(videoId);
   }
 
@@ -114,6 +117,7 @@ class TheaterVideoPreloadManager {
     String videoId, {
     int maxRetries = 3,
   }) async {
+    _discardExpired(videoId);
     final cached = _resolved[videoId];
     if (cached != null) return cached;
     final fresh = await _resolveVideoWithRetry(videoId, maxRetries: maxRetries);
@@ -128,6 +132,7 @@ class TheaterVideoPreloadManager {
     required int episodeIndex,
     int maxRetries = 3,
   }) async {
+    _discardExpired(videoId);
     if (_resolved.containsKey(videoId)) {
       debugPrint('使用预加载缓存，秒开');
     }
@@ -285,10 +290,12 @@ class TheaterVideoPreloadManager {
       '选择画质: ${selected.definition} ${selected.width}x${selected.height} codec=${selected.codec}',
     );
 
-    final key = await apiClient
-        .fetchDecryptKey(selected.spadeA)
-        .timeout(const Duration(seconds: 5));
-    debugPrint('获取key成功: ${key.substring(0, 8)}...');
+    final key = selected.decryptKey.isNotEmpty
+        ? selected.decryptKey
+        : await apiClient
+            .fetchDecryptKey(selected.spadeA)
+            .timeout(const Duration(seconds: 5));
+    debugPrint('获取视频解密参数成功');
 
     // Decrypt in the player IO pipeline via the native crypto:// protocol
     // (no localhost proxy).
@@ -299,7 +306,28 @@ class TheaterVideoPreloadManager {
       proxyUrl: playUrl,
       sourceUrl: selected.url,
       key: key,
+      expiresAt: selected.expiresAt,
+      cacheable: selected.cacheable,
     );
+  }
+
+  void _discardExpired(String videoId) {
+    bool expired(DateTime? time) =>
+        time != null &&
+        !time.isAfter(DateTime.now().add(const Duration(seconds: 30)));
+    final resolved = _resolved[videoId];
+    final items = _videoItems[videoId];
+    if ((resolved != null &&
+            (!resolved.cacheable || expired(resolved.expiresAt))) ||
+        (items != null &&
+            items.any((item) => !item.cacheable || expired(item.expiresAt)))) {
+      _resolved.remove(videoId);
+      _videoItems.remove(videoId);
+      _preloadedUrls.remove(videoId);
+      _sourceUrls.remove(videoId);
+      _fullPrewarmed.remove(videoId);
+      _headerPrewarmed.remove(videoId);
+    }
   }
 
   FqVideoItem _selectBestVideo(List<FqVideoItem> items) {
@@ -320,9 +348,13 @@ class _ResolvedTheaterVideo {
     required this.proxyUrl,
     required this.sourceUrl,
     required this.key,
+    this.expiresAt,
+    this.cacheable = true,
   });
 
   final String proxyUrl;
   final String sourceUrl;
   final String key;
+  final DateTime? expiresAt;
+  final bool cacheable;
 }

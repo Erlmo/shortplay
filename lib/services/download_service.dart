@@ -518,9 +518,11 @@ class DownloadService extends ChangeNotifier {
     final selected = items.firstWhere((item) => item.definition == '1080p',
         orElse: () => items.firstWhere((item) => item.definition == '720p',
             orElse: () => items.last));
-    final key = await apiClient
-        .fetchDecryptKey(selected.spadeA)
-        .timeout(const Duration(seconds: 5));
+    final key = selected.decryptKey.isNotEmpty
+        ? selected.decryptKey
+        : await apiClient
+            .fetchDecryptKey(selected.spadeA)
+            .timeout(const Duration(seconds: 5));
     return DownloadResolveResult(cdnUrl: selected.url, keyHex: key);
   }
 

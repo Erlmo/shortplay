@@ -17,7 +17,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
 # iOS 保持 3.2.0；Android 的独立版本号在 android/app/build.gradle 中设置。
-version: 3.2.0+19
+version: 3.2.0+23
 
 environment:
   sdk: ^3.6.2

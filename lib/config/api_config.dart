@@ -16,15 +16,9 @@ class ApiConfig {
   static const String noveShare = '/nove/share';
   static const String appUpdate = '/update/check';
 
-  // 番茄视频API配置
-  static const String fqVideoHost = 'api3-normal-lf.fqnovel.com';
-  static const String fqVideoFallbackHost = 'reading.snssdk.com';
-  static const String fqVideoPath = '/novel/player/video_model/v1/';
-  static const String algorithmSign = '/algorithm/sign';
+  // 服务端统一解析视频，客户端只提交视频ID。
+  static const String algorithmVideo = '/algorithm/video';
   static const String algorithmSpade = '/algorithm/spade';
-  static const String fqUserAgent =
-      'com.dragon.read/72132 (Linux; U; Android 13; zh_CN; Mi 10; Build/TKQ1.221114.001; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)';
-  static const String fqAid = '1967';
 
   // 超时配置
   static const Duration connectTimeout = Duration(seconds: 30);

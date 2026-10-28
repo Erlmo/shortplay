@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 
 import 'package:dio/dio.dart';
 
@@ -29,15 +28,13 @@ class ApiException implements Exception {
   String toString() => 'ApiException(message: $message, code: $code)';
 }
 
-class _EmptyVideoResponseException extends ApiException {
-  _EmptyVideoResponseException() : super('视频服务暂时返回空数据，请稍后重试');
-}
-
 class ApiClient {
   ApiClient({
     Dio? dio,
     String? baseUrl,
-  }) : _dio = dio ??
+    DateTime Function()? clock,
+  })  : _clock = clock ?? DateTime.now,
+        _dio = dio ??
             Dio(
               BaseOptions(
                 baseUrl: baseUrl ?? ApiConfig.noveBaseUrl,
@@ -56,8 +53,11 @@ class ApiClient {
   }
 
   final Dio _dio;
+  final DateTime Function() _clock;
   final Map<String, Drama> _dramaCache = {};
   bool _disposed = false;
+  final Map<String, ({String key, DateTime? expire})> _resolvedDecryptKeys = {};
+  final Map<String, Future<List<FqVideoItem>>> _videoRequests = {};
 
   /// 暴露已配置 SignInterceptor 的 Dio，供 ShareLinkResolver 等复用同一签名链路。
   Dio get dio => _dio;
@@ -227,213 +227,89 @@ class ApiClient {
     );
   }
 
-  /// 请求番茄官方API获取加密视频信息
+  /// 视频解析完全由服务端处理；客户端只发送视频ID，视频流仍直连CDN。
   Future<List<FqVideoItem>> fetchFqVideoModel(String videoId) async {
-    final requestTimer = Stopwatch()..start();
-    // 恢复设备改造前的解析参数；同一次解析及其兼容请求共用临时编号。
-    final iid = _randomNumericId(19);
-    final deviceId = _randomNumericId(16);
-    final fullUrl = Uri.https(
-      ApiConfig.fqVideoHost,
-      ApiConfig.fqVideoPath,
-      {
-        'iid': iid,
-        'device_id': deviceId,
-        'aid': ApiConfig.fqAid,
-        'version_code': '72132',
-        'version_name': '7.2.1.32',
-        'update_version_code': '72132',
-        'device_brand': 'Xiaomi',
-        'os_version': '13',
-        'device_platform': 'android',
-        'cdid': '75e2081b-d8bf-4767-91e8-3424546b4d2e',
-      },
-    ).toString();
-
-    final candidates = await _requestFqVideoModel(videoId, fullUrl);
-    final items = candidates.where((item) => !_isByteVc2(item)).toList();
-    if (items.length == candidates.length) return items;
-
-    // 新版参数可能把低清晰度换成 ByteVC2，当前原生播放器不能解码。
-    // 保留兼容的 1080p，再用旧参数补回低清晰度，供播放、菜单及下载共用。
-    final uri = Uri.parse(fullUrl);
-    final legacyQuery = Map<String, String>.of(uri.queryParameters)
-      ..remove('update_version_code');
-    final legacyUrl = uri.replace(queryParameters: legacyQuery).toString();
-    // 调用方的总超时为 10 秒；可选补充最多等 3 秒，并给总预算留出余量。
-    final remainingMs = 9000 - requestTimer.elapsedMilliseconds;
-    if (items.isNotEmpty && remainingMs <= 0) return items;
-    final legacyTimeout = Duration(milliseconds: remainingMs.clamp(1, 3000));
-    final legacyCancel = CancelToken();
+    final id = videoId.trim();
+    if (id.isEmpty) throw ApiException('缺少视频编号');
+    final pending = _videoRequests[id];
+    if (pending != null) return pending;
+    final request = _resolveVideo(id);
+    _videoRequests[id] = request;
     try {
-      final legacyItems = await _requestFqVideoModel(
-        videoId,
-        legacyUrl,
-        cancelToken: legacyCancel,
-      ).timeout(legacyTimeout, onTimeout: () {
-        legacyCancel.cancel('兼容视频补充请求超时');
-        throw TimeoutException('兼容视频补充请求超时', legacyTimeout);
-      });
-      final definitions =
-          items.map((item) => item.definition.trim().toLowerCase()).toSet();
-      for (final item in legacyItems) {
-        if (!_isByteVc2(item) &&
-            definitions.add(item.definition.trim().toLowerCase())) {
-          items.add(item);
+      return await request;
+    } finally {
+      if (identical(_videoRequests[id], request)) _videoRequests.remove(id);
+    }
+  }
+
+  Future<List<FqVideoItem>> _resolveVideo(String videoId) async {
+    try {
+      final response = await _dio.post(
+        ApiConfig.algorithmVideo,
+        data: {'video_id': videoId},
+        options: Options(headers: {'Content-Type': 'application/json'}),
+      );
+      final decoded = _decode(response);
+      final data = _asJsonMap(decoded['data']);
+      final raw = data['streams'];
+      if (raw is! List) throw ApiException('视频解析结果无效');
+      final items = <FqVideoItem>[];
+      for (final entry in raw.whereType<Map>()) {
+        final item = FqVideoItem.fromJson(entry.cast<String, dynamic>());
+        final uri = Uri.tryParse(item.url);
+        if (uri == null ||
+            !['https', 'http'].contains(uri.scheme) ||
+            uri.host.isEmpty ||
+            !RegExp(r'^[0-9a-fA-F]{32}$').hasMatch(item.decryptKey) ||
+            item.spadeA.isEmpty ||
+            item.codec == 'bytevc2' ||
+            item.codec == 'bvc2') {
+          continue;
         }
+        if (item.expiresAt != null && !item.expiresAt!.isAfter(_clock())) {
+          continue;
+        }
+        item.posterUrl = data['poster_url']?.toString() ?? '';
+        items.add(item);
+        _resolvedDecryptKeys.remove(item.spadeA);
+        _resolvedDecryptKeys[item.spadeA] =
+            (key: item.decryptKey, expire: item.expiresAt);
       }
-    } catch (_) {
-      // 补充请求失败时仍可使用首次请求已获得的兼容流。
-      if (items.isEmpty) rethrow;
+      while (_resolvedDecryptKeys.length > 256) {
+        _resolvedDecryptKeys.remove(_resolvedDecryptKeys.keys.first);
+      }
+      if (items.isEmpty) throw ApiException('未获取到有效播放地址');
+      return items;
+    } on DioException catch (error) {
+      if (CancelToken.isCancel(error)) rethrow;
+      final status = error.response?.statusCode;
+      if (status == 404 || status == 405) {
+        throw ApiException('播放解析服务需要更新，请先更新服务端', code: status);
+      }
+      final body = error.response?.data;
+      throw ApiException(
+          body is Map
+              ? body['message']?.toString() ?? '视频解析失败，请稍后重试'
+              : '视频解析失败，请稍后重试',
+          code: status);
+    } on FormatException {
+      throw ApiException('视频解析结果无效');
+    } on TypeError {
+      throw ApiException('视频解析结果无效');
     }
-    if (items.isEmpty) {
-      throw ApiException('当前视频暂无播放器支持的编码');
-    }
-    return items;
-  }
-
-  static bool _isByteVc2(FqVideoItem item) {
-    final codec = item.codec.trim().toLowerCase();
-    return codec == 'bytevc2' || codec == 'bvc2';
-  }
-
-  Future<List<FqVideoItem>> _requestFqVideoModel(
-    String videoId,
-    String fullUrl, {
-    CancelToken? cancelToken,
-  }) async {
-    try {
-      return await _requestFqVideoModelAtHost(
-        videoId,
-        fullUrl,
-        cancelToken: cancelToken,
-      );
-    } on _EmptyVideoResponseException {
-      // 部分视频域名会返回 HTTP 200 空响应；切换域名后重新签名，
-      // 保留本次解析的临时参数。
-      final fallbackUrl = Uri.parse(fullUrl)
-          .replace(host: ApiConfig.fqVideoFallbackHost)
-          .toString();
-      return _requestFqVideoModelAtHost(
-        videoId,
-        fallbackUrl,
-        cancelToken: cancelToken,
-      );
-    }
-  }
-
-  Future<List<FqVideoItem>> _requestFqVideoModelAtHost(
-    String videoId,
-    String fullUrl, {
-    CancelToken? cancelToken,
-  }) async {
-    // 1. 获取算法签名
-    final signResponse = await _dio.post(
-      ApiConfig.algorithmSign,
-      data: {'url': fullUrl},
-      cancelToken: cancelToken,
-      options: Options(
-        headers: {'Content-Type': 'application/json'},
-      ),
-    );
-    final signDecoded = _asJsonMap(signResponse.data);
-    if (signDecoded['code'] != 0) {
-      throw ApiException('算法签名失败');
-    }
-    final signData = signDecoded['data'] as Map<String, dynamic>? ?? {};
-
-    // 2. 请求番茄视频API
-    final fqHeaders = <String, String>{
-      'Host': Uri.parse(fullUrl).host,
-      'user-agent': ApiConfig.fqUserAgent,
-      'content-type': 'application/json; charset=utf-8',
-      'accept': 'application/json; charset=utf-8,application/x-protobuf',
-      'x-ss-dp': ApiConfig.fqAid,
-      'sdk-version': '2',
-    };
-    for (final key in signData.keys) {
-      fqHeaders[key] = signData[key].toString();
-    }
-
-    final body = {
-      'video_id': videoId,
-      'content_type': 1004,
-      'biz_param': {
-        'detail_page_version': 0,
-        'device_level': 3,
-        'disable_digg_stat': false,
-        'disable_video_relate_book': false,
-        'from_video_id': '',
-        'need_all_video_definition': true,
-        'need_mp4_align': false,
-        'source': 4,
-        'use_os_player': false,
-        'use_server_dns': false,
-        'video_platform': 3,
-      },
-    };
-
-    final fqResponse = await _dio.post(
-      fullUrl,
-      data: body,
-      cancelToken: cancelToken,
-      options: Options(headers: fqHeaders),
-    );
-    final responseData = fqResponse.data;
-    if (responseData == null ||
-        (responseData is String && responseData.trim().isEmpty)) {
-      throw _EmptyVideoResponseException();
-    }
-    final fqDecoded = _asJsonMap(responseData);
-    if (fqDecoded['code'] != 0) {
-      throw ApiException('获取视频信息失败: ${fqDecoded['message'] ?? ''}');
-    }
-
-    final data = fqDecoded['data'] as Map<String, dynamic>? ?? {};
-    final videoModelStr = data['video_model']?.toString() ?? '{}';
-    final videoModel = jsonDecode(videoModelStr) as Map<String, dynamic>;
-    final videoListRaw = videoModel['video_list'];
-    final posterUrl = videoModel['poster_url']?.toString() ?? '';
-
-    // video_list can be array or object depending on API version
-    List<Map<String, dynamic>> videoEntries;
-    if (videoListRaw is List) {
-      videoEntries = videoListRaw
-          .whereType<Map>()
-          .map((e) => e.cast<String, dynamic>())
-          .toList();
-    } else if (videoListRaw is Map) {
-      videoEntries = videoListRaw.values
-          .whereType<Map>()
-          .map((e) => e.cast<String, dynamic>())
-          .toList();
-    } else {
-      videoEntries = [];
-    }
-
-    final items = videoEntries
-        .map((item) => FqVideoItem.fromJson(item))
-        .where((v) => v.url.isNotEmpty && v.spadeA.isNotEmpty)
-        .toList();
-
-    for (final item in items) {
-      item.posterUrl = posterUrl;
-    }
-    return items;
-  }
-
-  static final Random _idRandom = Random();
-
-  String _randomNumericId(int length) {
-    final buffer = StringBuffer()..write(1 + _idRandom.nextInt(9));
-    for (var i = 1; i < length; i++) {
-      buffer.write(_idRandom.nextInt(10));
-    }
-    return buffer.toString();
   }
 
   /// 请求服务端解密spade_a获取AES key
   Future<String> fetchDecryptKey(String spadeA) async {
+    final resolved = _resolvedDecryptKeys[spadeA];
+    if (resolved != null) {
+      if (resolved.expire != null && !resolved.expire!.isAfter(_clock())) {
+        _resolvedDecryptKeys.remove(spadeA);
+        throw ApiException('播放地址已过期，请重新解析');
+      }
+      return resolved.key;
+    }
+
     final response = await _dio.post(
       ApiConfig.algorithmSpade,
       data: {'spade_a': spadeA},
