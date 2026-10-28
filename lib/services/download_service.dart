@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../config/api_config.dart';
 import '../models/episode.dart';
 import 'api_client.dart';
 import 'crypto_native_channel.dart';
@@ -513,7 +514,7 @@ class DownloadService extends ChangeNotifier {
   Future<DownloadResolveResult> _resolve(Episode ep) async {
     final items = await apiClient
         .fetchFqVideoModel(ep.url)
-        .timeout(const Duration(seconds: 10));
+        .timeout(ApiConfig.videoResolutionTimeout);
     if (items.isEmpty) throw ApiException('未获取到视频信息');
     final selected = items.firstWhere((item) => item.definition == '1080p',
         orElse: () => items.firstWhere((item) => item.definition == '720p',

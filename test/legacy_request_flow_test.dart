@@ -28,7 +28,7 @@ class _LegacyRequestAdapter implements HttpClientAdapter {
     requests.add(options);
     final Map<String, Object> response;
     switch (options.uri.path) {
-      case ApiConfig.algorithmVideo:
+      case ApiConfig.algorithmVideoRequest:
         response = resolutionResponse().cast<String, Object>();
       case ApiConfig.noveHome:
         response = {
@@ -114,7 +114,7 @@ void main() {
       'device': 'ios',
       'version': '3.2.0+19',
     });
-    expect(adapter.at(ApiConfig.algorithmVideo).single.data,
+    expect(adapter.at(ApiConfig.algorithmVideoRequest).single.data,
         {'video_id': '2234567890'});
     expect(prefs.getString(_oldDeviceCacheKey), oldCache);
     expect(prefs.getKeys(), {_oldDeviceCacheKey});
@@ -125,7 +125,7 @@ void main() {
     final (client, adapter) = _client();
     await client.fetchFqVideoModel('1234567890');
     await client.fetchFqVideoModel('1234567890');
-    final requests = adapter.at(ApiConfig.algorithmVideo);
+    final requests = adapter.at(ApiConfig.algorithmVideoRequest);
     expect(requests, hasLength(2));
     for (final request in requests) {
       expect(request.data, {'video_id': '1234567890'});

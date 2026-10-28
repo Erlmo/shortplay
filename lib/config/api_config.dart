@@ -16,8 +16,11 @@ class ApiConfig {
   static const String noveShare = '/nove/share';
   static const String appUpdate = '/update/check';
 
-  // 服务端统一解析视频，客户端只提交视频ID。
-  static const String algorithmVideo = '/algorithm/video';
+  // 服务端下发请求规则，客户端执行上游请求并回传响应。
+  static const String algorithmVideo = '/algorithm/video'; // 旧包兼容接口。
+  static const String algorithmVideoRequest = '/algorithm/videorequest';
+  static const String algorithmVideoResult = '/algorithm/videoresult';
+  static const Duration videoResolutionTimeout = Duration(seconds: 30);
   static const String algorithmSpade = '/algorithm/spade';
 
   // 超时配置

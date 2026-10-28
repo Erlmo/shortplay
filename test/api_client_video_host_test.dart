@@ -5,7 +5,7 @@ import 'package:shortplay/services/api_client.dart';
 import 'support/video_resolution_adapter.dart';
 
 void main() {
-  test('客户端只向配置的服务端POST视频ID，不再请求设备、签名或上游域名', () async {
+  test('客户端先向配置服务端申请执行配置，不自行构建设备参数和签名', () async {
     final adapter = VideoResolutionAdapter();
     final client = ApiClient(
         dio: Dio()..httpClientAdapter = adapter,
@@ -16,7 +16,7 @@ void main() {
     expect(adapter.requests, hasLength(1));
     final request = adapter.requests.single;
     expect(request.uri.toString(),
-        'https://video-api.example:8443/algorithm/video');
+        'https://video-api.example:8443/algorithm/videorequest');
     expect(request.method, 'POST');
     expect(request.data, {'video_id': '1234567890'});
     expect(request.queryParameters, isEmpty);

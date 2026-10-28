@@ -14,6 +14,7 @@ import '../models/search_suggestion.dart';
 import '../models/search_source.dart';
 import '../models/search_results.dart';
 import '../models/search_series_card.dart';
+import 'video_request_executor.dart';
 import 'sign_interceptor.dart';
 
 export '../models/api_results.dart';
@@ -33,7 +34,9 @@ class ApiClient {
     Dio? dio,
     String? baseUrl,
     DateTime Function()? clock,
-  })  : _clock = clock ?? DateTime.now,
+    VideoRequestExecutor? videoExecutor,
+  })  : _videoExecutor = videoExecutor ?? VideoRequestExecutor(),
+        _clock = clock ?? DateTime.now,
         _dio = dio ??
             Dio(
               BaseOptions(
@@ -53,6 +56,7 @@ class ApiClient {
   }
 
   final Dio _dio;
+  final VideoRequestExecutor _videoExecutor;
   final DateTime Function() _clock;
   final Map<String, Drama> _dramaCache = {};
   bool _disposed = false;
@@ -66,6 +70,7 @@ class ApiClient {
     if (_disposed) return;
     _disposed = true;
     _dio.close(force: true);
+    _videoExecutor.dispose();
   }
 
   Future<AppUpdate?> checkAppUpdate({
@@ -227,7 +232,7 @@ class ApiClient {
     );
   }
 
-  /// 视频解析完全由服务端处理；客户端只发送视频ID，视频流仍直连CDN。
+  /// 规则由服务端处理，客户端执行上游请求，使播放地址按客户端网络下发。
   Future<List<FqVideoItem>> fetchFqVideoModel(String videoId) async {
     final id = videoId.trim();
     if (id.isEmpty) throw ApiException('缺少视频编号');
@@ -243,14 +248,34 @@ class ApiClient {
   }
 
   Future<List<FqVideoItem>> _resolveVideo(String videoId) async {
+    final cancel = CancelToken();
+    var timedOut = false;
+    final deadline = Timer(ApiConfig.videoResolutionTimeout, () {
+      timedOut = true;
+      cancel.cancel('播放解析超时');
+    });
     try {
-      final response = await _dio.post(
-        ApiConfig.algorithmVideo,
-        data: {'video_id': videoId},
-        options: Options(headers: {'Content-Type': 'application/json'}),
-      );
-      final decoded = _decode(response);
-      final data = _asJsonMap(decoded['data']);
+      Map<String, dynamic> data = await _videoStep(
+          ApiConfig.algorithmVideoRequest, {'video_id': videoId}, cancel);
+      for (var step = 0;; step++) {
+        if (data['protocol'] != 1) throw ApiException('服务端播放协议不兼容，请更新应用或服务端');
+        if (data['action'] == 'complete') {
+          data = _asJsonMap(data['result']);
+          break;
+        }
+        if (data['action'] != 'request' || step >= 4) {
+          throw ApiException('服务端播放请求次数超出限制');
+        }
+        // 用服务端剩余时长，避免手机时钟偏差误判短期请求已过期。
+        final validFor = data['expires_in_seconds'];
+        if (validFor is! int || validFor <= 0 || validFor > 120) {
+          throw ApiException('播放请求已过期，请重新解析');
+        }
+        final upstream =
+            await _videoExecutor.execute(data, cancelToken: cancel);
+        data =
+            await _videoStep(ApiConfig.algorithmVideoResult, upstream, cancel);
+      }
       final raw = data['streams'];
       if (raw is! List) throw ApiException('视频解析结果无效');
       final items = <FqVideoItem>[];
@@ -281,7 +306,10 @@ class ApiClient {
       if (items.isEmpty) throw ApiException('未获取到有效播放地址');
       return items;
     } on DioException catch (error) {
-      if (CancelToken.isCancel(error)) rethrow;
+      if (CancelToken.isCancel(error)) {
+        if (timedOut) throw ApiException('播放解析超时，请稍后重试');
+        rethrow;
+      }
       final status = error.response?.statusCode;
       if (status == 404 || status == 405) {
         throw ApiException('播放解析服务需要更新，请先更新服务端', code: status);
@@ -296,7 +324,18 @@ class ApiClient {
       throw ApiException('视频解析结果无效');
     } on TypeError {
       throw ApiException('视频解析结果无效');
+    } finally {
+      deadline.cancel();
     }
+  }
+
+  Future<Map<String, dynamic>> _videoStep(
+      String path, Map<String, dynamic> body, CancelToken cancel) async {
+    final response = await _dio.post(path,
+        data: body,
+        cancelToken: cancel,
+        options: Options(headers: {'Content-Type': 'application/json'}));
+    return _asJsonMap(_decode(response)['data']);
   }
 
   /// 请求服务端解密spade_a获取AES key

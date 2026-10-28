@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../config/api_config.dart';
 import '../models/episode.dart';
 import '../models/fq_video.dart';
 import 'api_client.dart';
@@ -28,7 +29,7 @@ class TheaterVideoPreloadManager {
     final items = _videoItems[videoId] ??
         await apiClient
             .fetchFqVideoModel(videoId)
-            .timeout(const Duration(seconds: 10));
+            .timeout(ApiConfig.videoResolutionTimeout);
     _videoItems[videoId] = items;
     return definitionsFor(items);
   }
@@ -278,7 +279,7 @@ class TheaterVideoPreloadManager {
   Future<_ResolvedTheaterVideo> _resolveVideo(String videoId) async {
     final videoItems = await apiClient
         .fetchFqVideoModel(videoId)
-        .timeout(const Duration(seconds: 10));
+        .timeout(ApiConfig.videoResolutionTimeout);
     if (videoItems.isEmpty) {
       throw Exception('未获取到视频信息');
     }
