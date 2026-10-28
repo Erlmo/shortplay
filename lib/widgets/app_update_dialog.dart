@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/app_update.dart';
 import '../services/app_update_service.dart';
+import 'android_app_update_dialog.dart';
 
 class AppUpdateDialog extends StatefulWidget {
   const AppUpdateDialog({
@@ -39,6 +40,10 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.service.usesInAppUpdate) {
+      return AndroidAppUpdateDialog(
+          update: widget.update, service: widget.service);
+    }
     return PopScope(
       canPop: !widget.update.isRequired,
       child: AlertDialog(

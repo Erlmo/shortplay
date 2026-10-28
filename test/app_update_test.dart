@@ -11,7 +11,6 @@ import 'package:shortplay/models/app_update.dart';
 import 'package:shortplay/pages/settings_page.dart';
 import 'package:shortplay/services/api_client.dart';
 import 'package:shortplay/services/app_update_service.dart';
-import 'package:shortplay/services/device_profile.dart';
 import 'package:shortplay/widgets/app_update_gate.dart';
 
 const _release = AppUpdate(
@@ -40,6 +39,10 @@ class _Adapter implements HttpClientAdapter {
 
 class _Updates extends AppUpdateService {
   _Updates(ApiClient client) : super(apiClient: client);
+
+  // 这些用例保留覆盖 iOS 的外部链接更新流程。
+  @override
+  bool get usesInAppUpdate => false;
 
   AppUpdate? available = _release;
   AppUpdate? policy;
@@ -185,9 +188,7 @@ void main() {
     expect(find.text('网络不可用'), findsOneWidget);
   });
 
-  testWidgets('普通更新可稍后，遥控器确认打开链接且打开失败可重试', (tester) async {
-    DeviceProfile.isTv = true;
-    addTearDown(() => DeviceProfile.isTv = false);
+  testWidgets('链接更新可稍后，确认打开链接且打开失败可重试', (tester) async {
     final service = await _openSettings(tester);
     service.openError = ApiException('没有浏览器');
     await tester.tap(find.text('检查更新'));

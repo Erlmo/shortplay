@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -6,12 +8,18 @@ import 'package:package_info_plus/package_info_plus.dart';
 import '../models/app_update.dart';
 import 'api_client.dart';
 
-/// 更新接口只提供链接，点击更新交给系统打开，不在应用内管理安装包。
+/// 安卓手机和 TV 均在应用内下载并交给系统安装；iOS 打开更新链接。
 class AppUpdateService extends ChangeNotifier {
-  AppUpdateService({required this.apiClient});
+  AppUpdateService(
+      {required this.apiClient, Dio Function()? downloadClientFactory})
+      : _downloadClientFactory = downloadClientFactory ?? Dio.new;
 
   static const _channel = MethodChannel('shortplay/update');
   final ApiClient apiClient;
+  final Dio Function() _downloadClientFactory;
+
+  bool get usesInAppUpdate =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
   AppUpdate? _requiredUpdate;
 
   AppUpdate? get requiredUpdate => _requiredUpdate;
@@ -42,6 +50,72 @@ class AppUpdateService extends ChangeNotifier {
     _requiredUpdate = update?.isRequired == true ? update : null;
     notifyListeners();
     return update;
+  }
+
+  Future<String> downloadApk(
+    AppUpdate update, {
+    required CancelToken cancelToken,
+    required void Function(int received, int total) onProgress,
+  }) async {
+    final uri = Uri.tryParse(update.downloadUrl);
+    if (uri == null ||
+        !['http', 'https'].contains(uri.scheme) ||
+        uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty) {
+      throw ApiException('安装包下载地址无效');
+    }
+    if (cancelToken.isCancelled) throw cancelToken.cancelError!;
+    final directory = await _channel.invokeMethod<String>('updateDirectory');
+    if (directory == null || directory.isEmpty) {
+      throw ApiException('无法创建更新下载目录');
+    }
+    final folder = Directory(directory);
+    await folder.create(recursive: true);
+    // 每次下载独立文件，取消后立刻重试不会误删下一次下载的数据。
+    final apk = File(
+        '${folder.path}/update-${DateTime.now().microsecondsSinceEpoch}.apk');
+    final partial = File('${apk.path}.part');
+    final dio = _downloadClientFactory();
+    dio.options.connectTimeout ??= const Duration(seconds: 30);
+    try {
+      await dio.download(
+        update.downloadUrl,
+        partial.path,
+        cancelToken: cancelToken,
+        onReceiveProgress: onProgress,
+        options: Options(
+            followRedirects: true,
+            maxRedirects: 5,
+            receiveTimeout: const Duration(seconds: 30),
+            sendTimeout: const Duration(seconds: 30)),
+      );
+      if (cancelToken.isCancelled) throw cancelToken.cancelError!;
+      if (!await partial.exists() || await partial.length() == 0) {
+        throw ApiException('下载的安装包为空，请重试');
+      }
+      await partial.rename(apk.path);
+      if (cancelToken.isCancelled) throw cancelToken.cancelError!;
+      return apk.path;
+    } catch (_) {
+      if (await partial.exists()) await partial.delete();
+      if (await apk.exists()) await apk.delete();
+      rethrow;
+    } finally {
+      dio.close(force: true);
+    }
+  }
+
+  Future<bool> canInstallApks() async =>
+      await _channel.invokeMethod<bool>('canInstallApks') ?? false;
+
+  /// permission_required 表示已打开安装授权设置，返回 APP 后继续。
+  Future<String> installApk(String path) async {
+    final status =
+        await _channel.invokeMethod<String>('installApk', {'path': path});
+    if (status != 'permission_required' && status != 'installer_opened') {
+      throw ApiException('无法打开系统安装界面');
+    }
+    return status!;
   }
 
   Future<void> openUpdate(AppUpdate update) async {
