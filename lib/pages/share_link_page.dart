@@ -1,9 +1,11 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../models/drama.dart';
 import '../services/api_client.dart';
 import '../services/download_service.dart';
+import '../services/hidden_feed_access.dart';
 import '../services/share_link_resolver.dart';
 import 'player_page.dart';
 
@@ -23,6 +25,7 @@ class ShareLinkPage extends StatefulWidget {
 
 class _ShareLinkPageState extends State<ShareLinkPage> {
   final _controller = TextEditingController();
+  final _verifyCancel = CancelToken();
   bool _resolving = false;
   bool _pasting = false;
   String? _error;
@@ -31,6 +34,7 @@ class _ShareLinkPageState extends State<ShareLinkPage> {
 
   @override
   void dispose() {
+    _verifyCancel.cancel('识别页面关闭');
     _controller.dispose();
     super.dispose();
   }
@@ -73,6 +77,19 @@ class _ShareLinkPageState extends State<ShareLinkPage> {
       _error = null;
     });
     try {
+      // 普通 HTTP 分享链接不增加验证请求；纯文本交由服务端核对口令。
+      if (!RegExp(r'https?://', caseSensitive: false).hasMatch(text)) {
+        final valid = await widget.apiClient
+            .verifyTwixiveAccess(text, cancelToken: _verifyCancel);
+        if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
+        if (valid) {
+          await HiddenFeedAccess().toggle();
+          if (mounted && ModalRoute.of(context)?.isCurrent == true) {
+            Navigator.of(context).pop(true);
+          }
+          return;
+        }
+      }
       // 传入整段分享内容，由现有接口处理短链接、口令及平台差异。
       final info = await widget.apiClient.fetchShareInfo(text);
       // 返回动画结束前 State 仍 mounted，此时也不能再打开结果页。

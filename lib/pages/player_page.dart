@@ -9,12 +9,14 @@ import '../models/drama_season.dart';
 import '../models/episode.dart';
 import '../models/playback_record.dart';
 import '../models/workflow_step.dart';
+import '../models/twixive.dart';
 import '../services/api_client.dart';
 import '../services/app_route_observer.dart';
 import '../services/crypto_native_channel.dart';
 import '../services/device_profile.dart';
 import '../services/download_service.dart';
 import '../services/native_player.dart';
+import '../services/liked_video_store.dart';
 import '../services/offline_playback_cache.dart';
 import '../services/playback_history_store.dart';
 import '../services/player_danmaku_controller.dart';
@@ -52,8 +54,35 @@ class PlayerPage extends StatefulWidget {
     this.prefetchedEpisodes,
     this.preloadManager,
     this.seasons,
+    this.directVideoUrl,
+    this.directVideoMetadata,
   });
 
+  /// 普通 MP4 复用同一播放页；不请求剧集、解析或弹幕，不写历史。
+  factory PlayerPage.direct(
+          {Key? key,
+          required ApiClient apiClient,
+          required String url,
+          String title = '视频播放',
+          String cover = '',
+          TwixiveVideo? video}) =>
+      PlayerPage(
+        key: key,
+        apiClient: apiClient,
+        drama: Drama.fromJson({'id': 0, 'name': title, 'cover': cover}),
+        directVideoUrl: url,
+        directVideoMetadata: video ??
+            TwixiveVideo(
+              id: url,
+              url: url,
+              thumbnail: cover,
+              author:
+                  TwixiveUser(id: '', username: '', name: title, avatar: ''),
+            ),
+      );
+
+  final String? directVideoUrl;
+  final TwixiveVideo? directVideoMetadata;
   final Drama drama;
   final ApiClient apiClient;
   final DownloadService? downloadService;
@@ -137,6 +166,8 @@ class _PlayerPageState extends State<PlayerPage>
   // ─── 播放状态 ──────────────────────────────────────────────────────────
 
   bool _userPaused = false;
+  bool _isLiked = false;
+  bool _savingLike = false;
   bool _pausedByLifecycle = false;
   // 本页被新路由（如再次打开的播放页）覆盖时暂停，新路由弹出回到本页时恢复，
   // 与 _pausedByLifecycle 分开记，避免两套恢复逻辑互相误触发。
@@ -186,6 +217,7 @@ class _PlayerPageState extends State<PlayerPage>
   TheaterVideoPreloadManager get preloadManager => _preloadManager;
   @override
   bool get isOfflinePlayback => widget.offlineEpisodes != null;
+  bool get _isDirectVideo => widget.directVideoUrl != null;
 
   // ─── 生命周期 ──────────────────────────────────────────────────────────
 
@@ -204,13 +236,49 @@ class _PlayerPageState extends State<PlayerPage>
     _preloadManager = widget.preloadManager ??
         TheaterVideoPreloadManager(apiClient: widget.apiClient);
     _danmakuController = PlayerDanmakuController(apiClient: widget.apiClient);
+    if (_isDirectVideo && widget.directVideoMetadata != null) {
+      LikedVideoStore.revision.addListener(_onLikedVideosChanged);
+      _onLikedVideosChanged();
+    }
     _currentEpisodeIndex = widget.initialEpisodeIndex ?? 0;
     _seasons = widget.seasons;
-    if (_seasons == null) unawaited(_loadSeasons());
+    if (!_isDirectVideo && _seasons == null) unawaited(_loadSeasons());
     unawaited(_systemUi.setFullScreen());
     NativePlayer.setKeepScreenOn(true);
     WidgetsBinding.instance.addPostFrameCallback((_) => _flashKeyHint());
     _prepare();
+  }
+
+  void _onLikedVideosChanged() {
+    unawaited(_loadLikedState());
+  }
+
+  Future<void> _loadLikedState() async {
+    final video = widget.directVideoMetadata;
+    if (video == null) return;
+    try {
+      final liked = await LikedVideoStore.contains(video.id);
+      if (mounted) setState(() => _isLiked = liked);
+    } catch (error) {
+      debugPrint('读取喜欢状态失败：$error');
+    }
+  }
+
+  Future<void> _toggleLike() async {
+    final video = widget.directVideoMetadata;
+    if (video == null || _savingLike) return;
+    _savingLike = true;
+    try {
+      final liked = await LikedVideoStore.toggle(video);
+      if (mounted) setState(() => _isLiked = liked);
+    } catch (_) {
+      if (mounted) {
+        showAppNotice(context,
+            message: '喜欢保存失败，请重试', kind: AppNoticeKind.error);
+      }
+    } finally {
+      _savingLike = false;
+    }
   }
 
   void _onSystemUiChanged() {
@@ -256,6 +324,7 @@ class _PlayerPageState extends State<PlayerPage>
   void dispose() {
     // 退出播放页：记下当前集和进度（定时停止时已经保存过）。
     if (_playerInitialized && !_sleepStopped) _saveHistory();
+    LikedVideoStore.revision.removeListener(_onLikedVideosChanged);
     _episodeShrink.dispose();
     appRouteObserver.unsubscribe(this);
     WidgetsBinding.instance.removeObserver(this);

@@ -24,6 +24,23 @@ String _speedLabel(double v) =>
 extension _HgLayouts on PlayerControlsOverlay {
   int get _epNo => episodeNumber ?? currentEpisodeIndex + 1;
 
+  Widget get _likeButton => Semantics(
+        button: true,
+        toggled: isLiked,
+        label: isLiked ? '取消喜欢' : '喜欢',
+        child: Tooltip(
+          message: isLiked ? '取消喜欢' : '喜欢',
+          child: _BareIconButton(
+            icon: isLiked
+                ? Icons.favorite_rounded
+                : Icons.favorite_border_rounded,
+            color: isLiked ? _kHgRed : Colors.white,
+            size: 24,
+            onTap: onLikeTap,
+          ),
+        ),
+      );
+
   Widget get _videoFitButton => Tooltip(
         message: isVideoFilled ? '切换为完整显示' : '铺满屏幕（等比例裁切）',
         child: _BareIconButton(
@@ -40,6 +57,7 @@ extension _HgLayouts on PlayerControlsOverlay {
     final action = await showPlayerMoreSheet(
       context: context,
       canDownload: canDownload,
+      showDramaFeatures: !isDirectVideo,
       isOfflinePlayback: isOfflinePlayback,
       sleepTimerActive: sleepTimerActive,
       danmakuEnabled: danmakuEnabled,
@@ -106,6 +124,7 @@ extension _HgLayouts on PlayerControlsOverlay {
                     size: 20,
                     onTap: onBack),
                 const Spacer(),
+                if (onLikeTap != null) _likeButton,
                 _BareIconButton(
                     icon: Icons.more_horiz,
                     size: 26,
@@ -145,7 +164,7 @@ extension _HgLayouts on PlayerControlsOverlay {
             child: _HgInfoBlock(
               dramaName: dramaName,
               tags: dramaTags,
-              onTitleTap: onEpisodeTap,
+              onTitleTap: isDirectVideo ? null : onEpisodeTap,
             ),
           ),
           // 拖动进度时屏幕中间的大号时间
@@ -173,7 +192,9 @@ extension _HgLayouts on PlayerControlsOverlay {
             child: _HgEpisodeBar(
               episodeNumber: _epNo,
               totalEpisodes: totalEpisodes,
-              onTap: onEpisodeTap,
+              onTap: isDirectVideo ? onTogglePlay : onEpisodeTap,
+              isDirectVideo: isDirectVideo,
+              playingNotifier: playingNotifier,
               time: _HgTimeLabel(
                 positionMsNotifier: positionMsNotifier,
                 durationMsNotifier: durationMsNotifier,
@@ -353,7 +374,7 @@ class _HgInfoBlock extends StatelessWidget {
   });
   final String dramaName;
   final List<String> tags;
-  final VoidCallback onTitleTap;
+  final VoidCallback? onTitleTap;
 
   @override
   Widget build(BuildContext context) {
@@ -477,10 +498,14 @@ class _HgEpisodeBar extends StatelessWidget {
     required this.episodeNumber,
     required this.totalEpisodes,
     required this.onTap,
+    this.isDirectVideo = false,
+    this.playingNotifier,
     this.time,
   });
   final int episodeNumber;
   final int totalEpisodes;
+  final bool isDirectVideo;
+  final ValueNotifier<bool>? playingNotifier;
   final VoidCallback onTap;
 
   /// 播放时间（当前 / 总时长），显示在全屏按钮左边
@@ -493,54 +518,66 @@ class _HgEpisodeBar extends StatelessWidget {
           color: PlayerVideoSurface.phoneBarColor,
           padding: const EdgeInsets.fromLTRB(16, 0, 4, 0),
           child: Row(children: [
-            const SizedBox(
-              width: 18,
-              height: 18,
-              child: CustomPaint(painter: _HgEpisodeIconPainter()),
-            ),
-            const SizedBox(width: 8),
-            // 放在同一段文字里：字号不同的两部分共用一条基线，不会一高一低；
-            // 分隔竖线用 WidgetSpan 按行中线放
-            Text.rich(
-              TextSpan(children: [
-                const TextSpan(
-                  text: '选集',
-                  style: TextStyle(
-                    color: Color(0xF2FFFFFF),
-                    fontSize: 14,
-                    letterSpacing: 0.3,
-                    fontWeight: FontWeight.w600,
-                  ),
+            if (isDirectVideo)
+              ValueListenableBuilder<bool>(
+                valueListenable: playingNotifier!,
+                builder: (_, playing, __) => _BareIconButton(
+                  icon:
+                      playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                  size: 25,
+                  onTap: onTap,
                 ),
-                WidgetSpan(
-                  alignment: PlaceholderAlignment.middle,
-                  child: Container(
-                    width: 1,
-                    height: 10,
-                    margin: const EdgeInsets.symmetric(horizontal: 9),
-                    color: const Color(0x2EFFFFFF),
-                  ),
-                ),
-                TextSpan(
-                  text: '第$episodeNumber集',
-                  style: const TextStyle(color: Color(0xCCFFFFFF)),
-                ),
-                if (totalEpisodes > 0)
-                  TextSpan(
-                    text: '  共$totalEpisodes集',
-                    style: const TextStyle(color: Color(0x66FFFFFF)),
-                  ),
-              ]),
-              style: const TextStyle(
-                fontSize: 13,
-                height: 1.0,
-                leadingDistribution: TextLeadingDistribution.even,
-                fontFeatures: [FontFeature.tabularFigures()],
+              )
+            else ...[
+              const SizedBox(
+                width: 18,
+                height: 18,
+                child: CustomPaint(painter: _HgEpisodeIconPainter()),
               ),
-            ),
-            const SizedBox(width: 2),
-            const Icon(Icons.chevron_right_rounded,
-                color: Color(0x66FFFFFF), size: 16),
+              const SizedBox(width: 8),
+              // 放在同一段文字里：字号不同的两部分共用一条基线，不会一高一低；
+              // 分隔竖线用 WidgetSpan 按行中线放
+              Text.rich(
+                TextSpan(children: [
+                  const TextSpan(
+                    text: '选集',
+                    style: TextStyle(
+                      color: Color(0xF2FFFFFF),
+                      fontSize: 14,
+                      letterSpacing: 0.3,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  WidgetSpan(
+                    alignment: PlaceholderAlignment.middle,
+                    child: Container(
+                      width: 1,
+                      height: 10,
+                      margin: const EdgeInsets.symmetric(horizontal: 9),
+                      color: const Color(0x2EFFFFFF),
+                    ),
+                  ),
+                  TextSpan(
+                    text: '第$episodeNumber集',
+                    style: const TextStyle(color: Color(0xCCFFFFFF)),
+                  ),
+                  if (totalEpisodes > 0)
+                    TextSpan(
+                      text: '  共$totalEpisodes集',
+                      style: const TextStyle(color: Color(0x66FFFFFF)),
+                    ),
+                ]),
+                style: const TextStyle(
+                  fontSize: 13,
+                  height: 1.0,
+                  leadingDistribution: TextLeadingDistribution.even,
+                  fontFeatures: [FontFeature.tabularFigures()],
+                ),
+              ),
+              const SizedBox(width: 2),
+              const Icon(Icons.chevron_right_rounded,
+                  color: Color(0x66FFFFFF), size: 16),
+            ],
             const Spacer(),
             if (time != null) IgnorePointer(child: time!),
             // 最右侧：全屏（清屏，只隐藏剧名和标签）

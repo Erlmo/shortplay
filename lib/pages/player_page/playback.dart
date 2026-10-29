@@ -8,21 +8,33 @@ const int _kHistorySaveIntervalMs = 10000;
 extension _PlayerPlayback on _PlayerPageState {
   // ─── 数据加载 ──────────────────────────────────────────────────────────
 
-  String get _resolveStepLabel => isOfflinePlayback ? '读取本地缓存' : '解析播放地址';
+  String get _resolveStepLabel =>
+      _isDirectVideo ? '连接视频' : (isOfflinePlayback ? '读取本地缓存' : '解析播放地址');
 
   Future<void> _prepare() async {
     final catalogRequest = ++_catalogRequestId;
     _errorMessage = null;
     _steps = [
-      const WorkflowStep(
-          id: 'episodes', label: '获取剧集列表', status: StepStatus.running),
+      WorkflowStep(
+          id: 'episodes',
+          label: _isDirectVideo ? '准备视频' : '获取剧集列表',
+          status: StepStatus.running),
       WorkflowStep(id: 'resolve', label: _resolveStepLabel),
       const WorkflowStep(id: 'player', label: '初始化播放器'),
     ];
     _refresh();
 
     try {
-      if (widget.offlineEpisodes != null) {
+      if (_isDirectVideo) {
+        final url = widget.directVideoUrl!;
+        final uri = Uri.tryParse(url);
+        if (uri == null ||
+            !['https', 'http'].contains(uri.scheme) ||
+            uri.host.isEmpty) {
+          throw const FormatException('无效的视频地址');
+        }
+        _episodes = [Episode(index: 1, name: _drama.name, size: 0, url: url)];
+      } else if (widget.offlineEpisodes != null) {
         _episodes = widget.offlineEpisodes!;
       } else if (_selectedSeasonDrama == null &&
           widget.prefetchedEpisodes != null) {
@@ -116,8 +128,10 @@ extension _PlayerPlayback on _PlayerPageState {
 
     // 新建播放器路径
     _steps = [
-      const WorkflowStep(
-          id: 'episodes', label: '获取剧集列表', status: StepStatus.success),
+      WorkflowStep(
+          id: 'episodes',
+          label: _isDirectVideo ? '准备视频' : '获取剧集列表',
+          status: StepStatus.success),
       WorkflowStep(
           id: 'resolve', label: _resolveStepLabel, status: StepStatus.running),
       const WorkflowStep(id: 'player', label: '初始化播放器'),
@@ -288,6 +302,7 @@ extension _PlayerPlayback on _PlayerPageState {
   /// 新的一集开始播放后的公共收尾：订阅、弹幕、预热、预取下一季、记历史。
   void _onEpisodeStarted(NativePlayer player, int reqId, int? initialSeekMs) {
     _setupSubscriptions(player, reqId);
+    if (_isDirectVideo) return;
     _danmakuController.clearComments();
     _loadDanmaku(positionMs: initialSeekMs);
     schedulePreloads(_currentEpisodeIndex);
@@ -299,6 +314,7 @@ extension _PlayerPlayback on _PlayerPageState {
   /// 拆成 CDN 地址与密钥；格式不对时返回 null。
   Future<({String cdnUrl, String keyHex})?> _resolveSource(
       String videoId, int index, int reqId) async {
+    if (_isDirectVideo) return (cdnUrl: videoId, keyHex: '');
     if (isOfflinePlayback) {
       return (
         cdnUrl: await OfflinePlaybackCache.playableFileUri(videoId),
@@ -355,6 +371,7 @@ extension _PlayerPlayback on _PlayerPageState {
   }
 
   void _checkPreloadThresholds(Duration position, Duration duration) {
+    if (_isDirectVideo) return;
     if (duration <= Duration.zero) return;
     final progress = position.inMilliseconds / duration.inMilliseconds;
     if (!_didPreloadN2 && progress >= 0.5) {
@@ -377,6 +394,11 @@ extension _PlayerPlayback on _PlayerPageState {
   // ─── 自动下一集 ────────────────────────────────────────────────────────
 
   void _onAutoNext() {
+    if (_isDirectVideo) {
+      _userPaused = true;
+      _refresh();
+      return;
+    }
     _sleepTimer.checkDeadline();
     if (_sleepStopped || _userPaused) return;
     final next = _currentEpisodeIndex + 1;
@@ -399,6 +421,7 @@ extension _PlayerPlayback on _PlayerPageState {
   /// 写播放记录。[positionMs] 不传时取当前进度；开播时传入续播位置，
   /// 避免 seek 还没生效就把记录覆盖成 0。
   void _saveHistory({int? positionMs}) {
+    if (_isDirectVideo) return;
     if (_episodes.isEmpty || _currentEpisodeIndex >= _episodes.length) return;
     final drama = _drama;
     final posMs = positionMs ??

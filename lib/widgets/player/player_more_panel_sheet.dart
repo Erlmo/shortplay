@@ -26,11 +26,13 @@ class _HgMoreSheet extends StatefulWidget {
     this.onSleepDurationChanged,
     this.sleepTimerMinutes,
     this.showEpisodes = false,
+    this.showDramaFeatures = true,
     this.onLayout,
   });
 
   final bool landscape, canDownload, isOfflinePlayback, danmakuEnabled;
   final bool showEpisodes;
+  final bool showDramaFeatures;
   final double playbackSpeed;
   final String currentQuality;
   final Future<List<String>> Function()? loadQualities;
@@ -138,26 +140,28 @@ class _HgMoreSheetState extends State<_HgMoreSheet> {
         ),
         const SizedBox(height: 4),
         // 开关 / 入口：图标 + 名称 + 右侧控件，不加底色
-        _PanelRow(
-          icon: Icons.subtitles_outlined,
-          title: '弹幕',
-          onTap: widget.onToggleDanmaku == null ? null : _toggleDanmaku,
-          trailing: _PanelSwitch(on: _danmaku),
-          semanticsValue: _danmaku ? '已开启' : '已关闭',
-        ),
-        _PanelRow(
-          icon: Icons.file_download_outlined,
-          title: '离线缓存',
-          onTap: widget.canDownload
-              ? () => widget.onSelected(PlayerMenuAction.download)
-              : null,
-          // 点一下就缓存全集，没有下一级，所以右边不放“选择集数”和箭头
-          value: widget.isOfflinePlayback
-              ? '本地播放中'
-              : widget.canDownload
-                  ? null
-                  : '暂不可用',
-        ),
+        if (widget.showDramaFeatures)
+          _PanelRow(
+            icon: Icons.subtitles_outlined,
+            title: '弹幕',
+            onTap: widget.onToggleDanmaku == null ? null : _toggleDanmaku,
+            trailing: _PanelSwitch(on: _danmaku),
+            semanticsValue: _danmaku ? '已开启' : '已关闭',
+          ),
+        if (widget.showDramaFeatures)
+          _PanelRow(
+            icon: Icons.file_download_outlined,
+            title: '离线缓存',
+            onTap: widget.canDownload
+                ? () => widget.onSelected(PlayerMenuAction.download)
+                : null,
+            // 点一下就缓存全集，没有下一级，所以右边不放“选择集数”和箭头
+            value: widget.isOfflinePlayback
+                ? '本地播放中'
+                : widget.canDownload
+                    ? null
+                    : '暂不可用',
+          ),
         if (widget.showEpisodes)
           _PanelRow(
             icon: Icons.format_list_bulleted_rounded,

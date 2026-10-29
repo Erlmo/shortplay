@@ -67,6 +67,6 @@ void main() {
     await expectLater(
         api.fetchFqVideoModel('1234567890'), throwsA(isA<ApiException>()));
     expect(adapter.requests.map((r) => r.uri.path),
-        everyElement('/algorithm/videorequest'));
+        everyElement('/algorithm/video'));
   });
 }

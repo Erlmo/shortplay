@@ -19,11 +19,13 @@ class SettingsPage extends StatefulWidget {
     required this.apiClient,
     this.downloadService,
     this.appUpdateService,
+    this.onHomeModeChanged,
   });
 
   final ApiClient apiClient;
   final DownloadService? downloadService;
   final AppUpdateService? appUpdateService;
+  final VoidCallback? onHomeModeChanged;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -40,6 +42,14 @@ class _SettingsPageState extends State<SettingsPage> {
   void dispose() {
     _checkCancelToken.cancel('关闭设置页面');
     super.dispose();
+  }
+
+  Future<void> _openShareRecognition() async {
+    final changed = await Navigator.of(context).push<bool>(MaterialPageRoute(
+      builder: (_) => ShareLinkPage(
+          apiClient: widget.apiClient, downloadService: widget.downloadService),
+    ));
+    if (changed == true && mounted) widget.onHomeModeChanged?.call();
   }
 
   Future<void> _checkForUpdates() async {
@@ -182,13 +192,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         _SettingsRow(
                           icon: Icons.link_rounded,
                           title: '分享链接识别',
-                          onTap: () => Navigator.of(context)
-                              .push<void>(MaterialPageRoute(
-                            builder: (_) => ShareLinkPage(
-                              apiClient: widget.apiClient,
-                              downloadService: widget.downloadService,
-                            ),
-                          )),
+                          onTap: _openShareRecognition,
                         ),
                         const Divider(
                           height: 1,

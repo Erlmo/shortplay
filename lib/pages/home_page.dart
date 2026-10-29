@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
@@ -5,12 +7,15 @@ import '../services/api_client.dart';
 import '../services/app_update_service.dart';
 import '../services/device_profile.dart';
 import '../services/download_service.dart';
+import '../services/hidden_feed_access.dart';
+import '../widgets/app_notice.dart';
 import '../widgets/tv_tap.dart';
 import 'cache_page.dart';
 import 'home/continue_watching_bar.dart';
 import 'home/home_feed_page.dart';
 import 'play_history_page.dart';
 import 'settings_page.dart';
+import 'twixive/twixive_home_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({
@@ -31,6 +36,8 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   int _currentIndex = 0;
   bool _tvTopBarFocused = false;
+  final _feedAccess = HiddenFeedAccess();
+  bool _feedModeReady = false;
   final _homeFeedKey = GlobalKey<HomeFeedPageState>();
 
   late final List<Widget> _pages;
@@ -42,16 +49,7 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _pages = [
-      HomeFeedPage(
-        key: _homeFeedKey,
-        onTvTopBarFocusChanged: (focused) {
-          if (mounted && focused != _tvTopBarFocused) {
-            setState(() => _tvTopBarFocused = focused);
-          }
-        },
-        apiClient: widget.apiClient,
-        downloadService: widget.downloadService,
-      ),
+      _buildHomeFeed(),
       PlayHistoryPage(
         key: _playHistoryKey,
         apiClient: widget.apiClient,
@@ -65,12 +63,73 @@ class _HomePageState extends State<HomePage> {
         apiClient: widget.apiClient,
         downloadService: widget.downloadService,
         appUpdateService: widget.appUpdateService,
+        onHomeModeChanged: DeviceProfile.isTv ? null : _onHomeModeChanged,
       ),
     ];
+    if (DeviceProfile.isTv) {
+      _feedModeReady = true;
+    } else {
+      unawaited(_loadFeedMode());
+    }
+  }
+
+  Widget _buildHomeFeed() {
+    if (!DeviceProfile.isTv && _feedAccess.enabled) {
+      return TwixiveHomePage(apiClient: widget.apiClient);
+    }
+    return HomeFeedPage(
+      key: _homeFeedKey,
+      onTvTopBarFocusChanged: (focused) {
+        if (mounted && focused != _tvTopBarFocused) {
+          setState(() => _tvTopBarFocused = focused);
+        }
+      },
+      apiClient: widget.apiClient,
+      downloadService: widget.downloadService,
+    );
+  }
+
+  Future<void> _loadFeedMode() async {
+    try {
+      await _feedAccess.load();
+    } catch (error) {
+      debugPrint('读取首页模式失败：$error');
+    }
+    if (!mounted) return;
+    setState(() {
+      _pages[0] = _buildHomeFeed();
+      _feedModeReady = true;
+    });
+  }
+
+  void _onHomeModeChanged() {
+    unawaited(_reloadHomeMode());
+  }
+
+  Future<void> _reloadHomeMode() async {
+    try {
+      await _feedAccess.load();
+      if (!mounted) return;
+      setState(() {
+        _pages[0] = _buildHomeFeed();
+        _currentIndex = 0;
+      });
+      showAppNotice(context,
+          message: _feedAccess.enabled ? '已切换首页' : '已恢复短剧首页');
+    } catch (_) {
+      if (mounted) {
+        showAppNotice(context,
+            message: '读取首页模式失败，请重试', kind: AppNoticeKind.error);
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    if (!_feedModeReady) {
+      return const Scaffold(
+          body: Center(child: CircularProgressIndicator(strokeWidth: 2)));
+    }
     return PopScope(
       canPop: !DeviceProfile.isTv || _currentIndex != 0 || _tvTopBarFocused,
       onPopInvokedWithResult: (didPop, _) {
@@ -98,7 +157,7 @@ class _HomePageState extends State<HomePage> {
                 .toList(),
           ),
           // 电视端不显示，避免打乱遥控器的焦点顺序。
-          if (!DeviceProfile.isTv)
+          if (!DeviceProfile.isTv && !_feedAccess.enabled)
             Positioned(
               left: 0,
               right: 0,

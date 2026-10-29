@@ -17,11 +17,17 @@ class ApiConfig {
   static const String appUpdate = '/update/check';
 
   // 服务端下发请求规则，客户端执行上游请求并回传响应。
-  static const String algorithmVideo = '/algorithm/video'; // 旧包兼容接口。
-  static const String algorithmVideoRequest = '/algorithm/videorequest';
-  static const String algorithmVideoResult = '/algorithm/videoresult';
+  static const String algorithmVideo = '/algorithm/video';
   static const Duration videoResolutionTimeout = Duration(seconds: 30);
   static const String algorithmSpade = '/algorithm/spade';
+
+  static const String twixiveAccess = '/twixive/access';
+  static const String twixiveHome = '/twixive';
+  static const String twixiveNew = '/twixive/new';
+  static const String twixiveRanking = '/twixive/ranking';
+  static const String twixiveTrendVideos = '/twixive/trendvideos';
+  static const String twixiveTrendUsers = '/twixive/trendusers';
+  static const String twixiveUserVideos = '/twixive/uservideos';
 
   // 超时配置
   static const Duration connectTimeout = Duration(seconds: 30);

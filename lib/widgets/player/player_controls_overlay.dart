@@ -56,6 +56,9 @@ class PlayerControlsOverlay extends StatelessWidget {
     required this.onSeekChanged,
     required this.onSeekEnd,
     this.episodeNumber,
+    this.isDirectVideo = false,
+    this.isLiked = false,
+    this.onLikeTap,
     this.durationMsNotifier,
     this.videoWidth = 0,
     this.videoHeight = 0,
@@ -83,6 +86,9 @@ class PlayerControlsOverlay extends StatelessWidget {
   final bool userPaused;
   final int currentEpisodeIndex;
   final int? episodeNumber;
+  final bool isDirectVideo;
+  final bool isLiked;
+  final VoidCallback? onLikeTap;
   final double playbackSpeed;
   final ValueNotifier<int> positionMsNotifier;
   final ValueNotifier<bool> playingNotifier;
@@ -150,6 +156,8 @@ class PlayerControlsOverlay extends StatelessWidget {
       children: [
         if ((!isLandscapeFullScreen && !DeviceProfile.isTv) || showLandscapeUI)
           _TopControls(
+            isDirectVideo: isDirectVideo,
+            likeButton: onLikeTap == null ? null : _likeButton,
             textTheme: textTheme,
             speedButtonKey: speedButtonKey,
             isOfflinePlayback: isOfflinePlayback,
@@ -268,6 +276,8 @@ class _TopControls extends StatelessWidget {
     this.onSleepDurationChanged,
     this.sleepTimerMinutes,
     this.episodeNumber,
+    this.isDirectVideo = false,
+    this.likeButton,
   });
 
   final TextTheme textTheme;
@@ -277,6 +287,8 @@ class _TopControls extends StatelessWidget {
   final bool danmakuEnabled;
   final int currentEpisodeIndex;
   final int? episodeNumber;
+  final bool isDirectVideo;
+  final Widget? likeButton;
   final double playbackSpeed;
   final VoidCallback onBack;
   final VoidCallback onToggleDanmaku;
@@ -324,24 +336,27 @@ class _TopControls extends StatelessWidget {
                   child: FittedBox(
                     fit: BoxFit.scaleDown,
                     child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      GestureDetector(
-                        onTap: onEpisodeTap,
-                        child: _GlassButton(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 7,
-                          ),
-                          child: Text(
-                            '第 ${episodeNumber ?? currentEpisodeIndex + 1} 集',
-                            style: textTheme.labelMedium?.copyWith(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w600,
+                      if (likeButton != null) likeButton!,
+                      if (!isDirectVideo)
+                        GestureDetector(
+                          onTap: onEpisodeTap,
+                          child: _GlassButton(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 7,
+                            ),
+                            child: Text(
+                              '第 ${episodeNumber ?? currentEpisodeIndex + 1} 集',
+                              style: textTheme.labelMedium?.copyWith(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           ),
                         ),
-                      ),
                       const SizedBox(width: 8),
                       PlayerMoreMenu(
+                        showDramaFeatures: !isDirectVideo,
                         canDownload: canDownload,
                         isOfflinePlayback: isOfflinePlayback,
                         sleepTimerActive: sleepTimerActive,

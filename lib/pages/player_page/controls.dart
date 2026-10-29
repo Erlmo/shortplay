@@ -22,6 +22,9 @@ extension _PlayerControls on _PlayerPageState {
       _saveHistory();
     } else {
       _userPaused = false;
+      if (_isDirectVideo && player.completed) {
+        unawaited(player.seek(Duration.zero));
+      }
       unawaited(player.play());
     }
     _refresh();
@@ -168,6 +171,7 @@ extension _PlayerControls on _PlayerPageState {
   // ─── 弹幕 ──────────────────────────────────────────────────────────────
 
   void _onToggleDanmaku() {
+    if (_isDirectVideo) return;
     unawaited(_danmakuController.toggle(
       isOfflinePlayback: isOfflinePlayback,
       currentEpisode:
@@ -180,7 +184,9 @@ extension _PlayerControls on _PlayerPageState {
   }
 
   void _loadDanmaku({int? positionMs}) {
-    if (isOfflinePlayback || !_drama.isTheaterResource) return;
+    if (_isDirectVideo || isOfflinePlayback || !_drama.isTheaterResource) {
+      return;
+    }
     if (!_danmakuController.enabled) return;
     if (_currentEpisodeIndex >= _episodes.length) return;
     unawaited(_danmakuController.loadForEpisode(
@@ -193,6 +199,7 @@ extension _PlayerControls on _PlayerPageState {
   }
 
   void _onDanmakuSeek(int positionMs) {
+    if (_isDirectVideo) return;
     _danmakuSeekGeneration++;
     unawaited(_danmakuController.ensureLoadedUpTo(
       positionMs: positionMs,
@@ -329,9 +336,10 @@ extension _PlayerControls on _PlayerPageState {
         sleepTimerActive: _sleepTimer.isActive,
         danmakuEnabled: _danmakuController.enabled,
         playbackSpeed: _playbackSpeed,
-        currentQuality:
-            isOfflinePlayback ? '' : _preloadManager.selectedDefinition(url),
-        loadQualities: isOfflinePlayback
+        currentQuality: (_isDirectVideo || isOfflinePlayback)
+            ? ''
+            : _preloadManager.selectedDefinition(url),
+        loadQualities: (_isDirectVideo || isOfflinePlayback)
             ? null
             : () => _preloadManager.availableDefinitions(url),
         onToggleDanmaku: _onToggleDanmaku,
@@ -339,7 +347,8 @@ extension _PlayerControls on _PlayerPageState {
         onQualityChanged: _onQualityChanged,
         onSleepDurationChanged: _onSleepDurationChanged,
         sleepTimerMinutes: _sleepTimer.isActive ? _sleepTimerMinutes : null,
-        showEpisodes: true,
+        showEpisodes: !_isDirectVideo,
+        showDramaFeatures: !_isDirectVideo,
         onSheetLayout: _onBottomPanelHeight,
       );
       _onBottomPanelHeight(0);
@@ -356,6 +365,7 @@ extension _PlayerControls on _PlayerPageState {
   }
 
   Future<void> _onEpisodeTap() async {
+    if (_isDirectVideo) return;
     DramaSeason? selectedSeason;
     final episodeNotifier = ValueNotifier<int>(_currentEpisodeIndex);
     _systemUi.setMenuOpen(true);

@@ -134,9 +134,11 @@ class _HgLandscapeLayerState extends State<_HgLandscapeLayer> {
               const SizedBox(width: 4),
               Expanded(
                 child: Text(
-                  c.dramaName.isEmpty
-                      ? '第${c._epNo}集'
-                      : '${c.dramaName}  第${c._epNo}集',
+                  c.isDirectVideo
+                      ? c.dramaName
+                      : c.dramaName.isEmpty
+                          ? '第${c._epNo}集'
+                          : '${c.dramaName}  第${c._epNo}集',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
@@ -146,6 +148,7 @@ class _HgLandscapeLayerState extends State<_HgLandscapeLayer> {
                       shadows: _kShadow),
                 ),
               ),
+              if (c.onLikeTap != null) c._likeButton,
               const _HgClock(),
               const SizedBox(width: 8),
               _BareIconButton(
@@ -218,13 +221,14 @@ class _HgLandscapeLayerState extends State<_HgLandscapeLayer> {
                       icon: Icons.skip_next_rounded,
                       size: 28,
                       onTap: c.onNextEpisode),
-                _BareIconButton(
-                  icon: c.danmakuEnabled
-                      ? Icons.subtitles_rounded
-                      : Icons.subtitles_off_outlined,
-                  size: 24,
-                  onTap: c.onToggleDanmaku,
-                ),
+                if (!c.isDirectVideo)
+                  _BareIconButton(
+                    icon: c.danmakuEnabled
+                        ? Icons.subtitles_rounded
+                        : Icons.subtitles_off_outlined,
+                    size: 24,
+                    onTap: c.onToggleDanmaku,
+                  ),
                 const Spacer(),
                 if (c.onSpeedChanged != null)
                   _HgTextButton(
@@ -245,7 +249,8 @@ class _HgLandscapeLayerState extends State<_HgLandscapeLayer> {
                         label: c.currentQuality.toUpperCase(),
                         onTap: () => _openQuality(anchor)),
                   ),
-                _HgTextButton(label: '选集', onTap: c.onEpisodeTap),
+                if (!c.isDirectVideo)
+                  _HgTextButton(label: '选集', onTap: c.onEpisodeTap),
               ]),
             ]),
           ),

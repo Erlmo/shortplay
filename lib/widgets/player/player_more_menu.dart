@@ -25,6 +25,7 @@ class PlayerMoreMenu extends StatelessWidget {
     required this.onSelected,
     required this.child,
     this.danmakuEnabled = false,
+    this.showDramaFeatures = true,
     this.playbackSpeed = 1,
     this.currentQuality = '',
     this.loadQualities,
@@ -36,6 +37,7 @@ class PlayerMoreMenu extends StatelessWidget {
   });
 
   final bool canDownload, isOfflinePlayback, sleepTimerActive, danmakuEnabled;
+  final bool showDramaFeatures;
   final double playbackSpeed;
   final String currentQuality;
   final Future<List<String>> Function()? loadQualities;
@@ -53,6 +55,7 @@ class PlayerMoreMenu extends StatelessWidget {
     final result = await showPlayerMoreSheet(
       context: context,
       canDownload: canDownload,
+      showDramaFeatures: showDramaFeatures,
       isOfflinePlayback: isOfflinePlayback,
       sleepTimerActive: sleepTimerActive,
       danmakuEnabled: danmakuEnabled,
@@ -98,6 +101,7 @@ Future<PlayerMenuAction?> showPlayerMoreSheet({
   ValueChanged<Duration?>? onSleepDurationChanged,
   int? sleepTimerMinutes,
   bool showEpisodes = false,
+  bool showDramaFeatures = true,
   bool forceSidePanel = false,
   ValueChanged<double>? onSheetLayout,
 }) {
@@ -108,6 +112,7 @@ Future<PlayerMenuAction?> showPlayerMoreSheet({
     final side = forceSidePanel || size.width > size.height;
     Widget hg(BuildContext context, bool landscape) => _HgMoreSheet(
           landscape: landscape,
+          showDramaFeatures: showDramaFeatures,
           canDownload: canDownload,
           isOfflinePlayback: isOfflinePlayback,
           danmakuEnabled: danmakuEnabled,

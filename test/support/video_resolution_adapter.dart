@@ -37,14 +37,10 @@ Map<String, Object?> resolutionResponse({List<Map<String, Object>>? streams}) =>
     {
       'code': 0,
       'data': {
-        'protocol': 1,
-        'action': 'complete',
-        'result': {
-          'video_id': '1234567890',
-          'streams': streams ?? [resolvedVideoStream()],
-          'poster_url': 'https://cdn.example.com/poster.jpg',
-          'expire_time': 4102444800
-        },
+        'video_id': '1234567890',
+        'streams': streams ?? [resolvedVideoStream()],
+        'poster_url': 'https://cdn.example.com/poster.jpg',
+        'expire_time': 4102444800
       },
     };
 
@@ -58,7 +54,7 @@ class VideoResolutionAdapter implements HttpClientAdapter {
       Future<void>? cancel) async {
     requests.add(options);
     if (reply != null) return await reply!(options);
-    if (options.uri.path != '/algorithm/videorequest') {
+    if (options.uri.path != '/algorithm/video') {
       throw StateError('不应由客户端调用: ${options.uri.path}');
     }
     return resolutionJson(resolutionResponse());

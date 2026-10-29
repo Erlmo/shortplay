@@ -33,7 +33,7 @@ extension _PlayerView on _PlayerPageState {
         key: ValueKey('player-pages-${_drama.id}'),
         controller: _pageController,
         scrollDirection: Axis.vertical,
-        physics: _sleepStopped
+        physics: _sleepStopped || _isDirectVideo
             ? const NeverScrollableScrollPhysics()
             : blockForward
                 ? const BlockForwardScrollPhysics()
@@ -130,7 +130,8 @@ extension _PlayerView on _PlayerPageState {
       children: [
         Container(color: Colors.black),
         if (hasTexture) isActive ? _shrinkable(videoWidget) : videoWidget,
-        if (isActive && hasTexture) _hideWhileShrunk(_buildDanmaku(index)),
+        if (isActive && hasTexture && !_isDirectVideo)
+          _hideWhileShrunk(_buildDanmaku(index)),
         if (isActive && _loading)
           const Center(
             child: CircularProgressIndicator(
@@ -194,6 +195,11 @@ extension _PlayerView on _PlayerPageState {
     final videoId = _episodes[index].url.trim();
     return PlayerControlsOverlay(
       player: null,
+      isDirectVideo: _isDirectVideo,
+      isLiked: _isLiked,
+      onLikeTap: _isDirectVideo && widget.directVideoMetadata != null
+          ? () => unawaited(_toggleLike())
+          : null,
       playerInitialized: _playerInitialized,
       isLandscapeFullScreen: _systemUi.isLandscapeFullScreen,
       showLandscapeUI: _systemUi.showLandscapeUI,
@@ -230,9 +236,10 @@ extension _PlayerView on _PlayerPageState {
               : null,
       canDownload: _canDownload && _episodes.isNotEmpty,
       sleepTimerActive: _sleepTimer.isActive,
-      currentQuality:
-          isOfflinePlayback ? '' : _preloadManager.selectedDefinition(videoId),
-      loadQualities: isOfflinePlayback
+      currentQuality: (_isDirectVideo || isOfflinePlayback)
+          ? ''
+          : _preloadManager.selectedDefinition(videoId),
+      loadQualities: (_isDirectVideo || isOfflinePlayback)
           ? null
           : () => _preloadManager.availableDefinitions(videoId),
       onQualityChanged: _onQualityChanged,

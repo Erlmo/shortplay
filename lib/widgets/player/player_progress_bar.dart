@@ -237,9 +237,14 @@ class _GlassButton extends StatelessWidget {
 }
 
 class _BareIconButton extends StatelessWidget {
-  const _BareIconButton({required this.icon, this.size = 22, this.onTap});
+  const _BareIconButton(
+      {required this.icon,
+      this.size = 22,
+      this.onTap,
+      this.color = Colors.white});
 
   final IconData icon;
+  final Color color;
   final double size;
   final VoidCallback? onTap;
 
@@ -252,7 +257,7 @@ class _BareIconButton extends StatelessWidget {
         padding: const EdgeInsets.all(10),
         child: Icon(
           icon,
-          color: Colors.white,
+          color: color,
           size: size,
           shadows: const [Shadow(color: Colors.black38, blurRadius: 6)],
         ),

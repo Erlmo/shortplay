@@ -14,7 +14,7 @@ import '../models/search_suggestion.dart';
 import '../models/search_source.dart';
 import '../models/search_results.dart';
 import '../models/search_series_card.dart';
-import 'video_request_executor.dart';
+import '../models/twixive.dart';
 import 'sign_interceptor.dart';
 
 export '../models/api_results.dart';
@@ -34,9 +34,7 @@ class ApiClient {
     Dio? dio,
     String? baseUrl,
     DateTime Function()? clock,
-    VideoRequestExecutor? videoExecutor,
-  })  : _videoExecutor = videoExecutor ?? VideoRequestExecutor(),
-        _clock = clock ?? DateTime.now,
+  })  : _clock = clock ?? DateTime.now,
         _dio = dio ??
             Dio(
               BaseOptions(
@@ -56,7 +54,6 @@ class ApiClient {
   }
 
   final Dio _dio;
-  final VideoRequestExecutor _videoExecutor;
   final DateTime Function() _clock;
   final Map<String, Drama> _dramaCache = {};
   bool _disposed = false;
@@ -70,7 +67,68 @@ class ApiClient {
     if (_disposed) return;
     _disposed = true;
     _dio.close(force: true);
-    _videoExecutor.dispose();
+  }
+
+  Future<bool> verifyTwixiveAccess(String phrase,
+      {CancelToken? cancelToken}) async {
+    try {
+      final response = await _dio.post(ApiConfig.twixiveAccess,
+          data: {'phrase': phrase},
+          cancelToken: cancelToken,
+          options: Options(headers: {'Content-Type': 'application/json'}));
+      return _asJsonMap(_decode(response)['data'])['valid'] == true;
+    } on DioException catch (error) {
+      if (CancelToken.isCancel(error)) rethrow;
+      final body = error.response?.data;
+      throw ApiException(
+          body is Map
+              ? body['message']?.toString() ?? '口令验证失败，请稍后重试'
+              : '口令验证失败，请检查网络后重试',
+          code: error.response?.statusCode);
+    }
+  }
+
+  Future<TwixivePage> fetchTwixivePage({
+    TwixiveFeed feed = TwixiveFeed.home,
+    int days = 1,
+    int limit = 24,
+    int offset = 0,
+    String? user,
+    String? cursor,
+    CancelToken? cancelToken,
+  }) async {
+    final path = user != null
+        ? ApiConfig.twixiveUserVideos
+        : switch (feed) {
+            TwixiveFeed.home => ApiConfig.twixiveHome,
+            TwixiveFeed.latest => ApiConfig.twixiveNew,
+            TwixiveFeed.ranking => ApiConfig.twixiveRanking,
+            TwixiveFeed.trending => ApiConfig.twixiveTrendVideos,
+            TwixiveFeed.users => ApiConfig.twixiveTrendUsers,
+          };
+    try {
+      final response = await _dio.get(path,
+          queryParameters: {
+            'limit': limit,
+            if (user == null) 'offset': offset,
+            if (user == null && feed == TwixiveFeed.ranking) 'days': days,
+            if (user != null) 'user': user,
+            if (user != null && cursor != null) 'cursor': cursor,
+          },
+          cancelToken: cancelToken);
+      return TwixivePage.fromJson(_asJsonMap(_decode(response)['data']),
+          offset: offset, limit: limit, userVideos: user != null);
+    } on DioException catch (error) {
+      if (CancelToken.isCancel(error)) rethrow;
+      final body = error.response?.data;
+      throw ApiException(
+          body is Map
+              ? body['message']?.toString() ?? '视频加载失败'
+              : '视频加载失败，请稍后重试',
+          code: error.response?.statusCode);
+    } on FormatException {
+      throw ApiException('视频列表格式异常');
+    }
   }
 
   Future<AppUpdate?> checkAppUpdate({
@@ -121,8 +179,9 @@ class ApiClient {
         if (data is Map) drama = Drama.fromJson(data.cast<String, dynamic>());
         final nested = payload['drama'];
         if (nested is Map<String, dynamic>) drama = Drama.fromJson(nested);
-        if (nested is Map)
+        if (nested is Map) {
           drama = Drama.fromJson(nested.cast<String, dynamic>());
+        }
         if (drama != null) {
           _dramaCache[dramaId] = drama;
           return drama;
@@ -232,7 +291,7 @@ class ApiClient {
     );
   }
 
-  /// 规则由服务端处理，客户端执行上游请求，使播放地址按客户端网络下发。
+  /// 只提交视频 ID，解析与签名由服务端完成，播放器直连返回的 CDN 地址。
   Future<List<FqVideoItem>> fetchFqVideoModel(String videoId) async {
     final id = videoId.trim();
     if (id.isEmpty) throw ApiException('缺少视频编号');
@@ -255,27 +314,8 @@ class ApiClient {
       cancel.cancel('播放解析超时');
     });
     try {
-      Map<String, dynamic> data = await _videoStep(
-          ApiConfig.algorithmVideoRequest, {'video_id': videoId}, cancel);
-      for (var step = 0;; step++) {
-        if (data['protocol'] != 1) throw ApiException('服务端播放协议不兼容，请更新应用或服务端');
-        if (data['action'] == 'complete') {
-          data = _asJsonMap(data['result']);
-          break;
-        }
-        if (data['action'] != 'request' || step >= 4) {
-          throw ApiException('服务端播放请求次数超出限制');
-        }
-        // 用服务端剩余时长，避免手机时钟偏差误判短期请求已过期。
-        final validFor = data['expires_in_seconds'];
-        if (validFor is! int || validFor <= 0 || validFor > 120) {
-          throw ApiException('播放请求已过期，请重新解析');
-        }
-        final upstream =
-            await _videoExecutor.execute(data, cancelToken: cancel);
-        data =
-            await _videoStep(ApiConfig.algorithmVideoResult, upstream, cancel);
-      }
+      final data = await _videoStep(
+          ApiConfig.algorithmVideo, {'video_id': videoId}, cancel);
       final raw = data['streams'];
       if (raw is! List) throw ApiException('视频解析结果无效');
       final items = <FqVideoItem>[];
@@ -565,8 +605,9 @@ class ApiClient {
     final params = <String, String>{'rank': rankType, 'type': type};
     if (cellGender != null) params['cell_gender'] = cellGender;
     if (offset != null && offset > 0) params['offset'] = offset.toString();
-    if (sessionId != null && sessionId.isNotEmpty)
+    if (sessionId != null && sessionId.isNotEmpty) {
       params['session_id'] = sessionId;
+    }
 
     late final Response response;
     try {
@@ -591,8 +632,9 @@ class ApiClient {
     final params = <String, String>{'rank': 'newplay'};
     if (cellGender != null) params['cell_gender'] = cellGender;
     if (offset != null && offset > 0) params['offset'] = offset.toString();
-    if (sessionId != null && sessionId.isNotEmpty)
+    if (sessionId != null && sessionId.isNotEmpty) {
       params['session_id'] = sessionId;
+    }
 
     final response =
         await _dio.get(ApiConfig.noveRank, queryParameters: params);

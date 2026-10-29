@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:shortplay/main.dart';
 import 'package:shortplay/pages/global_search_page.dart';
@@ -20,6 +21,7 @@ class _ClipboardApiClient extends ApiClient {
 }
 
 void main() {
+  setUp(() => SharedPreferences.setMockInitialValues({}));
   testWidgets('启动和回前台不读取剪贴板，分享内容仅由用户主动粘贴', (tester) async {
     final apiClient = _ClipboardApiClient();
     final downloads = DownloadService(apiClient: apiClient);
@@ -107,6 +109,7 @@ void main() {
       appUpdateService: NoAppUpdates(apiClient),
       downloadService: DownloadService(apiClient: apiClient),
     ));
+    await tester.pump();
     expect(find.byIcon(Icons.search), findsOneWidget);
     await tester.tap(find.byIcon(Icons.search));
     await tester.pump();
