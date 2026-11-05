@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(shortplay_bvc2 LANGUAGES CXX)
+add_library(shortplay_bvc2 SHARED bvc2_bridge.cpp)
+target_compile_features(shortplay_bvc2 PRIVATE cxx_std_17)
+target_compile_options(shortplay_bvc2 PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(shortplay_bvc2 android log dl)

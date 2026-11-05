@@ -10,6 +10,7 @@ import '../models/danmaku.dart';
 import '../models/drama.dart';
 import '../models/drama_season.dart';
 import '../models/fq_video.dart';
+import 'native_player.dart';
 import '../models/search_suggestion.dart';
 import '../models/search_source.dart';
 import '../models/search_results.dart';
@@ -75,7 +76,9 @@ class ApiClient {
       final response = await _dio.post(ApiConfig.twixiveAccess,
           data: {'phrase': phrase},
           cancelToken: cancelToken,
-          options: Options(headers: {'Content-Type': 'application/json'}));
+          options: Options(headers: {
+            'Content-Type': 'application/json',
+          }));
       return _asJsonMap(_decode(response)['data'])['valid'] == true;
     } on DioException catch (error) {
       if (CancelToken.isCancel(error)) rethrow;
@@ -314,21 +317,30 @@ class ApiClient {
       cancel.cancel('播放解析超时');
     });
     try {
+      final supportsBvc2 = await NativePlayer.supportsByteVc2();
       final data = await _videoStep(
-          ApiConfig.algorithmVideo, {'video_id': videoId}, cancel);
+          ApiConfig.algorithmVideo,
+          {
+            'video_id': videoId,
+          },
+          cancel,
+          supportsBvc2: supportsBvc2);
       final raw = data['streams'];
       if (raw is! List) throw ApiException('视频解析结果无效');
       final items = <FqVideoItem>[];
+      var hasByteVc2 = false;
       for (final entry in raw.whereType<Map>()) {
         final item = FqVideoItem.fromJson(entry.cast<String, dynamic>());
+        if (item.isByteVc2 && !supportsBvc2) {
+          hasByteVc2 = true;
+          continue;
+        }
         final uri = Uri.tryParse(item.url);
         if (uri == null ||
             !['https', 'http'].contains(uri.scheme) ||
             uri.host.isEmpty ||
             !RegExp(r'^[0-9a-fA-F]{32}$').hasMatch(item.decryptKey) ||
-            item.spadeA.isEmpty ||
-            item.codec == 'bytevc2' ||
-            item.codec == 'bvc2') {
+            item.spadeA.isEmpty) {
           continue;
         }
         if (item.expiresAt != null && !item.expiresAt!.isAfter(_clock())) {
@@ -343,7 +355,10 @@ class ApiClient {
       while (_resolvedDecryptKeys.length > 256) {
         _resolvedDecryptKeys.remove(_resolvedDecryptKeys.keys.first);
       }
-      if (items.isEmpty) throw ApiException('未获取到有效播放地址');
+      if (items.isEmpty) {
+        throw ApiException(
+            hasByteVc2 ? '当前视频暂无兼容画质（ByteVC2 编码暂不支持）' : '未获取到有效播放地址');
+      }
       return items;
     } on DioException catch (error) {
       if (CancelToken.isCancel(error)) {
@@ -370,11 +385,15 @@ class ApiClient {
   }
 
   Future<Map<String, dynamic>> _videoStep(
-      String path, Map<String, dynamic> body, CancelToken cancel) async {
+      String path, Map<String, dynamic> body, CancelToken cancel,
+      {bool supportsBvc2 = false}) async {
     final response = await _dio.post(path,
         data: body,
         cancelToken: cancel,
-        options: Options(headers: {'Content-Type': 'application/json'}));
+        options: Options(headers: {
+          'Content-Type': 'application/json',
+          if (supportsBvc2) 'X-Playback-Codecs': 'bvc2',
+        }));
     return _asJsonMap(_decode(response)['data']);
   }
 

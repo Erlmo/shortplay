@@ -14,6 +14,7 @@ class FqVideoItem {
     this.decryptKey = '',
     this.expiresAt,
     this.cacheable = true,
+    this.codecHints = '',
   });
 
   final String url;
@@ -28,6 +29,11 @@ class FqVideoItem {
   final String decryptKey;
   final DateTime? expiresAt;
   final bool cacheable;
+  final String codecHints;
+
+  /// 部分接口把实际编码放在档位描述中，不能只比较 codec_type 的原始值。
+  bool get isByteVc2 => RegExp(r'bytevc2|bvc2', caseSensitive: false)
+      .hasMatch('$codec $codecHints');
 
   factory FqVideoItem.fromJson(Map<String, dynamic> json) {
     final seconds = json['expire_time'];
@@ -37,6 +43,12 @@ class FqVideoItem {
     // Format A: nested video_meta + encrypt_info (array format)
     final meta = json['video_meta'] as Map<String, dynamic>?;
     final enc = json['encrypt_info'] as Map<String, dynamic>?;
+    final codecHints = [
+      json['codec_type'],
+      json['gear_des_key'],
+      meta?['codec_type'],
+      meta?['gear_des_key'],
+    ].whereType<String>().join(' ');
 
     if (meta != null) {
       return FqVideoItem(
@@ -47,10 +59,15 @@ class FqVideoItem {
         bitrate: meta['bitrate'] as int? ?? 0,
         spadeA: enc?['spade_a']?.toString() ?? '',
         kid: enc?['kid']?.toString() ?? '',
-        codec: meta['codec_type']?.toString() ?? '',
+        codec: (meta['codec_type'] ?? json['codec_type'])
+                ?.toString()
+                .trim()
+                .toLowerCase() ??
+            '',
         decryptKey: json['decrypt_key']?.toString() ?? '',
         expiresAt: expiresAt,
         cacheable: json['cacheable'] != false,
+        codecHints: codecHints,
       );
     }
 
@@ -70,10 +87,11 @@ class FqVideoItem {
       bitrate: json['bitrate'] as int? ?? 0,
       spadeA: json['spade_a']?.toString() ?? '',
       kid: json['kid']?.toString() ?? '',
-      codec: json['codec_type']?.toString() ?? '',
+      codec: json['codec_type']?.toString().trim().toLowerCase() ?? '',
       decryptKey: json['decrypt_key']?.toString() ?? '',
       expiresAt: expiresAt,
       cacheable: json['cacheable'] != false,
+      codecHints: codecHints,
     );
   }
 }

@@ -29,6 +29,7 @@ mixin PlayerPreloadMixin on State<PlayerPage> {
   List<Episode> get episodes;
   TheaterVideoPreloadManager get preloadManager;
   bool get isOfflinePlayback;
+  String? cachedEpisodePath(int index);
 
   // ─── 销毁队列 ──────────────────────────────────────────────────────────
 
@@ -75,9 +76,10 @@ mixin PlayerPreloadMixin on State<PlayerPage> {
     String cdnUrl;
     String keyHex;
 
-    if (isOfflinePlayback) {
+    final localPath = cachedEpisodePath(index);
+    if (localPath != null) {
       try {
-        cdnUrl = await OfflinePlaybackCache.playableFileUri(videoId);
+        cdnUrl = await OfflinePlaybackCache.playableFileUri(localPath);
         keyHex = '';
       } catch (e) {
         debugPrint('[Player] 本地缓存不可用: $e');
@@ -164,21 +166,11 @@ mixin PlayerPreloadMixin on State<PlayerPage> {
 
   void schedulePreloads(int currentIndex) {
     prepareNextPlayer(currentIndex + 1);
-    _preloadData(currentIndex, currentIndex + 2);
-  }
-
-  void _preloadData(int current, int target) {
-    if (isOfflinePlayback || target < 0 || target >= episodes.length) return;
-    preloadManager.preloadEpisode(
-      episodes: episodes,
-      currentIndex: current,
-      targetIndex: target,
-      isStillCurrent: () => mounted,
-    );
   }
 
   void preloadHeaderOnly(int current, int target) {
     if (isOfflinePlayback || target < 0 || target >= episodes.length) return;
+    if (cachedEpisodePath(target) != null) return;
     preloadManager.preloadEpisodeHeaderOnly(
       episodes: episodes,
       currentIndex: current,

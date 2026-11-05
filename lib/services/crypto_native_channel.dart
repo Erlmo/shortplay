@@ -21,6 +21,7 @@ class CryptoNativeChannel {
   static final CryptoNativeChannel instance = CryptoNativeChannel._();
 
   static const MethodChannel _channel = MethodChannel('shortplay/crypto');
+  final Map<String, Future<int>> _pendingPrewarms = {};
 
   /// Whether native crypto is supported on this platform.
   static bool get isSupported =>
@@ -72,6 +73,21 @@ class CryptoNativeChannel {
   /// platform isn't supported or the call itself failed.
   Future<int> prewarm(String cdnUrl, String keyHex) async {
     if (!isSupported) return -1;
+    final identity = '$cdnUrl\u0000$keyHex';
+    final pending = _pendingPrewarms[identity];
+    if (pending != null) return pending;
+    final request = _prewarm(cdnUrl, keyHex);
+    _pendingPrewarms[identity] = request;
+    try {
+      return await request;
+    } finally {
+      if (identical(_pendingPrewarms[identity], request)) {
+        _pendingPrewarms.remove(identity);
+      }
+    }
+  }
+
+  Future<int> _prewarm(String cdnUrl, String keyHex) async {
     try {
       final status = await _channel.invokeMethod<int>(
         'prewarm',

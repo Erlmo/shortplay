@@ -254,7 +254,10 @@ extension _PlayerControls on _PlayerPageState {
     final isForward = index > _currentEpisodeIndex;
 
     // 向前滑且下一集没准备好：弹回原位并提示
-    if (isForward && !nextPlayerReady && !_swipeBlocked) {
+    if (isForward &&
+        !nextPlayerReady &&
+        cachedEpisodePath(index) == null &&
+        !_swipeBlocked) {
       _programmaticJump = true;
       _pageController?.animateToPage(
         _currentEpisodeIndex,

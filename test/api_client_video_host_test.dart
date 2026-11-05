@@ -5,6 +5,7 @@ import 'package:shortplay/services/api_client.dart';
 import 'support/video_resolution_adapter.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   test('客户端只向服务端提交视频ID取得播放结果，不执行上游请求', () async {
     final adapter = VideoResolutionAdapter();
     final client = ApiClient(

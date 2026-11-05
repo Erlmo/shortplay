@@ -26,9 +26,12 @@ android {
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdkVersion = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
+        externalNativeBuild {
+            cmake { arguments "-DANDROID_STL=c++_static" }
+        }
         versionCode = flutter.versionCode
         // Android 使用独立版本号，iOS 继续使用 pubspec.yaml 中的版本。
-        versionName = "3.2.5"
+        versionName = "3.2.6"
     }
 
     // 支持 arm64-v8a 和 armeabi-v7a（32 位：老手机和大量电视盒子）。
@@ -49,6 +52,10 @@ android {
                 "**/x86_64/**",
             ]
         }
+    }
+
+    externalNativeBuild {
+        cmake { path "src/main/cpp/bvc2/CMakeLists.txt" }
     }
 
     buildTypes {

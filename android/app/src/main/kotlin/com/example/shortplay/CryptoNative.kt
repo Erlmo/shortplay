@@ -2,10 +2,13 @@ package com.example.shortplay
 
 import android.util.Log
 import androidx.annotation.Keep
+import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import java.io.InputStream
+import java.io.IOException
+import java.io.InterruptedIOException
 import java.net.Proxy
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -101,8 +104,10 @@ object CryptoNative {
 @Keep
 object HttpBridge {
     private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        // 文件头请求必须在 Dart 的 15 秒首帧期限内完成或重试。
+        .connectTimeout(3, TimeUnit.SECONDS)
+        .readTimeout(5, TimeUnit.SECONDS)
+        .callTimeout(6, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         // Bypass the system/WiFi HTTP proxy and hit the CDN directly. OkHttp
         // defaults to ProxySelector.getDefault(), which picks up a per-network
@@ -112,28 +117,123 @@ object HttpBridge {
         .proxy(Proxy.NO_PROXY)
         .build()
 
-    /**
-     * Blocking GET of [url] with an inclusive Range header bytes=[start]-[end].
-     * Called on libmpv's native thread (already JVM-attached by JNI).
-     */
+    // MP4 扫描会连续读取几个 8 字节 box 头。一次读取有界前缀，避免
+    // 每个 box 都等待一次 CDN 往返；同一前缀也供首段预热复用。
+    private data class Prefix(val bytes: ByteArray, val createdAt: Long)
+    private val prefixes = LinkedHashMap<String, Prefix>()
+    private const val PREFIX_SIZE = 256 * 1024
+    private const val PREFIX_TTL_MS = 30_000L
+
+    private fun cachedRange(url: String, start: Long, end: Long): ByteArray? {
+        synchronized(prefixes) {
+            val prefix = prefixes[url] ?: return null
+            if (android.os.SystemClock.elapsedRealtime() - prefix.createdAt > PREFIX_TTL_MS) {
+                prefixes.remove(url)
+                return null
+            }
+            if (start < 0 || end < start || end >= prefix.bytes.size) return null
+            return prefix.bytes.copyOfRange(start.toInt(), end.toInt() + 1)
+        }
+    }
+
+    /** 一个播放器的打开操作共用取消范围，退出时立即关闭等待中的请求。 */
+    class RequestScope {
+        @Volatile private var cancelled = false
+        private val calls = ConcurrentHashMap.newKeySet<Call>()
+        fun ensureActive() {
+            if (cancelled || Thread.currentThread().isInterrupted) {
+                throw InterruptedIOException("Playback request cancelled")
+            }
+        }
+        fun register(call: Call) {
+            calls.add(call)
+            if (cancelled) call.cancel()
+        }
+        fun remove(call: Call) { calls.remove(call) }
+        fun cancel() {
+            cancelled = true
+            calls.forEach { it.cancel() }
+        }
+    }
+
+    private val requestScope = ThreadLocal<RequestScope>()
+
+    fun <T> withRequestScope(scope: RequestScope, action: () -> T): T {
+        val previous = requestScope.get()
+        requestScope.set(scope)
+        try {
+            scope.ensureActive()
+            return action()
+        } finally {
+            if (previous == null) requestScope.remove() else requestScope.set(previous)
+        }
+    }
+
+    /** 有界 Range 读取；瞬时 CDN 故障自动重试一次，不在取消后继续请求。 */
     @JvmStatic
     fun httpRange(url: String, start: Long, end: Long): ByteArray? {
-        return try {
-            val req = Request.Builder()
-                .url(url)
-                .header("Range", "bytes=$start-$end")
-                .build()
-            client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    Log.e("sp_crypto", "httpRange HTTP ${resp.code} for $url [$start-$end]")
-                    return null
+        val scope = requestScope.get()
+        try { scope?.ensureActive() } catch (_: InterruptedIOException) { return null }
+        if (start < 0 || end < start || end - start >= Int.MAX_VALUE) return null
+        cachedRange(url, start, end)?.let { return it }
+        val fetchPrefix = start == 0L && end <= 15L
+        val requestEnd = if (fetchPrefix) PREFIX_SIZE - 1L else end
+        val request = Request.Builder().url(url)
+            .header("Range", "bytes=$start-$requestEnd").build()
+        val wanted = (requestEnd - start + 1).toInt()
+        repeat(2) { attempt ->
+            try { scope?.ensureActive() } catch (_: InterruptedIOException) { return null }
+            if (Thread.currentThread().isInterrupted) return null
+            val call = client.newCall(request)
+            scope?.register(call)
+            val clock = android.os.SystemClock.elapsedRealtime()
+            try {
+                val bytes = call.execute().use { response ->
+                    if (!response.isSuccessful) throw IOException("CDN HTTP ${response.code}")
+                    // Range 被忽略时不能把整个文件当作非零偏移的片段。
+                    if ((response.code == 200 && start != 0L) ||
+                        (response.code == 206 && !response.header("Content-Range", "")!!
+                            .startsWith("bytes $start-"))) {
+                        throw IOException("Invalid CDN range response")
+                    }
+                    val input = response.body?.byteStream() ?: throw IOException("Empty CDN body")
+                    val output = java.io.ByteArrayOutputStream(minOf(wanted, PREFIX_SIZE))
+                    val buffer = ByteArray(minOf(16 * 1024, wanted))
+                    while (output.size() < wanted) {
+                        val n = input.read(buffer, 0, minOf(buffer.size, wanted - output.size()))
+                        if (n < 0) break
+                        if (n == 0) throw IOException("Empty CDN read")
+                        output.write(buffer, 0, n)
+                    }
+                    output.toByteArray()
                 }
-                resp.body?.bytes()
+                if (bytes.size < end - start + 1) throw IOException("Truncated CDN range")
+                if (fetchPrefix) {
+                    synchronized(prefixes) {
+                        prefixes[url] = Prefix(bytes, android.os.SystemClock.elapsedRealtime())
+                        while (prefixes.size > 4) prefixes.remove(prefixes.keys.first())
+                    }
+                }
+                Log.d("PlaybackNetwork", "host=${request.url.host} range=$start-$requestEnd " +
+                    "attempt=${attempt + 1} bytes=${bytes.size} elapsed_ms=" +
+                    (android.os.SystemClock.elapsedRealtime() - clock))
+                return if (fetchPrefix) bytes.copyOfRange(0, end.toInt() + 1) else bytes
+            } catch (error: IOException) {
+                if (call.isCanceled() || Thread.currentThread().isInterrupted) {
+                    // callTimeout 也会把 Call 标记为取消；播放器取消由 scope 单独判断。
+                    try { scope?.ensureActive() } catch (_: InterruptedIOException) { return null }
+                    if (Thread.currentThread().isInterrupted) return null
+                }
+                Log.w("PlaybackNetwork", "host=${request.url.host} range=$start-$requestEnd " +
+                    "attempt=${attempt + 1} elapsed_ms=" +
+                    (android.os.SystemClock.elapsedRealtime() - clock) + " error=${error.javaClass.simpleName}")
+                // 只清理空闲连接，避免再次借用已失效的连接；不关闭正在播放的流。
+                client.connectionPool.evictAll()
+            } finally {
+                scope?.remove(call)
             }
-        } catch (t: Throwable) {
-            Log.e("sp_crypto", "httpRange threw for $url [$start-$end]: ${t.javaClass.simpleName}: ${t.message}")
-            null
         }
+        return null
     }
 
     // ── Streaming GET (used for the mdat region) ────────────────────────────
@@ -144,10 +244,11 @@ object HttpBridge {
 
     private val streams = ConcurrentHashMap<Long, Stream>()
     private val nextId = AtomicLong(1L)
-    // Separate client: no read timeout, since a streamed body stays open and
-    // may idle between chunks while the window is full (TCP backpressure).
+    // 流式正文不能继承文件头的整次调用期限，否则播放六秒就会被取消。
+    // readTimeout 只约束实际阻塞读取，不影响播放器暂停时不读取的连接。
     private val streamClient: OkHttpClient = client.newBuilder()
-        .readTimeout(0, TimeUnit.SECONDS)
+        .callTimeout(0, TimeUnit.SECONDS)
+        .readTimeout(6, TimeUnit.SECONDS)
         .build()
 
     /** Open a streamed GET at [start]. Returns a stream id, or 0 on failure. */
@@ -165,6 +266,7 @@ object HttpBridge {
                 resp.close()
                 return 0L
             }
+            body.source().timeout().timeout(8, TimeUnit.SECONDS)
             val id = nextId.getAndIncrement()
             streams[id] = Stream(resp, body.byteStream())
             id

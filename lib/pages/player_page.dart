@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
@@ -131,6 +133,8 @@ class _PlayerPageState extends State<PlayerPage>
   int _catalogRequestId = 0;
   bool _didPreloadN2 = false;
   bool _didPreloadN3 = false;
+  bool _startupPreloadsScheduled = false;
+  int _startupPositionMs = 0;
   int _lastHistorySaveMs = 0;
 
   StreamSubscription<String>? _errorSub;
@@ -217,6 +221,21 @@ class _PlayerPageState extends State<PlayerPage>
   TheaterVideoPreloadManager get preloadManager => _preloadManager;
   @override
   bool get isOfflinePlayback => widget.offlineEpisodes != null;
+  @override
+  String? cachedEpisodePath(int index) {
+    if (index < 0 || index >= _episodes.length) return null;
+    if (isOfflinePlayback) return _episodes[index].url;
+    final group = widget.downloadService?.groups[_drama.id.toString()];
+    if (group == null) return null;
+    for (final download in group.episodes) {
+      if (download.episode.index == _episodes[index].index &&
+          download.isPlayable) {
+        return download.localPath;
+      }
+    }
+    return null;
+  }
+
   bool get _isDirectVideo => widget.directVideoUrl != null;
 
   // ─── 生命周期 ──────────────────────────────────────────────────────────

@@ -8,10 +8,14 @@ const int _kHistorySaveIntervalMs = 10000;
 extension _PlayerPlayback on _PlayerPageState {
   // ─── 数据加载 ──────────────────────────────────────────────────────────
 
-  String get _resolveStepLabel =>
-      _isDirectVideo ? '连接视频' : (isOfflinePlayback ? '读取本地缓存' : '解析播放地址');
+  String get _resolveStepLabel => _isDirectVideo
+      ? '连接视频'
+      : (isOfflinePlayback || cachedEpisodePath(_currentEpisodeIndex) != null
+          ? '读取本地缓存'
+          : '解析播放地址');
 
   Future<void> _prepare() async {
+    final startupClock = Stopwatch()..start();
     final catalogRequest = ++_catalogRequestId;
     _errorMessage = null;
     _steps = [
@@ -79,6 +83,7 @@ extension _PlayerPlayback on _PlayerPageState {
         _currentEpisodeIndex,
         initialSeekMs:
             _selectedSeasonDrama == null ? widget.initialPositionMs : null,
+        startupClock: startupClock,
       );
     } catch (e) {
       if (!mounted || catalogRequest != _catalogRequestId) return;
@@ -105,8 +110,19 @@ extension _PlayerPlayback on _PlayerPageState {
 
   // ─── 打开剧集 ──────────────────────────────────────────────────────────
 
-  Future<void> _openEpisode(int index, {int? initialSeekMs}) async {
+  Future<void> _openEpisode(int index,
+      {int? initialSeekMs, Stopwatch? startupClock}) async {
     if (_sleepStopped || index < 0 || index >= _episodes.length) return;
+    final startup = startupClock ?? (Stopwatch()..start());
+    void trace(String stage) {
+      if (const bool.fromEnvironment('SHORTPLAY_TRACE_STARTUP')) {
+        debugPrint('[Startup] episode=${index + 1} stage=$stage '
+            'elapsed_ms=${startup.elapsedMilliseconds} '
+            'epoch_ms=${DateTime.now().millisecondsSinceEpoch}');
+      }
+    }
+
+    trace('catalog_ready');
     final reqId = ++_requestId;
     _errorMessage = null;
     if (_preparingPlayer != null) {
@@ -162,6 +178,7 @@ extension _PlayerPlayback on _PlayerPageState {
       return;
     }
     final (:cdnUrl, :keyHex) = source;
+    trace('source_ready');
 
     _updateStep('resolve', StepStatus.success);
     _updateStep('player', StepStatus.running);
@@ -169,14 +186,19 @@ extension _PlayerPlayback on _PlayerPageState {
     final player = NativePlayer();
     _preparingPlayer = player;
     try {
-      if (keyHex.isNotEmpty) {
+      // Android 在播放器读取线程准备首段，与 Surface 创建重叠。
+      // Apple 平台保留原有预热流程。
+      if (keyHex.isNotEmpty &&
+          defaultTargetPlatform != TargetPlatform.android) {
         await CryptoNativeChannel.instance.prewarm(cdnUrl, keyHex);
       }
+      trace('create_started');
       if (!mounted || reqId != _requestId) {
         await player.dispose();
         return;
       }
       await player.create(cdnUrl, keyHex);
+      trace('player_created');
     } catch (e) {
       if (identical(_preparingPlayer, player)) _preparingPlayer = null;
       await player.dispose();
@@ -200,6 +222,7 @@ extension _PlayerPlayback on _PlayerPageState {
     // 等首帧渲染出来再隐藏 loading（避免黑屏闪烁）
     try {
       await player.waitForFirstFrame();
+      trace('first_frame');
     } catch (error) {
       if (identical(_preparingPlayer, player)) _preparingPlayer = null;
       if (!mounted || reqId != _requestId) {
@@ -301,12 +324,16 @@ extension _PlayerPlayback on _PlayerPageState {
 
   /// 新的一集开始播放后的公共收尾：订阅、弹幕、预热、预取下一季、记历史。
   void _onEpisodeStarted(NativePlayer player, int reqId, int? initialSeekMs) {
+    _startupPreloadsScheduled = false;
+    _startupPositionMs = initialSeekMs ?? player.position.inMilliseconds;
     _setupSubscriptions(player, reqId);
     if (_isDirectVideo) return;
+    // 下一集已在本地时无需避让网络带宽，当前首帧出画后立即准备翻页画面。
+    if (cachedEpisodePath(_currentEpisodeIndex + 1) != null) {
+      unawaited(prepareNextPlayer(_currentEpisodeIndex + 1));
+    }
     _danmakuController.clearComments();
     _loadDanmaku(positionMs: initialSeekMs);
-    schedulePreloads(_currentEpisodeIndex);
-    _maybePrefetchNextSeason();
     _saveHistory(positionMs: initialSeekMs);
   }
 
@@ -315,9 +342,10 @@ extension _PlayerPlayback on _PlayerPageState {
   Future<({String cdnUrl, String keyHex})?> _resolveSource(
       String videoId, int index, int reqId) async {
     if (_isDirectVideo) return (cdnUrl: videoId, keyHex: '');
-    if (isOfflinePlayback) {
+    final localPath = cachedEpisodePath(index);
+    if (localPath != null) {
       return (
-        cdnUrl: await OfflinePlaybackCache.playableFileUri(videoId),
+        cdnUrl: await OfflinePlaybackCache.playableFileUri(localPath),
         keyHex: '',
       );
     }
@@ -372,6 +400,15 @@ extension _PlayerPlayback on _PlayerPageState {
 
   void _checkPreloadThresholds(Duration position, Duration duration) {
     if (_isDirectVideo) return;
+    // 首帧只说明解码出了一帧，不能此时就让后续两集争用本集的起播带宽。
+    // 使用播放进度而非墙上时间，暂停或卡缓冲时不会提前启动预加载。
+    if (!_startupPreloadsScheduled &&
+        !(_player?.buffering ?? false) &&
+        position.inMilliseconds - _startupPositionMs >= 3000) {
+      _startupPreloadsScheduled = true;
+      schedulePreloads(_currentEpisodeIndex);
+      _maybePrefetchNextSeason();
+    }
     if (duration <= Duration.zero) return;
     final progress = position.inMilliseconds / duration.inMilliseconds;
     if (!_didPreloadN2 && progress >= 0.5) {

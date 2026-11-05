@@ -7,6 +7,7 @@ import 'package:shortplay/services/api_client.dart';
 import 'support/video_resolution_adapter.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   test('解析后读取key命中服务端返回值，不再请求解密接口', () async {
     final adapter = VideoResolutionAdapter();
     final api = ApiClient(dio: Dio()..httpClientAdapter = adapter);

@@ -1,6 +1,6 @@
 part of '../drama_detail_page.dart';
 
-/// 数据加载（季列表、剧集预取、首集预热、播放历史）与播放 / 缓存操作。
+/// 数据加载（季列表、剧集目录、播放历史）与播放 / 缓存操作。
 extension _DetailActions on _DramaDetailPageState {
   Future<void> _loadSeasons() async {
     if (_loadingSeasons) return;
@@ -26,7 +26,6 @@ extension _DetailActions on _DramaDetailPageState {
       _detailDrama = season.toDrama();
       _lastEpisodeIndex = null;
       _lastPositionMs = null;
-      _detailPreloadManager.clear();
       _prefetchEpisodes();
     });
     unawaited(_loadHistory());
@@ -56,10 +55,7 @@ extension _DetailActions on _DramaDetailPageState {
         seasons: seasons, currentId: drama.id, onSelect: _openSeason);
   }
 
-  // 用户在详情页看封面/简介的几秒里，把剧集列表先拉好。catchError 吞掉异常，
-  // 让 Future 始终安全可 await —— 播放页拿到失败的 Future 会自行回退重新请求。
-  // 列表到手后顺带预热首集播放地址 + 512KB seed，这样用户快速点进首集时大概率
-  // 已命中 prewarm，cb_open 直接带解密数据出首帧，消除“没缓存好就进首集”的黑屏。
+  // 加载详情页展示所需的剧集目录，不解析视频地址或预热视频数据。
   void _prefetchEpisodes() {
     if (!drama.isTheaterResource) return;
     final requestedId = drama.id;
@@ -78,29 +74,8 @@ extension _DetailActions on _DramaDetailPageState {
       throw e;
     });
     _prefetchedEpisodes = future;
-    unawaited(_prewarmFirstEpisode(future));
-  }
-
-  // 预热首集：解析首集播放地址并触发 native 512KB prewarm。fire-and-forget，
-  // 任何失败都只是退回“无预热”的冷路径，绝不影响详情页/播放页本身。
-  Future<void> _prewarmFirstEpisode(
-    Future<TheaterEpisodesResult> episodesFuture,
-  ) async {
-    try {
-      final result = await episodesFuture;
-      if (!mounted || !identical(episodesFuture, _prefetchedEpisodes)) return;
-      final episodes = result.toEpisodes();
-      if (episodes.isEmpty) return;
-      await _detailPreloadManager.preloadEpisode(
-        episodes: episodes,
-        currentIndex: 0,
-        targetIndex: 0,
-        isStillCurrent: () =>
-            mounted && identical(episodesFuture, _prefetchedEpisodes),
-      );
-    } catch (e) {
-      debugPrint('详情页预热首集失败(将由播放页冷启动): $e');
-    }
+    // 目录区域尚未构建或页面已退出时，也接住失败；原 Future 仍供界面显示错误。
+    unawaited(future.then<void>((_) {}, onError: (Object _, StackTrace __) {}));
   }
 
   Future<void> _loadHistory() async {
@@ -129,30 +104,20 @@ extension _DetailActions on _DramaDetailPageState {
       {bool resume = false, int? episodeIndex}) {
     Navigator.of(context)
         .push(
-      MaterialPageRoute(
-        builder: (_) => PlayerPage(
-          drama: drama,
-          apiClient: apiClient,
-          downloadService: widget.downloadService,
-          initialEpisodeIndex:
-              episodeIndex ?? (resume ? (_lastEpisodeIndex ?? 0) : 0),
-          initialPositionMs: resume ? _lastPositionMs : null,
-          prefetchedEpisodes: _prefetchedEpisodes,
-          preloadManager: _detailPreloadManager,
-          seasons: _seasons,
-        ),
-      ),
-    )
-        .then((_) async {
-      // resolvePlayUrl 命中时 remove 掉了缓存项，返回详情页若不重新预热，再次
-      // 播放就会 miss。这里 await 历史加载（拿到最新续播集）后重新预热首集，
-      // 让“返回→再播放”同样秒开。
-      await _loadHistory();
-      final episodesFuture = _prefetchedEpisodes;
-      if (episodesFuture != null) {
-        unawaited(_prewarmFirstEpisode(episodesFuture));
-      }
-    });
+          MaterialPageRoute(
+            builder: (_) => PlayerPage(
+              drama: drama,
+              apiClient: apiClient,
+              downloadService: widget.downloadService,
+              initialEpisodeIndex:
+                  episodeIndex ?? (resume ? (_lastEpisodeIndex ?? 0) : 0),
+              initialPositionMs: resume ? _lastPositionMs : null,
+              prefetchedEpisodes: _prefetchedEpisodes,
+              seasons: _seasons,
+            ),
+          ),
+        )
+        .then((_) => _loadHistory());
   }
 
   Future<void> _downloadAll(BuildContext context) async {

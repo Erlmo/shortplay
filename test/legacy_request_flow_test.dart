@@ -82,6 +82,7 @@ class _LegacyRequestAdapter implements HttpClientAdapter {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   test('业务请求不附加安装身份，播放公共参数不读取遗留缓存', () async {
     const oldCache = '旧设备缓存故意保留为无效JSON';
     SharedPreferences.setMockInitialValues({_oldDeviceCacheKey: oldCache});

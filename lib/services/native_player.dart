@@ -1,12 +1,25 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart'
+    show debugPrint, visibleForTesting, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart' show Size, ValueNotifier;
 
 class NativePlayer {
   static const _channel = MethodChannel('shortplay/native_player');
   static const _events = EventChannel('shortplay/native_player/events');
+
+  /// 由已加载的原生解码器报告能力；未加载解码器的平台保留兼容编码。
+  static Future<bool> supportsByteVc2() async {
+    if (defaultTargetPlatform != TargetPlatform.android) return false;
+    try {
+      return await _channel.invokeMethod<bool>('supportsBvc2') ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
 
   static StreamSubscription? _globalEventSub;
   static final Map<int, NativePlayer> _instances = {};
@@ -246,6 +259,12 @@ class NativePlayer {
   void _handleEvent(dynamic event) {
     if (_disposed || event is! Map) return;
     final type = event['type'] as String?;
+    if (const bool.fromEnvironment('SHORTPLAY_TRACE_STARTUP')) {
+      if (type == 'buffering' || type == 'firstFrame' || type == 'error') {
+        debugPrint('[StartupEvent] player=$_playerId type=$type '
+            'value=${event['value']} epoch_ms=${DateTime.now().millisecondsSinceEpoch}');
+      }
+    }
     switch (type) {
       case 'created':
         final textureId = event['value'] as int;

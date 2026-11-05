@@ -3,8 +3,9 @@ part of '../player_page.dart';
 /// 剧集页的 UI：竖向 PageView、每一页的画面 / 弹幕 / 控件叠加层。
 extension _PlayerView on _PlayerPageState {
   Widget _buildPageView() {
-    // 下一集没准备好且不是最后一集时，阻止向前翻页
+    // 本地文件可直接打开，不必等待下一集播放器预热完成。
     final bool blockForward = !nextPlayerReady &&
+        cachedEpisodePath(_currentEpisodeIndex + 1) == null &&
         _currentEpisodeIndex < _episodes.length - 1 &&
         !_loading;
 

@@ -9,7 +9,7 @@ import '../services/offline_playback_cache.dart';
 import 'player_page.dart';
 
 /// 从一条播放记录续播：定位到记录的那一集和进度；这部剧有已下载完成的
-/// 剧集时优先离线播放。历史页和首页“继续观看”共用。
+/// 当前续播集已下载完成时优先离线播放。历史页和首页“继续观看”共用。
 Future<void> openPlaybackRecord(
   BuildContext context, {
   required PlaybackRecord record,
@@ -33,7 +33,10 @@ Future<void> openPlaybackRecord(
   final group = downloadService?.groups[record.dramaId.toString()];
   if (group != null) {
     final completed = OfflinePlaybackCache.completedEpisodesFromGroup(group);
-    if (completed.isNotEmpty) offlineEpisodes = completed;
+    final episodeNumber = record.episodeNumber ?? record.episodeIndex + 1;
+    if (completed.any((episode) => episode.index == episodeNumber)) {
+      offlineEpisodes = completed;
+    }
   }
 
   return Navigator.of(context).push(

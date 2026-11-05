@@ -1,0 +1,5 @@
+Bvc2Mp4Extractor.java and Bvc2AtomParsers.java are derived from AndroidX Media3
+media3-extractor 1.4.1, distributed under the Apache License 2.0.
+Original source: https://github.com/androidx/media
+Changes: renamed classes, added bvc2/bv2C parsing, removed a compile-time-only
+Checker Framework annotation. Existing format parsing is otherwise retained.

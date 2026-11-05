@@ -6,6 +6,12 @@ import android.os.Handler
 import android.os.Looper
 import android.view.Surface
 import android.view.WindowManager
+import com.example.shortplay.bvc2.Bvc2Native
+import com.example.shortplay.bvc2.Bvc2RenderersFactory
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.ExtractorsFactory
+import androidx.media3.extractor.mp4.Mp4Extractor
+import androidx.media3.extractor.mp4.Bvc2Mp4Extractor
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
@@ -16,6 +22,8 @@ import androidx.media3.datasource.BaseDataSource
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.EventChannel
@@ -54,10 +62,8 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
     /**
      * Owns every native crypto stream of one player.
      *
-     * - The handle pre-opened in handleCreate (validation + layout build) is
-     *   handed to the first CryptoDataSource.open() instead of being left idle.
-     *   Previously it was never read, yet its producer thread streamed up to
-     *   16MB in parallel with the DataSource's own stream (double download).
+     * - CryptoDataSource.open() opens its stream on ExoPlayer's loader thread,
+     *   overlapping header/data reads with surface and decoder preparation.
      * - setActive() parks/unparks every live handle so a paused prev/next
      *   player stops competing for bandwidth with the on-screen episode.
      * - release() aborts live handles so a reader blocked on a parked stream
@@ -65,6 +71,7 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
      */
     private class StreamSlot(pending: Long) {
         private val lock = Any()
+        private val openingScope = HttpBridge.RequestScope()
         private var pending: Long = pending
         private val live = HashSet<Long>()
         private var active = true
@@ -80,7 +87,13 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
             }
             if (h == 0L) {
                 // Network work: never under the lock (setActive runs on main).
-                h = CryptoNative.nativePlayerStreamOpen(cdnUrl, keyHex)
+                // 在 ExoPlayer 的读取线程准备首段；Surface 和解码器初始化可并行。
+                h = HttpBridge.withRequestScope(openingScope) {
+                    val warmResult = CryptoNative.prewarm(cdnUrl, keyHex)
+                    openingScope.ensureActive()
+                    if (warmResult != 0) throw java.io.IOException("无法读取视频文件头，请重试")
+                    CryptoNative.nativePlayerStreamOpen(cdnUrl, keyHex)
+                }
                 if (h == 0L) throw java.io.IOException("Failed to open crypto stream")
             }
             synchronized(lock) {
@@ -113,6 +126,7 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         fun release(): Long {
             synchronized(lock) {
                 released = true
+                openingScope.cancel()
                 for (h in live) CryptoNative.nativePlayerStreamAbort(h)
                 val p = pending
                 pending = 0L
@@ -154,6 +168,7 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
+            "supportsBvc2" -> result.success(Bvc2Native.isAvailable())
             "create" -> {
                 val cdnUrl = call.argument<String>("cdnUrl")!!
                 val keyHex = call.argument<String>("keyHex")!!
@@ -172,6 +187,7 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
             "seek" -> {
                 val id = call.argument<Int>("id")!!
                 val positionMs = call.argument<Number>("positionMs")!!.toLong()
+                android.util.Log.d("ShortPlayBvc2", "seek player=$id target=$positionMs")
                 players[id]?.player?.seekTo(positionMs)
                 result.success(null)
             }
@@ -227,15 +243,21 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
             }
         } else {
             CryptoNative.ensureInit()
-            backgroundExecutor.execute {
-                val streamHandle = CryptoNative.nativePlayerStreamOpen(cdnUrl, keyHex)
-                if (streamHandle == 0L) {
-                    sendEvent(playerId, "error", "sp_stream_open failed")
-                    return@execute
+            handler.post {
+                try {
+                    createPlayerWithCrypto(playerId, cdnUrl, keyHex)
+                } catch (error: Exception) {
+                    disposePlayer(playerId)
+                    sendEvent(playerId, "error", error.message ?: "无法打开视频")
                 }
-                handler.post { createPlayerWithCrypto(playerId, cdnUrl, keyHex, streamHandle) }
             }
         }
+    }
+
+    private fun playbackExtractors(): ExtractorsFactory = ExtractorsFactory {
+        DefaultExtractorsFactory().createExtractors().map { extractor ->
+            if (extractor is Mp4Extractor && Bvc2Native.isAvailable()) Bvc2Mp4Extractor() else extractor
+        }.toTypedArray()
     }
 
     private fun createPlayerWithUri(playerId: Int, uri: String) {
@@ -251,7 +273,9 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         }
         val textureEntry = textureRegistry.createSurfaceTexture()
         val surface = Surface(textureEntry.surfaceTexture())
-        val player = ExoPlayer.Builder(flutterBinding.applicationContext).build()
+        val player = ExoPlayer.Builder(flutterBinding.applicationContext, Bvc2RenderersFactory(flutterBinding.applicationContext))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(flutterBinding.applicationContext, playbackExtractors()))
+            .build()
         players[playerId] = PlayerInstance(playerId, player, textureEntry, null, surface)
         setupPlayerListener(playerId, player)
         player.setVideoSurface(surface)
@@ -264,19 +288,25 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
     }
 
     private fun createPlayerWithCrypto(
-        playerId: Int, cdnUrl: String, keyHex: String, streamHandle: Long
+        playerId: Int, cdnUrl: String, keyHex: String
     ) {
         val textureEntry = textureRegistry.createSurfaceTexture()
         val surface = Surface(textureEntry.surfaceTexture())
 
-        val player = ExoPlayer.Builder(flutterBinding.applicationContext).build()
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(15000, 50000, 1000, 2500)
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+        val player = ExoPlayer.Builder(flutterBinding.applicationContext, Bvc2RenderersFactory(flutterBinding.applicationContext))
+            .setLoadControl(loadControl)
+            .build()
         player.setVideoSurface(surface)
 
-        val slot = StreamSlot(streamHandle)
+        val slot = StreamSlot(0L)
         val dataSourceFactory = DataSource.Factory {
             CryptoDataSource(cdnUrl, keyHex, slot)
         }
-        val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
+        val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory, playbackExtractors())
             .createMediaSource(MediaItem.fromUri("crypto://$cdnUrl"))
         players[playerId] = PlayerInstance(playerId, player, textureEntry, slot, surface)
         setupPlayerListener(playerId, player)
@@ -391,6 +421,7 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         private var streamHandle: Long = 0L
         private var uri: Uri? = null
         private var bytesRemaining: Long = C.LENGTH_UNSET.toLong()
+        private var transferOpen = false
 
         override fun open(dataSpec: DataSpec): Long {
             uri = dataSpec.uri
@@ -407,6 +438,7 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
                 C.LENGTH_UNSET.toLong()
             }
             transferStarted(dataSpec)
+            transferOpen = true
             return bytesRemaining
         }
 
@@ -420,7 +452,12 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
             }
             val tempBuf = ByteArray(toRead)
             val bytesRead = CryptoNative.nativePlayerStreamRead(streamHandle, tempBuf, toRead)
-            if (bytesRead <= 0) return C.RESULT_END_OF_INPUT
+            if (bytesRead < 0 || (bytesRead == 0 && bytesRemaining > 0)) {
+                // Native 在网络失败/流被中断时也可能返回 0。文件尚未读完时
+                // 必须作为 I/O 错误交给 ExoPlayer 重连，不能伪装成正常 EOF。
+                throw java.io.IOException("视频数据读取中断，正在重新连接")
+            }
+            if (bytesRead == 0) return C.RESULT_END_OF_INPUT
             System.arraycopy(tempBuf, 0, buffer, offset, bytesRead)
             if (bytesRemaining != C.LENGTH_UNSET.toLong()) {
                 bytesRemaining -= bytesRead
@@ -432,12 +469,19 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         override fun getUri(): Uri? = uri
 
         override fun close() {
-            if (streamHandle != 0L) {
-                val h = streamHandle
-                streamHandle = 0L
-                slot.closeHandle(h)
+            try {
+                if (streamHandle != 0L) {
+                    val h = streamHandle
+                    streamHandle = 0L
+                    slot.closeHandle(h)
+                }
+            } finally {
+                // 打开阶段失败时还没有 transferStarted，不能发送虚假的结束事件。
+                if (transferOpen) {
+                    transferOpen = false
+                    transferEnded()
+                }
             }
-            transferEnded()
         }
     }
 }
