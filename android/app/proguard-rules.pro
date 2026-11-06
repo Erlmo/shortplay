@@ -9,3 +9,10 @@
 # 显式保留类名与全部成员，确保 native 侧能按原始名字解析。
 -keep class com.example.shortplay.CryptoNative { *; }
 -keep class com.example.shortplay.HttpBridge { *; }
+
+# BVC2 JNI 按名称调用 initForYuvFrame，并访问 data、decoderPrivate 和继承的 timeUs。
+# profile 包不会触发 R8；release 必须保留这些 native 调用点。
+-keep class androidx.media3.decoder.VideoDecoderOutputBuffer { *; }
+-keepclassmembers class androidx.media3.decoder.DecoderOutputBuffer {
+    public long timeUs;
+}

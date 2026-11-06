@@ -123,20 +123,38 @@ Java_com_example_shortplay_bvc2_Bvc2Native_decode(JNIEnv* env,jclass,jlong handl
   }
   int cw=(w+1)/2,ch=(h+1)/2;
   jclass cls=env->GetObjectClass(output);
+  if (!cls || env->ExceptionCheck()) return false;
   int color=api.info(d->frame,"color_space",0)==1 ? 2 : 1;
   auto init=env->GetMethodID(cls,"initForYuvFrame","(IIIII)Z");
-  if (!env->CallBooleanMethod(output,init,w,h,w,cw,color)) { error(env,"BVC2 frame allocation failed"); return false; }
-  jobject data=env->GetObjectField(output,env->GetFieldID(cls,"data","Ljava/nio/ByteBuffer;"));
+  if (!init || env->ExceptionCheck()) { env->DeleteLocalRef(cls); return false; }
+  jfieldID dataField=env->GetFieldID(cls,"data","Ljava/nio/ByteBuffer;");
+  if (!dataField || env->ExceptionCheck()) { env->DeleteLocalRef(cls); return false; }
+  jfieldID timeField=env->GetFieldID(cls,"timeUs","J");
+  if (!timeField || env->ExceptionCheck()) { env->DeleteLocalRef(cls); return false; }
+  jfieldID rangeField=env->GetFieldID(cls,"decoderPrivate","I");
+  if (!rangeField || env->ExceptionCheck()) { env->DeleteLocalRef(cls); return false; }
+  jboolean initialized=env->CallBooleanMethod(output,init,w,h,w,cw,color);
+  if (env->ExceptionCheck()) { env->DeleteLocalRef(cls); return false; }
+  if (!initialized) { env->DeleteLocalRef(cls); error(env,"BVC2 frame allocation failed"); return false; }
+  jobject data=env->GetObjectField(output,dataField);
+  if (!data || env->ExceptionCheck()) { env->DeleteLocalRef(cls); return false; }
   auto* target=static_cast<uint8_t*>(env->GetDirectBufferAddress(data));
+  if (!target || env->GetDirectBufferCapacity(data)<static_cast<int64_t>(w)*h+2LL*cw*ch) {
+    env->DeleteLocalRef(data); env->DeleteLocalRef(cls);
+    error(env,"Invalid BVC2 frame buffer"); return false;
+  }
   for(int i=0;i<3;i++) {
     auto* src=static_cast<uint8_t*>(api.plane(d->frame,"data",i));
     int stride=api.info(d->frame,"linesize",i),width=i?cw:w,height=i?ch:h;
-    if (!src || stride<width) { error(env,"Invalid BVC2 frame planes"); return false; }
+    if (!src || stride<width) {
+      env->DeleteLocalRef(data); env->DeleteLocalRef(cls);
+      error(env,"Invalid BVC2 frame planes"); return false;
+    }
     for(int y=0;y<height;y++) std::memcpy(target+y*width,src+y*stride,width);
     target+=width*height;
   }
-  env->SetLongField(output,env->GetFieldID(cls,"timeUs","J"),api.info(d->frame,"pts",0));
-  env->SetIntField(output,env->GetFieldID(cls,"decoderPrivate","I"),api.info(d->frame,"video_full_range_flag",0)?1:0);
+  env->SetLongField(output,timeField,api.info(d->frame,"pts",0));
+  env->SetIntField(output,rangeField,api.info(d->frame,"video_full_range_flag",0)?1:0);
   env->DeleteLocalRef(data); env->DeleteLocalRef(cls);
   return true;
 }

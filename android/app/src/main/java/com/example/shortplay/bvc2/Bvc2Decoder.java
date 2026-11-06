@@ -112,7 +112,7 @@ final class Bvc2Decoder implements Decoder<DecoderInputBuffer, VideoDecoderOutpu
           if (!end || !gotFrame) { input.clear(); freeInputs.addLast(input); input = null; }
         }
       }
-    } catch (Exception error) {
+    } catch (Exception | LinkageError error) {
       synchronized (lock) { failure = new DecoderException("BVC2 decode failed", error); lock.notifyAll(); }
     } finally {
       if (nativeHandle != 0) Bvc2Native.destroy(nativeHandle);

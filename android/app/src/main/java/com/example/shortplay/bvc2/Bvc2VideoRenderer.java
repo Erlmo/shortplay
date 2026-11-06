@@ -34,7 +34,7 @@ public final class Bvc2VideoRenderer extends DecoderVideoRenderer {
     try {
       Bvc2Native.render(output.data, output.width, output.height, output.colorspace,
           output.decoderPrivate != 0, surface);
-    } catch (RuntimeException error) { throw new DecoderException("BVC2 surface render failed", error); }
+    } catch (RuntimeException | LinkageError error) { throw new DecoderException("BVC2 surface render failed", error); }
     finally { output.release(); }
   }
   @Override protected void setDecoderOutputMode(int mode) { /* 帧统一输出到现有 SurfaceTexture。 */ }
