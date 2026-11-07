@@ -1,0 +1,4 @@
+VVdeC 3.3.0-dev (d261469)
+Source: https://github.com/fraunhoferhhi/vvdec
+Built for iOS arm64 and iOS Simulator arm64. No Android changes.
+The Clear BSD License is included in LICENSE.txt.

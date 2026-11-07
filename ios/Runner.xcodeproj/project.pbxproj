@@ -12,12 +12,17 @@
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
 		3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */; };
 		74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74858FAE1ED2DC5600515810 /* AppDelegate.swift */; };
+		84FE148497031E24E4D2F0E7 /* VvcRangeReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD62A1D3460E4E607F2C8BBC /* VvcRangeReader.swift */; };
 		97C146FC1CF9000F007C117D /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FA1CF9000F007C117D /* Main.storyboard */; };
 		97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FD1CF9000F007C117D /* Assets.xcassets */; };
 		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
+		9A1EB1FC6AA170FA61104ED9 /* VvcAudioClock.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7B42A609A69695769B28263 /* VvcAudioClock.swift */; };
 		A6E48C872A7020D50EFDF1B5 /* CryptoNative.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EE5B7DBDDD90DD84DC6CA73 /* CryptoNative.swift */; };
 		B71C885BFA935B892B71AF6E /* Pods_RunnerTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0526509F070176800C93F90F /* Pods_RunnerTests.framework */; };
 		D591B2C299D1AA26CFC9A8A7 /* Pods_Runner.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 201D6DDFF7F39B1E49A89F76 /* Pods_Runner.framework */; };
+		E51EF93EF356D26AA8748CBF /* VvcSampleIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = 572B11722691F040C08CF74F /* VvcSampleIndex.swift */; };
+		E8724A91C9CCABDA4289DAD9 /* VvcPlayback.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A812294F1897B7341BE4B43 /* VvcPlayback.swift */; };
+		F94BAC20BF23D3F915FD75D2 /* CodecPlaybackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9EEABD76DBF3871DE5A88AC0 /* CodecPlaybackTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -55,8 +60,10 @@
 		3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = AppFrameworkInfo.plist; path = Flutter/AppFrameworkInfo.plist; sourceTree = "<group>"; };
 		3EE5B7DBDDD90DD84DC6CA73 /* CryptoNative.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CryptoNative.swift; sourceTree = "<group>"; };
 		4EAAD964C1BC70AB845EBB2D /* Pods-Runner.profile.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.profile.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.profile.xcconfig"; sourceTree = "<group>"; };
+		572B11722691F040C08CF74F /* VvcSampleIndex.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VvcSampleIndex.swift; sourceTree = "<group>"; };
 		74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Runner-Bridging-Header.h"; sourceTree = "<group>"; };
 		74858FAE1ED2DC5600515810 /* AppDelegate.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		7A812294F1897B7341BE4B43 /* VvcPlayback.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VvcPlayback.swift; sourceTree = "<group>"; };
 		7AFA3C8E1D35360C0083082E /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = Release.xcconfig; path = Flutter/Release.xcconfig; sourceTree = "<group>"; };
 		9740EEB21CF90195004384FC /* Debug.xcconfig */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xcconfig; name = Debug.xcconfig; path = Flutter/Debug.xcconfig; sourceTree = "<group>"; };
 		9740EEB31CF90195004384FC /* Generated.xcconfig */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xcconfig; name = Generated.xcconfig; path = Flutter/Generated.xcconfig; sourceTree = "<group>"; };
@@ -66,6 +73,9 @@
 		97C147001CF9000F007C117D /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		97C147021CF9000F007C117D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		9E78776912CEA069F3E68867 /* Pods-RunnerTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.release.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.release.xcconfig"; sourceTree = "<group>"; };
+		9EEABD76DBF3871DE5A88AC0 /* CodecPlaybackTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CodecPlaybackTests.swift; sourceTree = "<group>"; };
+		A7B42A609A69695769B28263 /* VvcAudioClock.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VvcAudioClock.swift; sourceTree = "<group>"; };
+		AD62A1D3460E4E607F2C8BBC /* VvcRangeReader.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VvcRangeReader.swift; sourceTree = "<group>"; };
 		B250153AD39393C07ACAEB7F /* Pods-Runner.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.debug.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"; sourceTree = "<group>"; };
 		BFF6D6A18F96DF7EEC5A3CDD /* Pods-Runner.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.release.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.release.xcconfig"; sourceTree = "<group>"; };
 		F438507788485780DE845DC1 /* NativePlayerPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NativePlayerPlugin.swift; sourceTree = "<group>"; };
@@ -95,6 +105,7 @@
 			isa = PBXGroup;
 			children = (
 				331C807B294A618700263BE5 /* RunnerTests.swift */,
+				9EEABD76DBF3871DE5A88AC0 /* CodecPlaybackTests.swift */,
 			);
 			path = RunnerTests;
 			sourceTree = "<group>";
@@ -153,6 +164,10 @@
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
 				3EE5B7DBDDD90DD84DC6CA73 /* CryptoNative.swift */,
 				F438507788485780DE845DC1 /* NativePlayerPlugin.swift */,
+				572B11722691F040C08CF74F /* VvcSampleIndex.swift */,
+				7A812294F1897B7341BE4B43 /* VvcPlayback.swift */,
+				A7B42A609A69695769B28263 /* VvcAudioClock.swift */,
+				AD62A1D3460E4E607F2C8BBC /* VvcRangeReader.swift */,
 			);
 			path = Runner;
 			sourceTree = "<group>";
@@ -204,6 +219,7 @@
 				9705A1C41CF9048500538489 /* Embed Frameworks */,
 				3B06AD1E1E4923F5004D2608 /* Thin Binary */,
 				1033D4DBE8B2AE9CA48B39FB /* [CP] Embed Pods Frameworks */,
+				8A13A644D86F2586985386F7 /* [CP] Copy Pods Resources */,
 			);
 			buildRules = (
 			);
@@ -352,6 +368,23 @@
 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 			showEnvVarsInLog = 0;
 		};
+		8A13A644D86F2586985386F7 /* [CP] Copy Pods Resources */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-Runner/Pods-Runner-resources-${CONFIGURATION}-input-files.xcfilelist",
+			);
+			name = "[CP] Copy Pods Resources";
+			outputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-Runner/Pods-Runner-resources-${CONFIGURATION}-output-files.xcfilelist",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-Runner/Pods-Runner-resources.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
 		9740EEB61CF901F6004384FC /* Run Script */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -375,6 +408,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */,
+				F94BAC20BF23D3F915FD75D2 /* CodecPlaybackTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -386,6 +420,10 @@
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 				A6E48C872A7020D50EFDF1B5 /* CryptoNative.swift in Sources */,
 				20A72E5815A7620D3383C654 /* NativePlayerPlugin.swift in Sources */,
+				E51EF93EF356D26AA8748CBF /* VvcSampleIndex.swift in Sources */,
+				E8724A91C9CCABDA4289DAD9 /* VvcPlayback.swift in Sources */,
+				9A1EB1FC6AA170FA61104ED9 /* VvcAudioClock.swift in Sources */,
+				84FE148497031E24E4D2F0E7 /* VvcRangeReader.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -477,7 +515,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 26;
+				CURRENT_PROJECT_VERSION = 27;
 				DEVELOPMENT_TEAM = SJZXJRQYDJ;
 				ENABLE_BITCODE = NO;
 				EXPORTED_SYMBOLS_FILE = "$(PROJECT_DIR)/Frameworks/exported_symbols.txt";
@@ -506,6 +544,10 @@
 				DEVELOPMENT_TEAM = FFDJHGZGYJ;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"-framework",
+					XCTest,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.monika.longlong.RunnerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
@@ -525,6 +567,10 @@
 				DEVELOPMENT_TEAM = FFDJHGZGYJ;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"-framework",
+					XCTest,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.monika.longlong.RunnerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
@@ -542,6 +588,10 @@
 				DEVELOPMENT_TEAM = FFDJHGZGYJ;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"-framework",
+					XCTest,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.monika.longlong.RunnerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
@@ -666,7 +716,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 26;
+				CURRENT_PROJECT_VERSION = 27;
 				DEVELOPMENT_TEAM = SJZXJRQYDJ;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
@@ -675,6 +725,10 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 3.2.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-Wl,-exported_symbol,*",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.monika.longlong;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -690,7 +744,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 26;
+				CURRENT_PROJECT_VERSION = 27;
 				DEVELOPMENT_TEAM = SJZXJRQYDJ;
 				ENABLE_BITCODE = NO;
 				EXPORTED_SYMBOLS_FILE = "$(PROJECT_DIR)/Frameworks/exported_symbols.txt";

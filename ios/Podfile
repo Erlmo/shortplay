@@ -33,6 +33,7 @@ target 'Runner' do
 
   # Prebuilt crypto static library (binary-only, source not distributed)
   pod 'ShortplayCrypto', :path => 'Frameworks'
+  pod 'ShortplayVvc', :path => 'Frameworks'
 
   # API signing native library
   pod 'WeeouSign', :path => 'Frameworks'

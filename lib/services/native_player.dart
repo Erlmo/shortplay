@@ -11,7 +11,10 @@ class NativePlayer {
 
   /// 由已加载的原生解码器报告能力；未加载解码器的平台保留兼容编码。
   static Future<bool> supportsByteVc2() async {
-    if (defaultTargetPlatform != TargetPlatform.android) return false;
+    if (defaultTargetPlatform != TargetPlatform.android &&
+        defaultTargetPlatform != TargetPlatform.iOS) {
+      return false;
+    }
     try {
       return await _channel.invokeMethod<bool>('supportsBvc2') ?? false;
     } on MissingPluginException {
