@@ -339,8 +339,10 @@ class ApiClient {
         if (uri == null ||
             !['https', 'http'].contains(uri.scheme) ||
             uri.host.isEmpty ||
-            !RegExp(r'^[0-9a-fA-F]{32}$').hasMatch(item.decryptKey) ||
-            item.spadeA.isEmpty) {
+            (item.isEncrypted
+                ? !RegExp(r'^[0-9a-fA-F]{32}$').hasMatch(item.decryptKey) ||
+                    item.spadeA.isEmpty
+                : item.decryptKey.isNotEmpty || item.spadeA.isNotEmpty)) {
           continue;
         }
         if (item.expiresAt != null && !item.expiresAt!.isAfter(_clock())) {
@@ -348,9 +350,11 @@ class ApiClient {
         }
         item.posterUrl = data['poster_url']?.toString() ?? '';
         items.add(item);
-        _resolvedDecryptKeys.remove(item.spadeA);
-        _resolvedDecryptKeys[item.spadeA] =
-            (key: item.decryptKey, expire: item.expiresAt);
+        if (item.isEncrypted) {
+          _resolvedDecryptKeys.remove(item.spadeA);
+          _resolvedDecryptKeys[item.spadeA] =
+              (key: item.decryptKey, expire: item.expiresAt);
+        }
       }
       while (_resolvedDecryptKeys.length > 256) {
         _resolvedDecryptKeys.remove(_resolvedDecryptKeys.keys.first);

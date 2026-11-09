@@ -18,10 +18,15 @@ typedef DownloadResolver = Future<DownloadResolveResult> Function(Episode);
 typedef DecryptFile = Future<int> Function(String, String, String);
 
 class DownloadResolveResult {
-  const DownloadResolveResult({required this.cdnUrl, required this.keyHex});
+  const DownloadResolveResult({
+    required this.cdnUrl,
+    required this.keyHex,
+    this.isEncrypted = true,
+  });
 
   final String cdnUrl;
   final String keyHex;
+  final bool isEncrypted;
 }
 
 class EpisodeDownload {
@@ -519,12 +524,15 @@ class DownloadService extends ChangeNotifier {
     final selected = items.firstWhere((item) => item.definition == '1080p',
         orElse: () => items.firstWhere((item) => item.definition == '720p',
             orElse: () => items.last));
-    final key = selected.decryptKey.isNotEmpty
-        ? selected.decryptKey
-        : await apiClient
-            .fetchDecryptKey(selected.spadeA)
-            .timeout(const Duration(seconds: 5));
-    return DownloadResolveResult(cdnUrl: selected.url, keyHex: key);
+    final key = !selected.isEncrypted
+        ? ''
+        : selected.decryptKey.isNotEmpty
+            ? selected.decryptKey
+            : await apiClient
+                .fetchDecryptKey(selected.spadeA)
+                .timeout(const Duration(seconds: 5));
+    return DownloadResolveResult(
+        cdnUrl: selected.url, keyHex: key, isEncrypted: selected.isEncrypted);
   }
 
   void _schedule() {
@@ -564,12 +572,26 @@ class DownloadService extends ChangeNotifier {
         try {
           final result = await resolver(dl.episode);
           if (!_canCommit(dl, run)) return;
-          if (result.cdnUrl.isEmpty || result.keyHex.isEmpty) {
+          if (result.cdnUrl.isEmpty ||
+              (result.isEncrypted && result.keyHex.isEmpty)) {
             throw ApiException('视频地址或解密密钥为空');
           }
           _directory(dl.dramaId).createSync(recursive: true);
-          final status =
-              await _decryptToFile(result.cdnUrl, result.keyHex, run.path);
+          final int status;
+          if (result.isEncrypted) {
+            status =
+                await _decryptToFile(result.cdnUrl, result.keyHex, run.path);
+          } else {
+            await _dio
+                .download(result.cdnUrl, run.path, cancelToken: run.cancelToken,
+                    onReceiveProgress: (received, total) {
+              if (_canCommit(dl, run) && total > 0) {
+                dl._progress = received / total;
+                _notify();
+              }
+            });
+            status = 0;
+          }
           if (!_canCommit(dl, run)) return;
           final temporary = File(run.path);
           if (status != 0) throw ApiException('视频下载失败（状态码 $status）');
@@ -655,5 +677,11 @@ class DownloadService extends ChangeNotifier {
 class _DownloadRun {
   _DownloadRun(this.path);
   final String path;
-  bool cancelled = false;
+  final CancelToken cancelToken = CancelToken();
+  bool _cancelled = false;
+  bool get cancelled => _cancelled;
+  set cancelled(bool value) {
+    _cancelled = value;
+    if (value && !cancelToken.isCancelled) cancelToken.cancel();
+  }
 }

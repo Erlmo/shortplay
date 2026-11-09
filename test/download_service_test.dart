@@ -163,6 +163,36 @@ void main() {
         downloader.requests.where((r) => !r.result.isCompleted), hasLength(3));
   });
 
+  test('未加密视频直接下载，生成可离线播放的缓存文件', () async {
+    await HttpOverrides.runWithHttpOverrides(() async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      final bytes = List<int>.generate(512, (i) => i % 256);
+      final subscription = server.listen((request) async {
+        request.response.contentLength = bytes.length;
+        request.response.add(bytes);
+        await request.response.close();
+      });
+      addTearDown(subscription.cancel);
+      var decryptCalled = false;
+      final service = createService(decrypt: (url, key, path) async {
+        decryptCalled = true;
+        return 1;
+      });
+      await add(service, 'plain-video', [_episode(8)],
+          resolver: (_) async => DownloadResolveResult(
+                cdnUrl: 'http://127.0.0.1:${server.port}/episode8.mp4',
+                keyHex: '',
+                isEncrypted: false,
+              ));
+      await _until(() => service.groups['plain-video']!.isAllCompleted);
+      final download = service.groups['plain-video']!.episodes.single;
+      expect(await File(download.localPath!).readAsBytes(), bytes);
+      expect(download.isPlayable, isTrue);
+      expect(decryptCalled, isFalse);
+    }, _RealHttpOverrides());
+  });
+
   test('native 返回成功但空文件或无文件时重试并失败，不能虚报完成', () async {
     for (final bytes in <List<int>?>[null, []]) {
       int attempts = 0;
@@ -588,3 +618,5 @@ void main() {
     expect(result.toEpisodes().map((e) => e.url), ['a', 'b']);
   });
 }
+
+class _RealHttpOverrides extends HttpOverrides {}

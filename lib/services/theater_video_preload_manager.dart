@@ -201,6 +201,7 @@ class TheaterVideoPreloadManager {
       final resolved = await _resolveCached(videoId);
       if (stale()) return false;
 
+      if (resolved.key.isEmpty) return false;
       final status = await _enqueuePrewarm(() async {
         // 排队期间可能已离开页面或切换清晰度，过期任务直接跳过。
         if (stale()) return -2;
@@ -238,7 +239,7 @@ class TheaterVideoPreloadManager {
     if (videoId.isEmpty) return;
 
     final sourceUrl = _sourceUrls[videoId];
-    if (sourceUrl == null) return;
+    if (sourceUrl == null || _resolved[videoId]?.key.isEmpty == true) return;
 
     try {
       final status =
@@ -291,16 +292,20 @@ class TheaterVideoPreloadManager {
       '选择画质: ${selected.definition} ${selected.width}x${selected.height} codec=${selected.codec}',
     );
 
-    final key = selected.decryptKey.isNotEmpty
-        ? selected.decryptKey
-        : await apiClient
-            .fetchDecryptKey(selected.spadeA)
-            .timeout(const Duration(seconds: 5));
-    debugPrint('获取视频解密参数成功');
+    final key = !selected.isEncrypted
+        ? ''
+        : selected.decryptKey.isNotEmpty
+            ? selected.decryptKey
+            : await apiClient
+                .fetchDecryptKey(selected.spadeA)
+                .timeout(const Duration(seconds: 5));
+    debugPrint(selected.isEncrypted ? '获取视频解密参数成功' : '视频无需解密，直接播放');
 
     // Decrypt in the player IO pipeline via the native crypto:// protocol
     // (no localhost proxy).
-    final playUrl = CryptoNativeChannel.buildCryptoUrl(selected.url, key);
+    final playUrl = key.isEmpty
+        ? selected.url
+        : CryptoNativeChannel.buildCryptoUrl(selected.url, key);
 
     _selectedDefinitions[videoId] = selected.definition.trim().toLowerCase();
     return _ResolvedTheaterVideo(

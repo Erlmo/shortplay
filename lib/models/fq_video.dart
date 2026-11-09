@@ -12,6 +12,7 @@ class FqVideoItem {
     required this.codec,
     this.posterUrl = '',
     this.decryptKey = '',
+    this.isEncrypted = true,
     this.expiresAt,
     this.cacheable = true,
     this.codecHints = '',
@@ -27,6 +28,7 @@ class FqVideoItem {
   final String codec;
   String posterUrl;
   final String decryptKey;
+  final bool isEncrypted;
   final DateTime? expiresAt;
   final bool cacheable;
   final String codecHints;
@@ -65,6 +67,7 @@ class FqVideoItem {
                 .toLowerCase() ??
             '',
         decryptKey: json['decrypt_key']?.toString() ?? '',
+        isEncrypted: json['encrypted'] != false,
         expiresAt: expiresAt,
         cacheable: json['cacheable'] != false,
         codecHints: codecHints,
@@ -89,6 +92,7 @@ class FqVideoItem {
       kid: json['kid']?.toString() ?? '',
       codec: json['codec_type']?.toString().trim().toLowerCase() ?? '',
       decryptKey: json['decrypt_key']?.toString() ?? '',
+      isEncrypted: json['encrypted'] != false,
       expiresAt: expiresAt,
       cacheable: json['cacheable'] != false,
       codecHints: codecHints,

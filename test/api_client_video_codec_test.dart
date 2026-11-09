@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/services.dart';
 import 'package:shortplay/services/api_client.dart';
+import 'package:shortplay/services/theater_video_preload_manager.dart';
 
 import 'support/video_resolution_adapter.dart';
 
@@ -26,6 +27,42 @@ void main() {
     expect(adapter.requests.single.data, {'video_id': '1234567890'});
     expect(adapter.requests.single.headers['X-Playback-Codecs'], 'bvc2');
   });
+  test('明确未加密的视频直接播放，不调用密钥接口', () async {
+    final stream = resolvedVideoStream(codec: 'bytevc1')
+      ..['encrypted'] = false
+      ..['decrypt_key'] = ''
+      ..['spade_a'] = ''
+      ..['kid'] = '';
+    final adapter = VideoResolutionAdapter(
+      reply: (_) => resolutionJson(resolutionResponse(streams: [stream])),
+    );
+    final api = ApiClient(dio: Dio()..httpClientAdapter = adapter);
+    addTearDown(api.dispose);
+    final manager = TheaterVideoPreloadManager(apiClient: api);
+    final url =
+        await manager.resolvePlayUrl('7704303211292658712', episodeIndex: 7);
+    expect(url, 'https://cdn.example.com/video.mp4');
+    expect(adapter.requests, hasLength(1));
+    expect(adapter.requests.single.uri.path, '/algorithm/video');
+    final items = await api.fetchFqVideoModel('7704303211292658712');
+    expect(items.single.isEncrypted, isFalse);
+    manager.clear();
+  });
+
+  test('未明确声明明文时仍拒绝空密钥，标记冲突也不能绕过校验', () async {
+    for (final explicitlyPlain in [false, true]) {
+      final stream = resolvedVideoStream()..['decrypt_key'] = '';
+      if (explicitlyPlain) stream['encrypted'] = false;
+      final adapter = VideoResolutionAdapter(
+        reply: (_) => resolutionJson(resolutionResponse(streams: [stream])),
+      );
+      final api = ApiClient(dio: Dio()..httpClientAdapter = adapter);
+      addTearDown(api.dispose);
+      await expectLater(
+          api.fetchFqVideoModel('1234567890'), throwsA(isA<ApiException>()));
+    }
+  });
+
   test('直接使用服务端返回的兼容画质，不自行签名或补充上游请求', () async {
     final adapter = VideoResolutionAdapter(
         reply: (_) => resolutionJson(resolutionResponse(streams: [
