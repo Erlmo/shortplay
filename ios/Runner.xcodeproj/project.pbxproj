@@ -23,6 +23,7 @@
 		E51EF93EF356D26AA8748CBF /* VvcSampleIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = 572B11722691F040C08CF74F /* VvcSampleIndex.swift */; };
 		E8724A91C9CCABDA4289DAD9 /* VvcPlayback.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A812294F1897B7341BE4B43 /* VvcPlayback.swift */; };
 		F94BAC20BF23D3F915FD75D2 /* CodecPlaybackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9EEABD76DBF3871DE5A88AC0 /* CodecPlaybackTests.swift */; };
+		A917DD6A7403324E8C3DEB92 /* MediaByteCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = A917DD6A7403324E8C3DEB91 /* MediaByteCache.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -79,6 +80,7 @@
 		B250153AD39393C07ACAEB7F /* Pods-Runner.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.debug.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"; sourceTree = "<group>"; };
 		BFF6D6A18F96DF7EEC5A3CDD /* Pods-Runner.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.release.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.release.xcconfig"; sourceTree = "<group>"; };
 		F438507788485780DE845DC1 /* NativePlayerPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NativePlayerPlugin.swift; sourceTree = "<group>"; };
+		A917DD6A7403324E8C3DEB91 /* MediaByteCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../packages/shortplay_playback_sdk/darwin/MediaByteCache.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -163,6 +165,7 @@
 				74858FAE1ED2DC5600515810 /* AppDelegate.swift */,
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
 				3EE5B7DBDDD90DD84DC6CA73 /* CryptoNative.swift */,
+				A917DD6A7403324E8C3DEB91 /* MediaByteCache.swift */,
 				F438507788485780DE845DC1 /* NativePlayerPlugin.swift */,
 				572B11722691F040C08CF74F /* VvcSampleIndex.swift */,
 				7A812294F1897B7341BE4B43 /* VvcPlayback.swift */,
@@ -419,6 +422,7 @@
 				74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */,
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 				A6E48C872A7020D50EFDF1B5 /* CryptoNative.swift in Sources */,
+				A917DD6A7403324E8C3DEB92 /* MediaByteCache.swift in Sources */,
 				20A72E5815A7620D3383C654 /* NativePlayerPlugin.swift in Sources */,
 				E51EF93EF356D26AA8748CBF /* VvcSampleIndex.swift in Sources */,
 				E8724A91C9CCABDA4289DAD9 /* VvcPlayback.swift in Sources */,
@@ -515,7 +519,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 27;
+				CURRENT_PROJECT_VERSION = 29;
 				DEVELOPMENT_TEAM = SJZXJRQYDJ;
 				ENABLE_BITCODE = NO;
 				EXPORTED_SYMBOLS_FILE = "$(PROJECT_DIR)/Frameworks/exported_symbols.txt";
@@ -716,7 +720,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 27;
+				CURRENT_PROJECT_VERSION = 29;
 				DEVELOPMENT_TEAM = SJZXJRQYDJ;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
@@ -744,7 +748,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 27;
+				CURRENT_PROJECT_VERSION = 29;
 				DEVELOPMENT_TEAM = SJZXJRQYDJ;
 				ENABLE_BITCODE = NO;
 				EXPORTED_SYMBOLS_FILE = "$(PROJECT_DIR)/Frameworks/exported_symbols.txt";

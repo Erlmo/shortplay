@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
+import 'package:shortplay_playback_sdk/shortplay_playback_sdk.dart';
 
 import '../models/drama.dart';
 import '../models/drama_season.dart';
@@ -19,6 +20,7 @@ import '../services/device_profile.dart';
 import '../services/download_service.dart';
 import '../services/native_player.dart';
 import '../services/liked_video_store.dart';
+import '../services/favorite_drama_store.dart';
 import '../services/offline_playback_cache.dart';
 import '../services/playback_history_store.dart';
 import '../services/player_danmaku_controller.dart';
@@ -131,9 +133,6 @@ class _PlayerPageState extends State<PlayerPage>
   bool _playerInitialized = false;
   int _requestId = 0;
   int _catalogRequestId = 0;
-  bool _didPreloadN2 = false;
-  bool _didPreloadN3 = false;
-  bool _startupPreloadsScheduled = false;
   int _startupPositionMs = 0;
   int _lastHistorySaveMs = 0;
 
@@ -142,6 +141,10 @@ class _PlayerPageState extends State<PlayerPage>
   StreamSubscription<bool>? _playingSub;
   StreamSubscription<bool>? _completedSub;
   StreamSubscription<Duration>? _durationSub;
+  StreamSubscription<bool>? _bufferingSub;
+  StreamSubscription<Duration?>? _bufferedAheadSub;
+  StreamSubscription<bool>? _playbackIntentSub;
+  PlaybackBufferMonitor? _bufferMonitor;
 
   final positionMsNotifier = ValueNotifier<int>(0);
   final playingNotifier = ValueNotifier<bool>(false);
@@ -212,6 +215,7 @@ class _PlayerPageState extends State<PlayerPage>
   late final PlayerDanmakuController _danmakuController;
   int _danmakuSeekGeneration = 0;
   late final TheaterVideoPreloadManager _preloadManager;
+  final _qualitySwitches = QualitySwitchCoordinator();
 
   // ─── PlayerPreloadMixin ────────────────────────────────────────────────
 
@@ -259,6 +263,10 @@ class _PlayerPageState extends State<PlayerPage>
       LikedVideoStore.revision.addListener(_onLikedVideosChanged);
       _onLikedVideosChanged();
     }
+    if (!_isDirectVideo) {
+      FavoriteDramaStore.revision.addListener(_onLikedVideosChanged);
+      _onLikedVideosChanged();
+    }
     _currentEpisodeIndex = widget.initialEpisodeIndex ?? 0;
     _seasons = widget.seasons;
     if (!_isDirectVideo && _seasons == null) unawaited(_loadSeasons());
@@ -274,10 +282,16 @@ class _PlayerPageState extends State<PlayerPage>
 
   Future<void> _loadLikedState() async {
     final video = widget.directVideoMetadata;
-    if (video == null) return;
+    if (_isDirectVideo && video == null) return;
+    final drama = _drama;
     try {
-      final liked = await LikedVideoStore.contains(video.id);
-      if (mounted) setState(() => _isLiked = liked);
+      final liked = _isDirectVideo
+          ? await LikedVideoStore.contains(video!.id)
+          : await FavoriteDramaStore.contains(drama);
+      if (mounted &&
+          FavoriteDramaStore.keyOf(drama) == FavoriteDramaStore.keyOf(_drama)) {
+        setState(() => _isLiked = liked);
+      }
     } catch (error) {
       debugPrint('读取喜欢状态失败：$error');
     }
@@ -285,15 +299,22 @@ class _PlayerPageState extends State<PlayerPage>
 
   Future<void> _toggleLike() async {
     final video = widget.directVideoMetadata;
-    if (video == null || _savingLike) return;
+    if ((_isDirectVideo && video == null) || _savingLike) return;
+    final drama = _drama;
     _savingLike = true;
     try {
-      final liked = await LikedVideoStore.toggle(video);
-      if (mounted) setState(() => _isLiked = liked);
+      final liked = _isDirectVideo
+          ? await LikedVideoStore.toggle(video!)
+          : await FavoriteDramaStore.toggle(drama);
+      if (mounted &&
+          FavoriteDramaStore.keyOf(drama) == FavoriteDramaStore.keyOf(_drama)) {
+        setState(() => _isLiked = liked);
+      }
     } catch (_) {
       if (mounted) {
         showAppNotice(context,
-            message: '喜欢保存失败，请重试', kind: AppNoticeKind.error);
+            message: _isDirectVideo ? '喜欢保存失败，请重试' : '收藏保存失败，请重试',
+            kind: AppNoticeKind.error);
       }
     } finally {
       _savingLike = false;
@@ -321,7 +342,9 @@ class _PlayerPageState extends State<PlayerPage>
   // 否则旧播放器会在后面继续出声，与新页音频叠加。
   @override
   void didPushNext() {
-    if (_player != null && playingNotifier.value && !_userPaused) {
+    if (_qualitySwitches.pending?.wantsPlaying == true) _pausedByRoute = true;
+    cancelPlaybackPreparation();
+    if (_player != null && _player!.wantsPlaying && !_userPaused) {
       _pausedByRoute = true;
       _player!.pause();
     }
@@ -341,9 +364,11 @@ class _PlayerPageState extends State<PlayerPage>
 
   @override
   void dispose() {
+    _qualitySwitches.cancel();
     // 退出播放页：记下当前集和进度（定时停止时已经保存过）。
     if (_playerInitialized && !_sleepStopped) _saveHistory();
     LikedVideoStore.revision.removeListener(_onLikedVideosChanged);
+    FavoriteDramaStore.revision.removeListener(_onLikedVideosChanged);
     _episodeShrink.dispose();
     appRouteObserver.unsubscribe(this);
     WidgetsBinding.instance.removeObserver(this);
@@ -359,6 +384,8 @@ class _PlayerPageState extends State<PlayerPage>
     _cancelPlayerSubscriptions();
     if (_player != null) enqueueDispose(_player!);
     dispose3PWindow();
+    playbackSession.close();
+    _preloadManager.clear();
     _systemUi.exitFullScreen();
     _systemUi.dispose();
     _danmakuController.dispose();
@@ -371,9 +398,16 @@ class _PlayerPageState extends State<PlayerPage>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive) {
-      if (_player != null && playingNotifier.value && !_userPaused) {
+    // inactive 只表示失去焦点：通知栏、小窗、分屏仍可继续观看。
+    // hidden/paused 才表示画面不可见，锁屏和真正切后台仍要暂停。
+    if (state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      if (_qualitySwitches.pending?.wantsPlaying == true) {
+        _pausedByLifecycle = true;
+      }
+      cancelPlaybackPreparation();
+      if (_player != null && _player!.wantsPlaying && !_userPaused) {
         _pausedByLifecycle = true;
         _player!.pause();
       }

@@ -14,9 +14,17 @@ extension _PlayerControls on _PlayerPageState {
           _openEpisode(_currentEpisodeIndex, initialSeekMs: _sleepPositionMs));
       return;
     }
+    final switching = _qualitySwitches.pending;
+    if (switching != null) {
+      switching.wantsPlaying = !switching.wantsPlaying;
+      _userPaused = !switching.wantsPlaying;
+      playingNotifier.value = switching.wantsPlaying;
+      _refresh();
+      return;
+    }
     final player = _player;
     if (player == null || !_playerInitialized) return;
-    if (player.playing) {
+    if (player.wantsPlaying) {
       _userPaused = true;
       unawaited(player.pause());
       _saveHistory();
@@ -48,7 +56,7 @@ extension _PlayerControls on _PlayerPageState {
   void _onSeekStart(double ms) {
     final player = _player;
     if (player == null || !_playerInitialized) return;
-    _resumeAfterSeek = player.playing;
+    _resumeAfterSeek = player.wantsPlaying;
     player.pause();
     _refresh(() => _seekingPositionMs = ms);
   }
@@ -143,17 +151,34 @@ extension _PlayerControls on _PlayerPageState {
   // ─── 清晰度 / 定时 ─────────────────────────────────────────────────────
 
   void _onQualityChanged(String value) {
-    if (isOfflinePlayback || _episodes.isEmpty) return;
-    if (value ==
-        _preloadManager
-            .selectedDefinition(_episodes[_currentEpisodeIndex].url.trim())) {
+    if (isOfflinePlayback || _isDirectVideo || _episodes.isEmpty) return;
+    if (cachedEpisodePath(_currentEpisodeIndex) != null) {
+      showAppNotice(context,
+          message: '本地缓存视频不支持切换清晰度',
+          kind: AppNoticeKind.info,
+          abovePlayerControls: true);
       return;
     }
-    _preloadManager.setPreferredDefinition(value);
-    // 换清晰度会重新打开本集并自动播放，清掉“用户已暂停”，否则播放图标会挂着
-    _userPaused = false;
+    final videoId = _episodes[_currentEpisodeIndex].url.trim();
+    if (_qualitySwitches.pending == null &&
+        value == _preloadManager.selectedDefinition(videoId)) {
+      // Selecting the displayed quality still locks it against automatic
+      // startup selection, without reopening the current media.
+      _preloadManager.setPreferredDefinition(value, keepVideoId: videoId);
+      dispose3PWindow();
+      startPlaybackSession(_currentEpisodeIndex);
+      _updatePlaybackScheduling();
+      return;
+    }
+    final ticket = _qualitySwitches.begin(value,
+        position: Duration(milliseconds: positionMsNotifier.value),
+        wantsPlaying: _player?.wantsPlaying == true && !_userPaused);
+    if (ticket == null) return;
+    _preloadManager.setPreferredDefinition(ticket.definition);
     unawaited(_openEpisode(_currentEpisodeIndex,
-        initialSeekMs: positionMsNotifier.value));
+            initialSeekMs: ticket.position.inMilliseconds,
+            qualitySwitch: ticket)
+        .whenComplete(() => _qualitySwitches.finish(ticket)));
     _refresh();
   }
 

@@ -68,6 +68,8 @@ void main() {
         ),
       ),
     ));
+    await tester
+        .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
     await tester.pumpAndSettle();
   }
 
@@ -103,6 +105,8 @@ void main() {
         ]),
       ),
     ));
+    await tester
+        .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
     await tester.pumpAndSettle();
   }
 

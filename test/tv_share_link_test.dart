@@ -13,6 +13,8 @@ import 'package:shortplay/pages/settings_page.dart';
 import 'package:shortplay/pages/share_link_page.dart';
 import 'package:shortplay/pages/tv_share_link_page.dart';
 import 'package:shortplay/services/api_client.dart';
+import 'package:shortplay/services/favorite_drama_store.dart';
+import 'package:shortplay/services/playback_preferences.dart';
 import 'package:shortplay/services/device_profile.dart';
 import 'package:shortplay/services/tv_link_api.dart';
 
@@ -90,8 +92,10 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   late _Shares shares;
   late _Relay relay;
-  setUp(() {
+  setUp(() async {
     SharedPreferences.setMockInitialValues({});
+    await PlaybackPreferences.load();
+    await FavoriteDramaStore.load();
     DeviceProfile.isTv = true;
     shares = _Shares();
     relay = _Relay(shares);
@@ -227,6 +231,8 @@ void main() {
     await tester.pumpWidget(MaterialApp(
         home: SettingsPage(
             apiClient: shares, appUpdateService: NoAppUpdates(shares))));
+    await tester
+        .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
     await tester.pumpAndSettle();
     expect(find.text('手机扫码播放'), findsOneWidget);
     expect(find.text('分享链接识别'), findsNothing);
@@ -235,6 +241,8 @@ void main() {
         key: UniqueKey(),
         home: SettingsPage(
             apiClient: shares, appUpdateService: NoAppUpdates(shares))));
+    await tester
+        .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
     await tester.pumpAndSettle();
     expect(find.text('分享链接识别'), findsOneWidget);
     expect(find.byType(ShareLinkPage), findsNothing);

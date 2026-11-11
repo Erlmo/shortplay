@@ -12,6 +12,8 @@ import 'package:shortplay/pages/home_page.dart';
 import 'package:shortplay/pages/twixive/twixive_home_page.dart';
 import 'package:shortplay/services/api_client.dart';
 import 'package:shortplay/services/download_service.dart';
+import 'package:shortplay/services/playback_history_store.dart';
+import 'package:shortplay/services/favorite_drama_store.dart';
 import 'package:shortplay/services/hidden_feed_access.dart';
 
 import 'support/no_app_updates.dart';
@@ -83,7 +85,11 @@ void main() {
     final api = ApiClient(dio: Dio()..httpClientAdapter = adapter);
     final downloads = DownloadService(
         apiClient: api, documentsDirectory: () async => Directory.systemTemp);
-    await tester.runAsync(downloads.ensureLoaded);
+    await tester.runAsync(() async {
+      await downloads.ensureLoaded();
+      await PlaybackHistoryStore.load();
+      await FavoriteDramaStore.load();
+    });
     addTearDown(downloads.dispose);
     addTearDown(api.dispose);
     await tester.pumpWidget(MaterialApp(
@@ -91,6 +97,11 @@ void main() {
             apiClient: api,
             downloadService: downloads,
             appUpdateService: NoAppUpdates(api))));
+    for (var i = 0; i < 3; i++) {
+      await tester.pump();
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)));
+    }
     await tester.pumpAndSettle();
     expect(find.byType(HomeFeedPage), findsOneWidget);
     expect(
@@ -190,7 +201,11 @@ void main() {
     final api = ApiClient(dio: Dio()..httpClientAdapter = adapter);
     final downloads = DownloadService(
         apiClient: api, documentsDirectory: () async => Directory.systemTemp);
-    await tester.runAsync(downloads.ensureLoaded);
+    await tester.runAsync(() async {
+      await downloads.ensureLoaded();
+      await PlaybackHistoryStore.load();
+      await FavoriteDramaStore.load();
+    });
     addTearDown(downloads.dispose);
     addTearDown(api.dispose);
     await tester.pumpWidget(MaterialApp(
@@ -198,6 +213,11 @@ void main() {
             apiClient: api,
             downloadService: downloads,
             appUpdateService: NoAppUpdates(api))));
+    for (var i = 0; i < 3; i++) {
+      await tester.pump();
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)));
+    }
     await tester.pumpAndSettle();
     expect(find.byType(TwixiveHomePage), findsOneWidget);
     expect(find.byType(HomeFeedPage), findsNothing);

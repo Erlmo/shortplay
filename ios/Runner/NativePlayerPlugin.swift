@@ -43,10 +43,38 @@ final class NativePlayerPlugin: NSObject, FlutterPlugin {
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         let args = call.arguments as? [String: Any]
         switch call.method {
+        case "mediaCacheDirectory":
+            result(MediaByteCache.shared.root.path)
         case "supportsBvc2":
             result(true)
+        case "registerMediaSource":
+            guard let primary = args?["primaryUrl"] as? String,
+                  let urls = args?["urls"] as? [String] else {
+                result(FlutterError(code: "bad_args", message: "primaryUrl and urls required", details: nil))
+                return
+            }
+            MediaSourceRegistry.shared.register(primary: primary, urls: urls,
+                expiresAt: (args?["expiresAt"] as? NSNumber)?.doubleValue)
+            result(nil)
         case "create":
             handleCreate(args: args, result: result)
+        case "getBufferState":
+            guard let id = args?["id"] as? Int else {
+                result(nil)
+                return
+            }
+            // Queries must remain available when the playback clock is stopped.
+            // Do not start a timer or change rate/buffering state here.
+            DispatchQueue.main.async { [weak self] in
+                result(self?.getPlayer(id)?.bufferState())
+            }
+        case "prepareFirstFrame":
+            guard let id = args?["id"] as? Int, let player = getPlayer(id) else {
+                result(FlutterError(code: "not_found", message: "Player not found", details: nil))
+                return
+            }
+            player.prepareFirstFrame()
+            result(nil)
         case "play":
             handlePlay(args: args, result: result)
         case "pause":
@@ -81,6 +109,8 @@ final class NativePlayerPlugin: NSObject, FlutterPlugin {
             return
         }
 
+        let initialPositionMs = max(0, (args?["initialPositionMs"] as? NSNumber)?.intValue ?? 0)
+
         let playerId = self.nextPlayerId
         self.nextPlayerId += 1
         lock.lock()
@@ -102,6 +132,7 @@ final class NativePlayerPlugin: NSObject, FlutterPlugin {
                 self.players[playerId] = instance
                 self.lock.unlock()
 
+                instance.setInitialPosition(initialPositionMs)
                 instance.setup()
 
                 self.sendEvent([
@@ -142,6 +173,7 @@ final class NativePlayerPlugin: NSObject, FlutterPlugin {
                     self.players[playerId] = instance
                     self.lock.unlock()
 
+                    instance.setInitialPosition(initialPositionMs)
                     instance.setup()
 
                     self.sendEvent([
@@ -282,7 +314,12 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
     private var timeObserver: Any?
     private var latestPixelBuffer: CVPixelBuffer?
     private let bufferLock = NSLock()
+    private var avCompleted = false
     private var firstFrameSent = false
+    private var preRenderRequested = false
+    private var prerollInFlight = false
+    private var prerollGeneration = 0
+    private var playerStatusObservation: NSKeyValueObservation?
 
     private var statusObservation: NSKeyValueObservation?
     private var durationObservation: NSKeyValueObservation?
@@ -293,8 +330,17 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
 
     private let resourceLoaderQueue = DispatchQueue(label: "com.shortplay.resourceloader", qos: .userInitiated)
     private var resourceLoaderDelegate: CryptoResourceLoaderDelegate?
+    private var mediaResourceLoader: MediaCacheResourceLoader?
+    private var mediaSourceRangeProbeDone = false
+    private var mediaSourceUseLegacy = false
+    private let mediaSourceProbeCancellation = MediaReadCancellation()
+    private var initialPositionPending = false
+    private var initialSeekGeneration = 0
     private var disposed = false
     private var wantsPlaying = false
+    private var audioInterrupted = false
+    private var resumeCheck: DispatchWorkItem?
+    private var resumeCheckGeneration = 0
     private var pendingSeekMs: Int?
     private var currentVolume: Float = 1
     private var vvcPlayback: VvcPlayback?
@@ -320,6 +366,7 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
         self.textureRegistry = textureRegistry
         self.eventCallback = eventSink
         super.init()
+        observeAudioInterruptions()
     }
 
     init(playerId: Int, fileUrl: String,
@@ -330,12 +377,107 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
         self.textureRegistry = textureRegistry
         self.eventCallback = eventSink
         super.init()
+        observeAudioInterruptions()
+    }
+
+    // iOS 专用音频会话通知；macOS 没有 AVAudioSession。
+    private func observeAudioInterruptions() {
+        NotificationCenter.default.addObserver(self,
+            selector: #selector(audioSessionInterrupted),
+            name: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance())
+    }
+
+    @objc private func audioSessionInterrupted(_ notification: Notification) {
+        guard let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
+        let options = AVAudioSession.InterruptionOptions(rawValue:
+            notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, !self.disposed else { return }
+            if type == .began {
+                self.cancelResumeProgressCheck()
+                self.audioInterrupted = true
+                self.applyPlaybackState()
+            } else if type == .ended {
+                self.audioInterrupted = false
+                guard self.wantsPlaying else { return }
+                // 后台/手动暂停不续播；系统未允许恢复时同步 Dart 的播放意图。
+                guard options.contains(.shouldResume),
+                      UIApplication.shared.applicationState != .background else {
+                    self.wantsPlaying = false
+                    self.eventCallback(["playerId": self.playerId,
+                        "type": "playbackIntent", "value": false])
+                    self.applyPlaybackState()
+                    return
+                }
+                self.play()
+            }
+        }
+    }
+
+    func setInitialPosition(_ milliseconds: Int) {
+        guard milliseconds > 0 else { return }
+        pendingSeekMs = milliseconds
+        initialPositionPending = true
+    }
+
+    private func seekInitialPosition(_ milliseconds: Int, in avPlayer: AVPlayer) {
+        initialPositionPending = true
+        initialSeekGeneration += 1
+        let generation = initialSeekGeneration
+        avPlayer.pause()
+        let time = CMTime(value: CMTimeValue(max(0, milliseconds)), timescale: 1000)
+        avPlayer.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak avPlayer] finished in
+            DispatchQueue.main.async {
+                guard let self = self, !self.disposed,
+                      self.player === avPlayer, self.initialSeekGeneration == generation else { return }
+                guard finished else {
+                    self.eventCallback(["playerId": self.playerId, "type": "error", "value": "初始播放位置定位失败"])
+                    return
+                }
+                self.initialPositionPending = false
+                self.applyPlaybackState()
+                self.startPendingPreroll()
+                self.displayLinkFired()
+            }
+        }
     }
 
     // MARK: - Setup
 
     func setup() {
-        textureId = textureRegistry.register(self)
+        guard !disposed else { return }
+        if textureId < 0 { textureId = textureRegistry.register(self) }
+        // Multi-CDN plain HTTP needs our Range IO. Probe one bounded prefix
+        // first; a non-Range origin explicitly keeps its original URLAsset path.
+        if let path = fileUrl, MediaSourceRegistry.valid(path),
+           !mediaSourceRangeProbeDone,
+           MediaSourceRegistry.shared.context(path).hasAlternates,
+           MediaByteCache.shared.metadata(MediaSourceRegistry.shared.context(path).currentURL) == nil {
+            mediaSourceRangeProbeDone = true
+            resourceLoaderQueue.async { [self] in
+                do {
+                    _ = try MediaCacheReader(url: path, cancellation: mediaSourceProbeCancellation)
+                        .read(offset: 0, count: MediaByteCache.blockSize)
+                } catch {
+                    let failure = MediaNetworkFailure.classify(error)
+                    if case .rangeUnsupported = failure.kind {
+                        DispatchQueue.main.async { [self] in
+                            guard !disposed else { return }; mediaSourceUseLegacy = true; setup()
+                        }
+                        return
+                    }
+                    DispatchQueue.main.async { [self] in
+                        guard !disposed else { return }
+                        eventCallback(["playerId": playerId, "type": "error", "value": "视频网络请求失败"])
+                    }
+                    return
+                }
+                DispatchQueue.main.async { [self] in guard !disposed else { return }; setup() }
+            }
+            return
+        }
         let asset: AVURLAsset
         let shouldProbe: Bool
         if let path = fileUrl {
@@ -349,7 +491,19 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
             } else {
                 url = URL(fileURLWithPath: path)
             }
-            asset = AVURLAsset(url: url)
+            // Only opt into the cache loader after SDK prefetch established
+            // valid media metadata. Uncached/non-Range HTTP keeps AVPlayer's
+            // original streaming behaviour instead of adding a blocking probe.
+            if ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+               !mediaSourceUseLegacy,
+               MediaByteCache.shared.metadata(MediaSourceRegistry.shared.context(path).currentURL) != nil {
+                let loader = MediaCacheResourceLoader(source: path, queue: resourceLoaderQueue)
+                mediaResourceLoader = loader
+                asset = AVURLAsset(url: URL(string: "spmedia://player_\(playerId)/video.mp4")!)
+                asset.resourceLoader.setDelegate(loader, queue: resourceLoaderQueue)
+            } else {
+                asset = AVURLAsset(url: url)
+            }
             shouldProbe = url.isFileURL
         } else if let handle = streamHandle {
             resourceLoaderDelegate = CryptoResourceLoaderDelegate(streamHandle: handle, queue: resourceLoaderQueue)
@@ -377,7 +531,14 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
                 }
                 let index = try VvcSampleIndex.load(size: size, read: readMediaBytes)
                 if index != nil, streamHandle != nil {
-                    vvcReadCache = VvcRangeReader(size: size) { [weak self] offset, count in
+                    vvcReadCache = VvcRangeReader(size: size, sourceReady: { [weak self] offset, count in
+                        guard let self = self, let handle = self.streamHandle else {
+                            throw VvcSampleIndex.invalid("播放器已关闭")
+                        }
+                        let ready = sp_stream_range_ready(handle, UInt64(offset), UInt64(count))
+                        guard ready >= 0 else { throw VvcSampleIndex.invalid("视频读取已结束") }
+                        return ready == 1
+                    }) { [weak self] offset, count in
                         guard let self = self else { throw VvcSampleIndex.invalid("播放器已关闭") }
                         return try self.readRawMediaBytes(offset: offset, count: count)
                     }
@@ -430,7 +591,11 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
             sendVideoSize(CGSize(width: index.width, height: index.height))
             do {
                 vvcAudioClock = try VvcAudioClock(audio: index.audio, queue: resourceLoaderQueue,
-                    read: readMediaBytes, onError: { [weak self] error in self?.fail(error) })
+                    read: readMediaBytes, tryRead: { [weak self] offset, count in
+                        guard let self = self else { throw VvcSampleIndex.invalid("播放器已关闭") }
+                        if let cache = self.vvcReadCache { return try cache.readIfAvailable(offset: offset, count: count) }
+                        return try self.readMediaBytes(offset: offset, count: count)
+                    }, onError: { [weak self] error in self?.fail(error) })
                 vvcAudioClock?.setVolume(currentVolume)
             } catch { fail(error); return }
             vvcDurationMs = Int(index.samples.map { $0.presentationTimeUs + $0.durationUs }.max() ?? 0) / 1000
@@ -443,6 +608,7 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
             if let ms = pendingSeekMs {
                 pendingSeekMs = nil
                 seek(toMs: ms)
+                initialPositionPending = false
             }
         } else {
             attachPlayer(item: AVPlayerItem(asset: asset), video: true)
@@ -465,7 +631,8 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
         setupObservers()
         if let ms = pendingSeekMs {
             pendingSeekMs = nil
-            seek(toMs: ms)
+            if initialPositionPending { seekInitialPosition(ms, in: avPlayer) }
+            else { seek(toMs: ms) }
         }
         if displayLink == nil { setupDisplayLink() }
         applyPlaybackState()
@@ -473,6 +640,7 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
 
     private func fail(_ error: Error) {
         guard !disposed else { return }
+        cancelResumeProgressCheck()
         wantsPlaying = false
         player?.pause()
         vvcAudioClock?.setRate(0)
@@ -481,7 +649,7 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
 
     private func applyPlaybackState() {
         guard !disposed else { return }
-        let rate = wantsPlaying && !vvcBuffering ? currentRate : 0
+        let rate = wantsPlaying && !audioInterrupted && !vvcBuffering && !initialPositionPending ? currentRate : 0
         if let clock = vvcAudioClock {
             clock.setRate(rate)
             if reportedPlaying != (rate > 0) {
@@ -511,7 +679,12 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
                     "value": durationMs
                 ])
                 self.sendVideoSize(item.presentationSize)
+                DispatchQueue.main.async { self.startPendingPreroll() }
             }
+        }
+
+        playerStatusObservation = avPlayer.observe(\.status, options: [.initial, .new]) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.startPendingPreroll() }
         }
 
         durationObservation = item.observe(\.duration, options: [.new]) { [weak self] item, _ in
@@ -553,6 +726,23 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
         let interval = CMTime(value: 200, timescale: 1000)
         timeObserver = avPlayer.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             guard let self = self else { return }
+            let seconds = CMTimeGetSeconds(time)
+            var bufferedEnd = seconds
+            if seconds.isFinite, let item = self.player?.currentItem {
+                for value in item.loadedTimeRanges {
+                    let range = value.timeRangeValue
+                    let start = CMTimeGetSeconds(range.start)
+                    let end = CMTimeGetSeconds(CMTimeRangeGetEnd(range))
+                    if start.isFinite && end.isFinite && start <= bufferedEnd + 0.05 && end > bufferedEnd {
+                        bufferedEnd = end
+                    }
+                }
+                self.eventCallback([
+                    "playerId": self.playerId,
+                    "type": "bufferedAhead",
+                    "value": max(0, Int((bufferedEnd - seconds) * 1000))
+                ])
+            }
             let positionMs = Int(CMTimeGetSeconds(time) * 1000)
             self.eventCallback([
                 "playerId": self.playerId,
@@ -582,6 +772,7 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
     }
 
     @objc private func playerDidFinishPlaying(_ notification: Notification) {
+        avCompleted = true
         eventCallback([
             "playerId": playerId,
             "type": "completed",
@@ -603,7 +794,7 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
     }
 
     @objc private func displayLinkFired() {
-        guard !disposed else { return }
+        guard !disposed, !initialPositionPending else { return }
         let pixelBuffer: CVPixelBuffer
         if let decoder = vvcPlayback {
             let seconds = vvcAudioClock.map { CMTimeGetSeconds($0.currentTime) } ?? 0
@@ -624,8 +815,16 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
                 eventCallback(["playerId": playerId, "type": "position", "value": vvcDurationMs])
                 eventCallback(["playerId": playerId, "type": "completed", "value": true])
             }
+            // Decoded future frames are enough to leave buffering. Waiting for
+            // one to become due while the master clock is stopped deadlocks.
+            if vvcBuffering && decoder.hasDecodedFrames {
+                vvcBuffering = false
+                eventCallback(["playerId": playerId, "type": "buffering", "value": false])
+                applyPlaybackState()
+            }
             guard let frame = decoder.takeFrame(at: timeUs) else {
-                if firstFrameSent, !decoder.ended, timeUs > vvcFrameTimeUs + 200_000, !vvcBuffering {
+                if firstFrameSent, !decoder.ended, !decoder.hasDecodedFrames,
+                   timeUs > vvcFrameTimeUs + 200_000, !vvcBuffering {
                     vvcBuffering = true
                     applyPlaybackState()
                     eventCallback(["playerId": playerId, "type": "buffering", "value": true])
@@ -655,6 +854,7 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
 
         if !firstFrameSent {
             firstFrameSent = true
+            cancelPrerollPreparation()
             // 兜底：首帧时还没拿到 presentationSize，就用像素缓冲的宽高
             if lastSentVideoSize == .zero {
                 sendVideoSize(CGSize(width: CVPixelBufferGetWidth(pixelBuffer),
@@ -678,21 +878,178 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
         return Unmanaged.passRetained(pixelBuffer)
     }
 
+    /// Side-effect-free native state snapshot for the SDK's buffer monitor.
+    /// Unknown/indefinite timestamps remain null, never fabricated zeroes.
+    func bufferState() -> [String: Any]? {
+        guard !disposed else { return nil }
+        if vvcPlayback != nil {
+            let position = vvcAudioClock.flatMap { Self.milliseconds($0.currentTime) }
+            return [
+                "bufferedAheadMs": NSNull(),
+                "positionMs": position.map { vvcDurationMs > 0 ? min(vvcDurationMs, $0) : $0 } as Any? ?? NSNull(),
+                "durationMs": vvcDurationMs > 0 ? vvcDurationMs as Any : NSNull(),
+                "buffering": vvcBuffering,
+                "playing": reportedPlaying,
+                "completed": vvcCompleted
+            ]
+        }
+        let position = player.flatMap { Self.milliseconds($0.currentTime()) }
+        let duration = playerItem.flatMap { Self.milliseconds($0.duration) }
+        var buffered: Int?
+        if let avPlayer = player {
+            let seconds = CMTimeGetSeconds(avPlayer.currentTime())
+            if seconds.isFinite && seconds >= 0, let item = playerItem {
+                let ranges = item.loadedTimeRanges.compactMap { value -> (Double, Double)? in
+                    let range = value.timeRangeValue
+                    let start = CMTimeGetSeconds(range.start)
+                    let end = CMTimeGetSeconds(CMTimeRangeGetEnd(range))
+                    guard start.isFinite, end.isFinite, end >= start else { return nil }
+                    return (start, end)
+                }.sorted { $0.0 < $1.0 }
+                var end = seconds
+                for range in ranges {
+                    // Match the existing contiguous-range tolerance; disjoint
+                    // later ranges must not be counted as playable headroom.
+                    if range.0 <= end + 0.05 && range.1 > end { end = range.1 }
+                }
+                let milliseconds = (end - seconds) * 1000
+                if milliseconds.isFinite, milliseconds >= 0,
+                   milliseconds < Double(Int.max) {
+                    buffered = Int(milliseconds)
+                }
+            }
+        }
+        return [
+            "bufferedAheadMs": buffered as Any? ?? NSNull(),
+            "positionMs": position as Any? ?? NSNull(),
+            "durationMs": duration as Any? ?? NSNull(),
+            "buffering": playerItem?.isPlaybackBufferEmpty == true ||
+                player?.timeControlStatus == .waitingToPlayAtSpecifiedRate,
+            "playing": (player?.rate ?? 0) > 0,
+            "completed": avCompleted
+        ]
+    }
+
+    private static func milliseconds(_ time: CMTime) -> Int? {
+        let value = CMTimeGetSeconds(time) * 1000
+        guard value.isFinite, value >= 0, value < Double(Int.max) else { return nil }
+        return Int(value)
+    }
+
     // MARK: - Player Controls
 
     private var currentRate: Float = 1.0
 
+    /// Prime the existing engine without moving its media clock. Completion
+    /// of preroll is not a first-frame event: displayLinkFired must still
+    /// publish an actual pixel buffer before Dart can reuse this instance.
+    func prepareFirstFrame() {
+        guard !disposed else { return }
+        setVolume(0)
+        pause()
+        preRenderRequested = !firstFrameSent
+        startPendingPreroll()
+    }
+
+    private func startPendingPreroll() {
+        guard !disposed, !initialPositionPending, preRenderRequested, !prerollInFlight,
+              let avPlayer = player, avPlayer.rate == 0,
+              avPlayer.status == .readyToPlay,
+              playerItem?.status == .readyToPlay else { return }
+        prerollInFlight = true
+        let generation = prerollGeneration
+        avPlayer.preroll(atRate: 1) { [weak self, weak avPlayer] finished in
+            DispatchQueue.main.async {
+                guard let self = self, !self.disposed,
+                      self.player === avPlayer,
+                      self.prerollGeneration == generation else { return }
+                self.prerollInFlight = false
+                guard self.preRenderRequested else { return }
+                if finished {
+                    self.displayLinkFired()
+                } else {
+                    self.preRenderRequested = false
+                    self.eventCallback(["playerId": self.playerId, "type": "error",
+                                        "value": "首帧预渲染准备失败"])
+                }
+            }
+        }
+    }
+
+    private func cancelPrerollPreparation() {
+        prerollGeneration += 1
+        preRenderRequested = false
+        prerollInFlight = false
+        player?.cancelPendingPrerolls()
+    }
+
     func play() {
+        guard !disposed else { return }
+        cancelPrerollPreparation()
+        // A deliberate play retries activation even if an interruption-ended
+        // notification was missed. A real conflict still fails setActive().
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+            audioInterrupted = false
+        } catch {
+            eventCallback(["playerId": playerId, "type": "playbackIntent", "value": false])
+            fail(error)
+            return
+        }
         wantsPlaying = true
+        setActive(true)
         applyPlaybackState()
+        if firstFrameSent { checkResumeProgress(recovered: false) }
     }
 
     func pause() {
+        cancelResumeProgressCheck()
         wantsPlaying = false
         applyPlaybackState()
     }
 
+    private func cancelResumeProgressCheck() {
+        resumeCheckGeneration += 1
+        resumeCheck?.cancel()
+        resumeCheck = nil
+    }
+
+    private func playbackPositionMs() -> Int? {
+        if let clock = vvcAudioClock { return Self.milliseconds(clock.currentTime) }
+        return player.flatMap { Self.milliseconds($0.currentTime()) }
+    }
+
+    /// Only resuming an already rendered item is watched. A stalled clock gets
+    /// one seek/rebuffer at its saved position, never an unbounded restart loop.
+    private func checkResumeProgress(recovered: Bool) {
+        cancelResumeProgressCheck()
+        guard let baseline = playbackPositionMs() else { return }
+        let generation = resumeCheckGeneration
+        let check = DispatchWorkItem { [weak self] in
+            guard let self = self, !self.disposed,
+                  self.resumeCheckGeneration == generation,
+                  self.wantsPlaying, !self.audioInterrupted,
+                  !self.avCompleted, !self.vvcCompleted,
+                  UIApplication.shared.applicationState == .active,
+                  let position = self.playbackPositionMs() else { return }
+            self.resumeCheck = nil
+            guard position < baseline + 100 else { return }
+            if recovered {
+                self.fail(VvcSampleIndex.invalid("暂停后恢复播放失败，请重试"))
+                return
+            }
+            self.eventCallback(["playerId": self.playerId, "type": "buffering", "value": true])
+            self.seek(toMs: position)
+            self.applyPlaybackState()
+            self.checkResumeProgress(recovered: true)
+        }
+        resumeCheck = check
+        DispatchQueue.main.asyncAfter(deadline: .now() + (recovered ? 8 : 6), execute: check)
+    }
+
     func seek(toMs ms: Int) {
+        cancelResumeProgressCheck()
+        avCompleted = false
         guard player != nil || vvcAudioClock != nil else { pendingSeekMs = ms; return }
         let time = CMTime(value: CMTimeValue(max(0, ms)), timescale: 1000)
         if let decoder = vvcPlayback {
@@ -703,6 +1060,8 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
             vvcLastPositionMs = -200
             vvcAudioClock?.seek(toMs: ms)
             decoder.seek(toMs: ms)
+        } else if let avPlayer = player, initialPositionPending {
+            seekInitialPosition(ms, in: avPlayer)
         } else {
             player?.seek(to: time)
         }
@@ -718,8 +1077,9 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
     /// fetching ~1MB past its read position so a paused prev/next player does
     /// not compete for bandwidth with the on-screen episode.
     func setActive(_ active: Bool) {
-        guard !disposed, let handle = streamHandle else { return }
-        sp_stream_set_active(handle, active ? 1 : 0)
+        guard !disposed else { return }
+        mediaResourceLoader?.setActive(active)
+        if let handle = streamHandle { sp_stream_set_active(handle, active ? 1 : 0) }
     }
 
     func setRate(_ rate: Float) {
@@ -732,6 +1092,12 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
     func dispose() {
         guard !disposed else { return }
         disposed = true
+        cancelResumeProgressCheck()
+        initialSeekGeneration += 1
+        mediaSourceProbeCancellation.cancel()
+        cancelPrerollPreparation()
+        playerStatusObservation?.invalidate()
+        playerStatusObservation = nil
         vvcPlayback?.dispose()
         vvcPlayback = nil
         vvcAudioClock?.dispose()
@@ -777,6 +1143,7 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
         }
 
         resourceLoaderDelegate?.invalidate()
+        mediaResourceLoader?.invalidate()
 
         if let handle = streamHandle {
             let loaderQueue = resourceLoaderQueue
@@ -786,6 +1153,7 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
         }
 
         resourceLoaderDelegate = nil
+        mediaResourceLoader = nil
         sourceAsset = nil
         resourceLoaderQueue.async { [weak self] in
             try? self?.localSourceFile?.close()
@@ -859,6 +1227,10 @@ private final class CryptoResourceLoaderDelegate: NSObject, AVAssetResourceLoade
     // MARK: - Request Processing
 
     private func processRequest(_ loadingRequest: AVAssetResourceLoadingRequest) {
+        requestLock.lock()
+        let active = !invalidated && pendingRequests.contains { $0 === loadingRequest }
+        requestLock.unlock()
+        guard active, !loadingRequest.isCancelled, !loadingRequest.isFinished else { return }
         // Fill content information if requested
         if let infoRequest = loadingRequest.contentInformationRequest {
             let totalSize = sp_stream_size(streamHandle)
@@ -903,38 +1275,33 @@ private final class CryptoResourceLoaderDelegate: NSObject, AVAssetResourceLoade
             return
         }
 
-        // Read in chunks
+        // One bounded slice per turn: a request-to-EOF must not monopolize
+        // the serial stream and block AVPlayer's other track/header requests.
+        // Re-seek on each turn because another request may use the same handle.
         let chunkSize = 64 * 1024
         let buffer = UnsafeMutablePointer<CChar>.allocate(capacity: chunkSize)
         defer { buffer.deallocate() }
-
-        while bytesRemaining > 0 {
-            // Check cancellation
-            requestLock.lock()
-            let isInvalidated = invalidated
-            let stillPending = pendingRequests.contains { $0 === loadingRequest }
-            requestLock.unlock()
-            if isInvalidated || !stillPending || loadingRequest.isCancelled {
-                return
-            }
-
-            let toRead = min(UInt64(bytesRemaining), UInt64(chunkSize))
-            let bytesRead = sp_stream_read(streamHandle, buffer, toRead)
-            if bytesRead < 0 {
-                finishRequest(loadingRequest, error: NSError(domain: "NativePlayer", code: Int(bytesRead), userInfo: [NSLocalizedDescriptionKey: "read failed"]))
-                return
-            }
-            if bytesRead == 0 {
-                // EOF
-                break
-            }
-
-            let data = Data(bytes: buffer, count: Int(bytesRead))
-            dataRequest.respond(with: data)
-            bytesRemaining -= bytesRead
+        let toRead = min(UInt64(bytesRemaining), UInt64(chunkSize))
+        let bytesRead = sp_stream_read(streamHandle, buffer, toRead)
+        if bytesRead < 0 {
+            finishRequest(loadingRequest, error: NSError(domain: "NativePlayer", code: Int(bytesRead),
+                userInfo: [NSLocalizedDescriptionKey: "read failed"]))
+            return
         }
-
-        finishRequest(loadingRequest, error: nil)
+        requestLock.lock()
+        let stillActive = !invalidated && pendingRequests.contains { $0 === loadingRequest }
+        requestLock.unlock()
+        guard stillActive, !loadingRequest.isCancelled, !loadingRequest.isFinished else { return }
+        if bytesRead == 0 {
+            finishRequest(loadingRequest, error: nil)
+            return
+        }
+        dataRequest.respond(with: Data(bytes: buffer, count: Int(bytesRead)))
+        if bytesRemaining > bytesRead {
+            workQueue.async { [weak self] in self?.processRequest(loadingRequest) }
+        } else {
+            finishRequest(loadingRequest, error: nil)
+        }
     }
 
     private func finishRequest(_ request: AVAssetResourceLoadingRequest, error: Error?) {

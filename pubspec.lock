@@ -114,7 +114,7 @@ packages:
     source: hosted
     version: "2.0.1"
   crypto:
-    dependency: transitive
+    dependency: "direct dev"
     description:
       name: crypto
       sha256: c8ea0233063ba03258fbcf2ca4d6dadfefe14f02fab57702265467a19f27fadf
@@ -536,6 +536,13 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.4.1"
+  shortplay_playback_sdk:
+    dependency: "direct main"
+    description:
+      path: "packages/shortplay_playback_sdk"
+      relative: true
+    source: path
+    version: "0.1.0"
   sky_engine:
     dependency: transitive
     description: flutter

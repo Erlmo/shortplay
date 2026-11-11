@@ -8,12 +8,19 @@ import 'services/app_route_observer.dart';
 import 'services/app_update_service.dart';
 import 'services/device_profile.dart';
 import 'services/download_service.dart';
+import 'services/playback_preferences.dart';
 import 'widgets/app_update_gate.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await DeviceProfile.init();
+  try {
+    await PlaybackPreferences.load();
+  } catch (error) {
+    debugPrint('读取默认清晰度失败，使用自动选档：$error');
+  }
   final apiClient = ApiClient();
+  apiClient.playbackPolicies.start();
   runApp(
     ShortPlayApp(
       apiClient: apiClient,

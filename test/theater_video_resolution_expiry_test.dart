@@ -38,7 +38,8 @@ void main() {
   test('有效的统一解析信息复用地址与key', () async {
     final api = _ResolvedApi();
     addTearDown(api.dispose);
-    final manager = TheaterVideoPreloadManager(apiClient: api);
+    final manager = TheaterVideoPreloadManager(
+        apiClient: api, configureNetwork: (_) async {});
     final first = await manager.resolvePlayUrl('1234567890', episodeIndex: 0);
     expect(await manager.resolvePlayUrl('1234567890', episodeIndex: 0), first);
     expect(api.resolves, 1);
@@ -46,7 +47,8 @@ void main() {
   test('临近上游有效期时丢弃预加载地址，重新解析', () async {
     final api = _ResolvedApi(nearlyExpired: true);
     addTearDown(api.dispose);
-    final manager = TheaterVideoPreloadManager(apiClient: api);
+    final manager = TheaterVideoPreloadManager(
+        apiClient: api, configureNetwork: (_) async {});
     final first = await manager.resolvePlayUrl('1234567890', episodeIndex: 0);
     final next = await manager.resolvePlayUrl('1234567890', episodeIndex: 0);
     expect(next, isNot(first));
@@ -57,7 +59,8 @@ void main() {
   test('服务端没有明确有效期时不固定缓存地址', () async {
     final api = _ResolvedApi(cacheable: false);
     addTearDown(api.dispose);
-    final manager = TheaterVideoPreloadManager(apiClient: api);
+    final manager = TheaterVideoPreloadManager(
+        apiClient: api, configureNetwork: (_) async {});
     final first = await manager.resolvePlayUrl('1234567890', episodeIndex: 0);
     expect(await manager.resolvePlayUrl('1234567890', episodeIndex: 0),
         isNot(first));

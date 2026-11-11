@@ -13,6 +13,8 @@ class TvDramaDetailView extends StatelessWidget {
     required this.onBack,
     required this.onPlay,
     this.onDownload,
+    this.onFavorite,
+    this.isFavorite = false,
     this.addingDownloads = false,
     this.episodes,
   });
@@ -22,6 +24,8 @@ class TvDramaDetailView extends StatelessWidget {
   final VoidCallback onBack;
   final VoidCallback onPlay;
   final VoidCallback? onDownload;
+  final VoidCallback? onFavorite;
+  final bool isFavorite;
   final bool addingDownloads;
   final Widget? episodes;
 
@@ -170,6 +174,13 @@ class TvDramaDetailView extends StatelessWidget {
             icon: Icons.play_arrow_rounded,
             primary: true,
             onTap: onPlay),
+        if (onFavorite != null) ...[
+          const SizedBox(width: 12),
+          _action(
+              label: isFavorite ? '已收藏' : '收藏',
+              icon: isFavorite ? Icons.star_rounded : Icons.star_border_rounded,
+              onTap: onFavorite),
+        ],
         if (onDownload != null) ...[
           const SizedBox(width: 12),
           _action(

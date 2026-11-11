@@ -7,9 +7,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shortplay/models/app_update.dart';
 import 'package:shortplay/pages/settings_page.dart';
 import 'package:shortplay/services/api_client.dart';
+import 'package:shortplay/services/favorite_drama_store.dart';
+import 'package:shortplay/services/playback_preferences.dart';
 import 'package:shortplay/services/app_update_service.dart';
 import 'package:shortplay/widgets/app_update_gate.dart';
 
@@ -79,6 +82,8 @@ Future<_Updates> _openSettings(WidgetTester tester) async {
   addTearDown(service.dispose);
   await tester.pumpWidget(MaterialApp(
       home: SettingsPage(apiClient: client, appUpdateService: service)));
+  await tester
+      .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
   await tester.pumpAndSettle();
   return service;
 }
@@ -88,7 +93,10 @@ void main() {
   String detectedDevice = 'android64';
   final openedUrls = <String>[];
 
-  setUp(() {
+  setUp(() async {
+    SharedPreferences.setMockInitialValues({});
+    await PlaybackPreferences.load();
+    await FavoriteDramaStore.load();
     PackageInfo.setMockInitialValues(
         appName: '龙龙短剧',
         packageName: 'com.example.shortplay',

@@ -9,6 +9,7 @@ final class VvcAudioClock {
     private let audio: VvcSampleIndex.AudioTrack?
     private let queue: DispatchQueue
     private let read: VvcSampleIndex.Read
+    private let tryRead: ((Int64, Int) throws -> Data?)?
     private let onError: (Error) -> Void
     private var format: CMAudioFormatDescription?
     private var framesPerPacket: UInt32 = 1024
@@ -20,10 +21,13 @@ final class VvcAudioClock {
     private var statusObservation: NSKeyValueObservation?
 
     init(audio: VvcSampleIndex.AudioTrack?, queue: DispatchQueue,
-         read: @escaping VvcSampleIndex.Read, onError: @escaping (Error) -> Void) throws {
+         read: @escaping VvcSampleIndex.Read,
+         tryRead: ((Int64, Int) throws -> Data?)? = nil,
+         onError: @escaping (Error) -> Void) throws {
         self.audio = audio
         self.queue = queue
         self.read = read
+        self.tryRead = tryRead
         self.onError = onError
         synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
         renderer.audioTimePitchAlgorithm = .spectral
@@ -103,8 +107,8 @@ final class VvcAudioClock {
         requesting = false
     }
 
-    private func scheduleRefill() {
-        guard !stopped, !refillScheduled, synchronizer.rate > 0 else { return }
+    private func scheduleRefill(whilePaused: Bool = false) {
+        guard !stopped, !refillScheduled, whilePaused || synchronizer.rate > 0 else { return }
         refillScheduled = true
         let token = generation
         queue.asyncAfter(deadline: .now() + 0.05) { [weak self] in
@@ -129,7 +133,19 @@ final class VvcAudioClock {
                     scheduleRefill()
                     return
                 }
-                let data = try read(sample.offset, sample.size)
+                let data: Data
+                if let tryRead = tryRead {
+                    guard let available = try tryRead(sample.offset, sample.size) else {
+                        // Future audio is not ready: leave the shared queue free
+                        // for current video instead of waiting inside stream IO.
+                        stopRequesting()
+                        scheduleRefill(whilePaused: true)
+                        return
+                    }
+                    data = available
+                } else {
+                    data = try read(sample.offset, sample.size)
+                }
                 guard data.count == sample.size else { throw VvcSampleIndex.invalid("AAC 音频数据读取失败") }
                 var block: CMBlockBuffer?
                 var status = CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault,

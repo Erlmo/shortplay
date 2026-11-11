@@ -35,6 +35,27 @@ final class CodecPlaybackTests: XCTestCase {
         return URL(fileURLWithPath: path)
     }
 
+    func testAudioReadYieldsUntilOnlyItsMissingBytesAreReady() throws {
+        let bytes = Data((0..<300000).map { UInt8($0 % 251) })
+        var readyEnd: Int64 = 0
+        var reads = 0
+        let reader = VvcRangeReader(size: Int64(bytes.count), sourceReady: { offset, count in
+            offset + Int64(count) <= readyEnd
+        }) { offset, count in
+            reads += 1
+            return bytes.subdata(in: Int(offset)..<(Int(offset) + count))
+        }
+        XCTAssertNil(try reader.readIfAvailable(offset: 196344, count: 363))
+        XCTAssertEqual(reads, 0, "等待未来音频不能发起阻塞读取")
+        readyEnd = 196707
+        let actual = try reader.readIfAvailable(offset: 196344, count: 363)
+        XCTAssertEqual(actual, bytes.subdata(in: 196344..<196707))
+        XCTAssertEqual(reads, 2)
+        readyEnd = 0
+        XCTAssertEqual(try reader.readIfAvailable(offset: 196344, count: 363), actual)
+        XCTAssertEqual(reads, 2, "已缓存数据不依赖后续网络是否就绪")
+    }
+
     @MainActor
     func testActualH264() throws { try exercise(file: "h264.mp4", backend: "avfoundation") }
 
@@ -81,6 +102,13 @@ final class CodecPlaybackTests: XCTestCase {
         let paused = position
         spin(0.4)
         XCTAssertLessThan(abs(position - paused), 100, "暂停后时钟应停止")
+
+        // Resume must work on its own; seeking here used to hide a stuck clock.
+        let framesBeforeResume = registry.displayedFrames
+        engine.play()
+        waitUntil("暂停后直接恢复播放", timeout: 10) {
+            position > paused + 400 && registry.displayedFrames > framesBeforeResume + 2
+        }
 
         let frameCount = registry.displayedFrames
         engine.seek(toMs: 3000)

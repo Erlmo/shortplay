@@ -1,0 +1,79 @@
+{
+  "protocol": 1,
+  "settings": {
+    "video_play_resolution_strategy_1080_v671": {
+      "enable_server": true,
+      "digg_strategy": false,
+      "preload_size_1080": 1024
+    },
+    "short_video_resolution_v713": {
+      "enable": false
+    },
+    "server_series_resolution_v655": {
+      "enable_server": true
+    },
+    "resolution_in_peak_v629": {
+      "resolution_type": 1,
+      "resolution_type_for_low": 0,
+      "resolution_type_for_mid_low": 2
+    },
+    "resolution_net_strategy_v649": {
+      "enable_net_resolution": false,
+      "lower_time_preload_best_quality": false,
+      "net_speed_type": 1,
+      "not_match_use_smallest": false
+    },
+    "series_resolution_v635": {
+      "show": true,
+      "single_progress": true,
+      "single_series": false,
+      "opt_cache": true,
+      "opt_prepared": true,
+      "request_all_definition": true,
+      "config_definition": true,
+      "request_mp4_align": false,
+      "seamless_switch": false,
+      "supported_definitions": "1080P,720P,540P,480P,360P",
+      "enable_server": false,
+      "slow_tip": false
+    },
+    "engine_net_report_v649": {
+      "bitrate_opt_function": [],
+      "max_sample_count": 100,
+      "enable": true,
+      "network_quality_string": "0.520772,-0.008099,0.037295,0.066246,0.005454,-6.254407,0.012406,-0.01532,0.238079,-0.288351,-0.204715,0.216908,-0.592452,-0.897513,-0.202074,0.138978",
+      "update_interval": 500,
+      "sample_interval": 500
+    },
+    "playlet_peek_time_v691": {
+      "enable": false
+    },
+    "player_strategy_server": {
+      "enable": true
+    },
+    "peak_time_v629": {
+      "peak_start": "19:15",
+      "peak_end": "23:00",
+      "peak_random_range_min": 45,
+      "suppress_range": 85,
+      "suppress_random": 20,
+      "enable_low_time": false,
+      "low_start": "06:00",
+      "low_end": "20:00",
+      "low_random_range_min": 30
+    }
+  },
+  "settings_fetched_at": 1794223062,
+  "settings_source": "settings_and_ab_val",
+  "device_level": 3,
+  "strategy_enabled": true,
+  "data": {
+    "is_peak_period": true,
+    "use_videoarch_peak_period": false,
+    "query_gap": 300,
+    "strategies": {
+      "peak_demotion": "{\"force_sr\":false,\"resolution\":\"540P\",\"resolution_in_peak_min_episode_index\":-1}",
+      "resolution_strategy": ""
+    }
+  }
+}

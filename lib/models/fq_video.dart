@@ -16,6 +16,7 @@ class FqVideoItem {
     this.expiresAt,
     this.cacheable = true,
     this.codecHints = '',
+    this.backupUrls = const [],
   });
 
   final String url;
@@ -32,10 +33,41 @@ class FqVideoItem {
   final DateTime? expiresAt;
   final bool cacheable;
   final String codecHints;
+  final List<String> backupUrls;
 
   /// 部分接口把实际编码放在档位描述中，不能只比较 codec_type 的原始值。
   bool get isByteVc2 => RegExp(r'bytevc2|bvc2', caseSensitive: false)
       .hasMatch('$codec $codecHints');
+
+  static List<String> _backupUrls(Map<String, dynamic> json) {
+    final values = <Object?>[
+      if (json['backup_urls'] is List) ...(json['backup_urls'] as List),
+      json['backup_url'],
+      json['backup_url_1'],
+      json['backup_url_2'],
+      json['backup_url_3'],
+    ];
+    final result = <String>{};
+    for (final raw in values.whereType<String>()) {
+      var value = raw;
+      if (!value.startsWith('http')) {
+        try {
+          value = utf8.decode(base64Decode(value));
+        } catch (_) {
+          continue;
+        }
+      }
+      final uri = Uri.tryParse(value);
+      if (uri != null &&
+          ['https', 'http'].contains(uri.scheme) &&
+          uri.host.isNotEmpty &&
+          uri.userInfo.isEmpty &&
+          !uri.hasFragment) {
+        result.add(value);
+      }
+    }
+    return List.unmodifiable(result.take(3));
+  }
 
   factory FqVideoItem.fromJson(Map<String, dynamic> json) {
     final seconds = json['expire_time'];
@@ -71,6 +103,7 @@ class FqVideoItem {
         expiresAt: expiresAt,
         cacheable: json['cacheable'] != false,
         codecHints: codecHints,
+        backupUrls: _backupUrls(json),
       );
     }
 
@@ -96,6 +129,7 @@ class FqVideoItem {
       expiresAt: expiresAt,
       cacheable: json['cacheable'] != false,
       codecHints: codecHints,
+      backupUrls: _backupUrls(json),
     );
   }
 }

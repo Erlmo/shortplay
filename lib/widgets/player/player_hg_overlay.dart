@@ -27,13 +27,19 @@ extension _HgLayouts on PlayerControlsOverlay {
   Widget get _likeButton => Semantics(
         button: true,
         toggled: isLiked,
-        label: isLiked ? '取消喜欢' : '喜欢',
+        label: isDirectVideo
+            ? (isLiked ? '取消喜欢' : '喜欢')
+            : (isLiked ? '取消收藏' : '收藏'),
         child: Tooltip(
-          message: isLiked ? '取消喜欢' : '喜欢',
+          message: isDirectVideo
+              ? (isLiked ? '取消喜欢' : '喜欢')
+              : (isLiked ? '取消收藏' : '收藏'),
           child: _BareIconButton(
-            icon: isLiked
-                ? Icons.favorite_rounded
-                : Icons.favorite_border_rounded,
+            icon: isDirectVideo
+                ? (isLiked
+                    ? Icons.favorite_rounded
+                    : Icons.favorite_border_rounded)
+                : (isLiked ? Icons.star_rounded : Icons.star_border_rounded),
             color: isLiked ? _kHgRed : Colors.white,
             size: 24,
             onTap: onLikeTap,

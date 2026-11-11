@@ -198,7 +198,8 @@ extension _PlayerView on _PlayerPageState {
       player: null,
       isDirectVideo: _isDirectVideo,
       isLiked: _isLiked,
-      onLikeTap: _isDirectVideo && widget.directVideoMetadata != null
+      onLikeTap: (!_isDirectVideo && _drama.id != 0) ||
+              (_isDirectVideo && widget.directVideoMetadata != null)
           ? () => unawaited(_toggleLike())
           : null,
       playerInitialized: _playerInitialized,

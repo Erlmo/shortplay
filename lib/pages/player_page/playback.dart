@@ -111,7 +111,10 @@ extension _PlayerPlayback on _PlayerPageState {
   // ─── 打开剧集 ──────────────────────────────────────────────────────────
 
   Future<void> _openEpisode(int index,
-      {int? initialSeekMs, Stopwatch? startupClock}) async {
+      {int? initialSeekMs,
+      Stopwatch? startupClock,
+      QualitySwitchTicket? qualitySwitch}) async {
+    if (qualitySwitch == null) _qualitySwitches.cancel();
     if (_sleepStopped || index < 0 || index >= _episodes.length) return;
     final startup = startupClock ?? (Stopwatch()..start());
     void trace(String stage) {
@@ -123,6 +126,7 @@ extension _PlayerPlayback on _PlayerPageState {
     }
 
     trace('catalog_ready');
+    cancelPlaybackPreparation();
     final reqId = ++_requestId;
     _errorMessage = null;
     if (_preparingPlayer != null) {
@@ -132,14 +136,14 @@ extension _PlayerPlayback on _PlayerPageState {
 
     final direction = index - _currentEpisodeIndex;
     _currentEpisodeIndex = index;
-    _didPreloadN2 = false;
-    _didPreloadN3 = false;
     _cancelPlayerSubscriptions();
 
     final reusedPlayer = _takeWindowPlayer(index, direction);
     if (reusedPlayer != null) {
-      _activateReusedPlayer(reusedPlayer, reqId, initialSeekMs);
-      return;
+      if (await _activateReusedPlayer(reusedPlayer, reqId, initialSeekMs)) {
+        return;
+      }
+      if (!mounted || reqId != _requestId) return;
     }
 
     // 新建播放器路径
@@ -186,8 +190,8 @@ extension _PlayerPlayback on _PlayerPageState {
     final player = NativePlayer();
     _preparingPlayer = player;
     try {
-      // Android 在播放器读取线程准备首段，与 Surface 创建重叠。
-      // Apple 平台保留原有预热流程。
+      // Apple 端保留起播媒体预取：只提前创建播放器，可能把等待
+      // 转移到出画后的连续读取。Android 继续使用原生读取线程准备。
       if (keyHex.isNotEmpty &&
           defaultTargetPlatform != TargetPlatform.android) {
         await CryptoNativeChannel.instance.prewarm(cdnUrl, keyHex);
@@ -197,7 +201,8 @@ extension _PlayerPlayback on _PlayerPageState {
         await player.dispose();
         return;
       }
-      await player.create(cdnUrl, keyHex);
+      await player.create(cdnUrl, keyHex,
+          initialPositionMs: qualitySwitch == null ? null : initialSeekMs);
       trace('player_created');
     } catch (e) {
       if (identical(_preparingPlayer, player)) _preparingPlayer = null;
@@ -212,11 +217,25 @@ extension _PlayerPlayback on _PlayerPageState {
       return;
     }
 
-    // 先 play，让 AVPlayer 开始缓冲和解码
-    unawaited(player.play());
-    unawaited(player.setRate(_effectiveRate));
-    if (initialSeekMs != null && initialSeekMs > 0) {
-      unawaited(player.seek(Duration(milliseconds: initialSeekMs)));
+    if (qualitySwitch != null) {
+      // Native creation positions the source before preparing its first frame.
+      // Paused users must never be resumed just to display the new rendition.
+      try {
+        await player.setVolume(0);
+        await player.setRate(_effectiveRate);
+        await player.prepareFirstFrame();
+      } catch (error) {
+        if (identical(_preparingPlayer, player)) _preparingPlayer = null;
+        await player.dispose();
+        if (mounted && reqId == _requestId) _failLoading('创建播放器失败: $error');
+        return;
+      }
+    } else {
+      unawaited(player.play());
+      unawaited(player.setRate(_effectiveRate));
+      if (initialSeekMs != null && initialSeekMs > 0) {
+        unawaited(player.seek(Duration(milliseconds: initialSeekMs)));
+      }
     }
 
     // 等首帧渲染出来再隐藏 loading（避免黑屏闪烁）
@@ -239,14 +258,43 @@ extension _PlayerPlayback on _PlayerPageState {
       return;
     }
 
+    if (qualitySwitch != null) {
+      if (!_qualitySwitches.isCurrent(qualitySwitch)) {
+        unawaited(player.dispose());
+        return;
+      }
+      try {
+        await player.setRate(_effectiveRate);
+        await player.setVolume(1);
+        if (qualitySwitch.wantsPlaying &&
+            !_userPaused &&
+            !_pausedByRoute &&
+            !_pausedByLifecycle &&
+            !_sleepStopped) {
+          await player.play();
+        } else {
+          await player.pause();
+        }
+      } catch (error) {
+        if (identical(_preparingPlayer, player)) _preparingPlayer = null;
+        await player.dispose();
+        if (mounted && reqId == _requestId) _failLoading('切换清晰度失败: $error');
+        return;
+      }
+      if (!mounted || reqId != _requestId) {
+        unawaited(player.dispose());
+        return;
+      }
+    }
     if (identical(_preparingPlayer, player)) _preparingPlayer = null;
     _player = player;
     _playerInitialized = true;
     _loading = false;
     _showNextLoading = false;
-    positionMsNotifier.value = player.position.inMilliseconds;
+    positionMsNotifier.value = qualitySwitch?.position.inMilliseconds ??
+        player.position.inMilliseconds;
     durationMsNotifier.value = player.duration.inMilliseconds;
-    playingNotifier.value = true;
+    playingNotifier.value = qualitySwitch == null ? true : player.wantsPlaying;
     _refresh();
 
     _updateStep('player', StepStatus.success);
@@ -255,83 +303,119 @@ extension _PlayerPlayback on _PlayerPageState {
 
   /// 3-Player 窗口：切到相邻集且那一集已准备好时，交换引用直接复用；
   /// 否则释放整个窗口，返回 null 走新建路径。
+  void _parkWindowPlayer(NativePlayer player) {
+    unawaited(player.transition(() async {
+      await player.setVolume(0);
+      await player.pause();
+      await player.setActive(false);
+    }).catchError((Object error) {
+      debugPrint('[PlaybackSDK] 停放播放器失败: $error');
+    }));
+  }
+
   NativePlayer? _takeWindowPlayer(int index, int direction) {
-    if (direction > 0 && nextPlayer != null && nextEpisodeIndex == index) {
-      if (_player != null) {
-        unawaited(_player!.pause());
-        unawaited(_player!.setVolume(0));
-        // 降级为上一集：停放加密流，不再和新的当前集抢带宽
-        unawaited(_player!.setActive(false));
-        if (prevPlayer != null) enqueueDispose(prevPlayer!);
-        prevPlayer = _player;
-        prevEpisodeIndex = index - 1;
-        prevPositionMs = _player!.position.inMilliseconds;
+    if (direction == 1 &&
+        nextPlayer != null &&
+        nextEpisodeIndex == index &&
+        nextPlayerReady) {
+      final reused = preparedPlayers.take(engineKey(index));
+      if (identical(reused, nextPlayer) && reused != null) {
+        if (_player != null) {
+          _parkWindowPlayer(_player!);
+          if (prevPlayer != null) enqueueDispose(prevPlayer!);
+          prevPlayer = _player;
+          prevEpisodeIndex = index - 1;
+          prevPositionMs = _player!.position.inMilliseconds;
+          preparedPlayers.remember(engineKey(index - 1), _player!);
+        }
+        nextPlayer = null;
+        nextEpisodeIndex = null;
+        nextPlayerReady = false;
+        return reused;
       }
-      final reused = nextPlayer;
-      nextPlayer = null;
-      nextEpisodeIndex = null;
-      nextPlayerReady = false;
-      return reused;
     }
-    if (direction < 0 && prevPlayer != null && prevEpisodeIndex == index) {
-      if (_player != null) {
-        unawaited(_player!.pause());
-        unawaited(_player!.setVolume(0));
-        // 降级为下一集：停放加密流
-        unawaited(_player!.setActive(false));
-        if (nextPlayer != null) enqueueDispose(nextPlayer!);
-        nextPlayer = _player;
-        nextEpisodeIndex = index + 1;
-        nextPlayerReady = true;
+    if (direction == -1 && prevPlayer != null && prevEpisodeIndex == index) {
+      final reused = preparedPlayers.take(engineKey(index));
+      if (identical(reused, prevPlayer) && reused != null) {
+        if (_player != null) {
+          _parkWindowPlayer(_player!);
+          if (nextPlayer != null) enqueueDispose(nextPlayer!);
+          nextPlayer = _player;
+          nextEpisodeIndex = index + 1;
+          nextPlayerReady = _player!.isReusable;
+          preparedPlayers.remember(engineKey(index + 1), _player!);
+        }
+        prevPlayer = null;
+        prevEpisodeIndex = null;
+        prevPositionMs = null;
+        return reused;
       }
-      final reused = prevPlayer;
-      prevPlayer = null;
-      prevEpisodeIndex = null;
-      prevPositionMs = null;
-      return reused;
     }
     if (_player != null) {
-      unawaited(_player!.pause());
+      // Stop outgoing audio immediately even if another engine is still in
+      // the asynchronous disposal queue.
+      _parkWindowPlayer(_player!);
       enqueueDispose(_player!);
     }
+    _player = null;
     dispose3PWindow();
     return null;
   }
 
-  void _activateReusedPlayer(
-      NativePlayer reusedPlayer, int reqId, int? initialSeekMs) {
-    if (reusedPlayer.completed) {
-      unawaited(reusedPlayer.seek(Duration.zero));
-    }
+  Future<bool> _activateReusedPlayer(
+      NativePlayer reusedPlayer, int reqId, int? initialSeekMs) async {
+    final token = PlaybackCancellation();
+    playbackActivation = token;
     _player = reusedPlayer;
-    _playerInitialized = true;
-    _loading = false;
-    _showNextLoading = false;
-    positionMsNotifier.value = reusedPlayer.position.inMilliseconds;
-    durationMsNotifier.value = reusedPlayer.duration.inMilliseconds;
-    playingNotifier.value = reusedPlayer.playing;
-    _refresh();
-    // 升为当前集：恢复正常预读
-    unawaited(reusedPlayer.setActive(true));
-    unawaited(reusedPlayer.setVolume(1.0));
-    unawaited(reusedPlayer.setRate(_effectiveRate));
-    unawaited(reusedPlayer.play());
-    if (initialSeekMs != null && initialSeekMs > 0) {
-      unawaited(reusedPlayer.seek(Duration(milliseconds: initialSeekMs)));
+    final seekMs = initialSeekMs != null && initialSeekMs > 0
+        ? initialSeekMs
+        : (reusedPlayer.completed ? 0 : null);
+    try {
+      await reusedPlayer.transition(() => activatePreparedPlayback(
+            cancellation: token,
+            activate: () => reusedPlayer.setActive(true),
+            position: () async {
+              if (seekMs != null) {
+                await reusedPlayer.seek(Duration(milliseconds: seekMs));
+              }
+            },
+            rate: () => reusedPlayer.setRate(_effectiveRate),
+            unmute: () => reusedPlayer.setVolume(1),
+            play: reusedPlayer.play,
+          ));
+      token.check();
+      if (!mounted || reqId != _requestId) return true;
+      if (!reusedPlayer.isReusable) throw StateError('预渲染播放器已失效');
+      _playerInitialized = true;
+      _loading = false;
+      _showNextLoading = false;
+      positionMsNotifier.value = seekMs ?? reusedPlayer.position.inMilliseconds;
+      durationMsNotifier.value = reusedPlayer.duration.inMilliseconds;
+      playingNotifier.value = true;
+      _refresh();
+      _onEpisodeStarted(reusedPlayer, reqId, initialSeekMs);
+      return true;
+    } on PlaybackCancelled {
+      // The newer switch/route/lifecycle owns the engine now.
+      return true;
+    } catch (error) {
+      if (!mounted || reqId != _requestId) return true;
+      debugPrint('[PlaybackSDK] 复用失败，重新创建播放器: $error');
+      if (identical(_player, reusedPlayer)) _player = null;
+      enqueueDispose(reusedPlayer);
+      return false;
+    } finally {
+      if (identical(playbackActivation, token)) playbackActivation = null;
     }
-    _onEpisodeStarted(reusedPlayer, reqId, initialSeekMs);
   }
 
   /// 新的一集开始播放后的公共收尾：订阅、弹幕、预热、预取下一季、记历史。
   void _onEpisodeStarted(NativePlayer player, int reqId, int? initialSeekMs) {
-    _startupPreloadsScheduled = false;
     _startupPositionMs = initialSeekMs ?? player.position.inMilliseconds;
     _setupSubscriptions(player, reqId);
     if (_isDirectVideo) return;
-    // 下一集已在本地时无需避让网络带宽，当前首帧出画后立即准备翻页画面。
-    if (cachedEpisodePath(_currentEpisodeIndex + 1) != null) {
-      unawaited(prepareNextPlayer(_currentEpisodeIndex + 1));
-    }
+    startPlaybackSession(_currentEpisodeIndex);
+    _updatePlaybackScheduling();
     _danmakuController.clearComments();
     _loadDanmaku(positionMs: initialSeekMs);
     _saveHistory(positionMs: initialSeekMs);
@@ -368,6 +452,8 @@ extension _PlayerPlayback on _PlayerPageState {
   void _setupSubscriptions(NativePlayer player, int reqId) {
     _errorSub = player.errorStream.listen((message) {
       if (!mounted || reqId != _requestId) return;
+      cancelPlaybackPreparation();
+      _bufferMonitor?.stop();
       _failLoading('播放失败: $message');
     });
     _positionSub = player.positionStream.listen((pos) {
@@ -379,11 +465,33 @@ extension _PlayerPlayback on _PlayerPageState {
     _playingSub = player.playingStream.listen((playing) {
       if (reqId != _requestId) return;
       playingNotifier.value = playing;
+      _updatePlaybackScheduling();
     });
     _completedSub = player.completedStream.listen((completed) {
       if (reqId != _requestId) return;
       if (completed) _onAutoNext();
     });
+    _bufferingSub = player.bufferingStream.listen((_) {
+      if (!mounted || reqId != _requestId) return;
+      _updatePlaybackScheduling();
+    });
+    _bufferedAheadSub = player.bufferedAheadStream.listen((_) {
+      if (!mounted || reqId != _requestId) return;
+      _updatePlaybackScheduling();
+    });
+    _playbackIntentSub = player.playbackIntentStream.listen((_) {
+      if (!mounted || reqId != _requestId) return;
+      _updatePlaybackScheduling();
+    });
+    _bufferMonitor = PlaybackBufferMonitor(
+      read: player.pollBufferState,
+      onSample: () {
+        if (mounted && reqId == _requestId && identical(player, _player)) {
+          _updatePlaybackScheduling();
+        }
+      },
+      onError: (error, _) => debugPrint('[PlaybackSDK] 缓冲状态读取失败: $error'),
+    );
     _durationSub = player.durationStream.listen((dur) {
       if (reqId != _requestId) return;
       durationMsNotifier.value = dur.inMilliseconds;
@@ -396,29 +504,17 @@ extension _PlayerPlayback on _PlayerPageState {
     _completedSub?.cancel();
     _errorSub?.cancel();
     _durationSub?.cancel();
+    _bufferingSub?.cancel();
+    _bufferedAheadSub?.cancel();
+    _playbackIntentSub?.cancel();
+    _bufferMonitor?.stop();
+    _bufferMonitor = null;
   }
 
   void _checkPreloadThresholds(Duration position, Duration duration) {
     if (_isDirectVideo) return;
-    // 首帧只说明解码出了一帧，不能此时就让后续两集争用本集的起播带宽。
-    // 使用播放进度而非墙上时间，暂停或卡缓冲时不会提前启动预加载。
-    if (!_startupPreloadsScheduled &&
-        !(_player?.buffering ?? false) &&
-        position.inMilliseconds - _startupPositionMs >= 3000) {
-      _startupPreloadsScheduled = true;
-      schedulePreloads(_currentEpisodeIndex);
-      _maybePrefetchNextSeason();
-    }
+    _updatePlaybackScheduling();
     if (duration <= Duration.zero) return;
-    final progress = position.inMilliseconds / duration.inMilliseconds;
-    if (!_didPreloadN2 && progress >= 0.5) {
-      _didPreloadN2 = true;
-      preloadHeaderOnly(_currentEpisodeIndex, _currentEpisodeIndex + 2);
-    }
-    if (!_didPreloadN3 && progress >= 0.75) {
-      _didPreloadN3 = true;
-      preloadHeaderOnly(_currentEpisodeIndex, _currentEpisodeIndex + 3);
-    }
     // 持续加载弹幕下一批
     unawaited(_danmakuController.ensureLoadedUpTo(
       positionMs: position.inMilliseconds,
@@ -426,6 +522,42 @@ extension _PlayerPlayback on _PlayerPageState {
       isTheaterResource: _drama.isTheaterResource,
       isOfflinePlayback: isOfflinePlayback,
     ));
+  }
+
+  void _updatePlaybackScheduling() {
+    final player = _player;
+    if (_isDirectVideo || player == null || !_playerInitialized) return;
+    final ahead = player.bufferedAhead;
+    final local = cachedEpisodePath(_currentEpisodeIndex) != null;
+    final active = player.wantsPlaying &&
+        !player.completed &&
+        _seekingPositionMs == null &&
+        !_pausedByRoute &&
+        !_pausedByLifecycle &&
+        !_userPaused &&
+        !_sleepStopped;
+    if (active) {
+      _bufferMonitor?.start();
+    } else {
+      _bufferMonitor?.stop();
+    }
+    playbackSession.update(
+      firstFrame: player.firstFrameRendered,
+      buffering: player.buffering,
+      active: active,
+      played: Duration(
+          milliseconds: (player.position.inMilliseconds - _startupPositionMs)
+              .clamp(0, 1 << 31)),
+      bufferedAhead: ahead,
+      fullyBuffered: local,
+      position: player.position,
+      duration: player.duration,
+    );
+    // Season metadata is small, but still follows the current playback's
+    // health rather than a fixed percentage of the episode.
+    if (playbackSession.canPreloadNetwork) {
+      _maybePrefetchNextSeason();
+    }
   }
 
   // ─── 自动下一集 ────────────────────────────────────────────────────────

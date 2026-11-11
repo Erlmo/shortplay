@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart'
     show debugPrint, visibleForTesting, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/services.dart';
+import 'package:shortplay_playback_sdk/shortplay_playback_sdk.dart';
 import 'package:flutter/widgets.dart' show Size, ValueNotifier;
 
 class NativePlayer {
@@ -73,12 +74,18 @@ class NativePlayer {
 
   int? get textureId => _textureId;
   bool get isCreated => _textureId != null;
+  bool get isReusable =>
+      !_disposed && _errorMessage == null && isCreated && _firstFrameRendered;
 
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
   bool _playing = false;
+  bool _wantsPlaying = false;
+  int _transportRevision = 0;
+  int _telemetryRevision = 0;
   bool _completed = false;
   bool _buffering = false;
+  Duration? _bufferedAhead;
   bool _firstFrameRendered = false;
   int _videoWidth = 0;
   int _videoHeight = 0;
@@ -86,8 +93,12 @@ class NativePlayer {
   Duration get position => _position;
   Duration get duration => _duration;
   bool get playing => _playing;
+  bool get wantsPlaying => _wantsPlaying;
   bool get completed => _completed;
   bool get buffering => _buffering;
+
+  /// Null means this backend cannot report buffered duration.
+  Duration? get bufferedAhead => _bufferedAhead;
   bool get firstFrameRendered => _firstFrameRendered;
   int get videoWidth => _videoWidth;
   int get videoHeight => _videoHeight;
@@ -99,6 +110,8 @@ class NativePlayer {
 
   final _positionCtrl = StreamController<Duration>.broadcast();
   final _durationCtrl = StreamController<Duration>.broadcast();
+  final _intentCtrl = StreamController<bool>.broadcast();
+  final _bufferedAheadCtrl = StreamController<Duration?>.broadcast();
   final _playingCtrl = StreamController<bool>.broadcast();
   final _completedCtrl = StreamController<bool>.broadcast();
   final _bufferingCtrl = StreamController<bool>.broadcast();
@@ -107,6 +120,8 @@ class NativePlayer {
 
   Stream<Duration> get positionStream => _positionCtrl.stream;
   Stream<Duration> get durationStream => _durationCtrl.stream;
+  Stream<bool> get playbackIntentStream => _intentCtrl.stream;
+  Stream<Duration?> get bufferedAheadStream => _bufferedAheadCtrl.stream;
   Stream<bool> get playingStream => _playingCtrl.stream;
   Stream<bool> get completedStream => _completedCtrl.stream;
   Stream<bool> get bufferingStream => _bufferingCtrl.stream;
@@ -117,12 +132,13 @@ class NativePlayer {
 
   final _createdCompleter = Completer<int>();
 
-  Future<int> create(String cdnUrl, String keyHex) {
+  Future<int> create(String cdnUrl, String keyHex, {int? initialPositionMs}) {
     if (_disposed) return Future.error(StateError('播放器已关闭'));
-    return _creation ??= _create(cdnUrl, keyHex);
+    return _creation ??= _create(cdnUrl, keyHex, initialPositionMs);
   }
 
-  Future<int> _create(String cdnUrl, String keyHex) async {
+  Future<int> _create(
+      String cdnUrl, String keyHex, int? initialPositionMs) async {
     // 提前处理 ready 的错误；等待 create 应答期间取消或早到 error 也不会
     // 产生未处理异常，随后 await 仍会把同一错误返回给调用者。
     final ready = _createdCompleter.future;
@@ -133,6 +149,8 @@ class NativePlayer {
       final response = _channel.invokeMapMethod<String, dynamic>('create', {
         'cdnUrl': cdnUrl,
         'keyHex': keyHex,
+        if (initialPositionMs != null && initialPositionMs >= 0)
+          'initialPositionMs': initialPositionMs,
       });
       // 超时/退出后原生才返回 id 时，仍需释放原生实例。
       unawaited(response.then<void>((result) {
@@ -180,6 +198,71 @@ class NativePlayer {
     await firstFrameStream.firstWhere((rendered) => rendered).timeout(timeout);
   }
 
+  void _setPlaybackIntent(bool value) {
+    if (_disposed) return;
+    ++_transportRevision;
+    if (_wantsPlaying == value) return;
+    _wantsPlaying = value;
+    _intentCtrl.add(value);
+  }
+
+  /// A read-only native snapshot continues while position/isPlaying are frozen
+  /// during a stall. A reply started before a seek/pause/event is discarded.
+  Future<void> pollBufferState() async {
+    final id = _playerId;
+    if (_disposed || id == null || _errorMessage != null) return;
+    final transport = _transportRevision;
+    final telemetry = _telemetryRevision;
+    Map<String, dynamic>? state;
+    try {
+      state = await _channel
+          .invokeMapMethod<String, dynamic>('getBufferState', {'id': id});
+    } on MissingPluginException {
+      return;
+    }
+    if (state == null ||
+        _disposed ||
+        id != _playerId ||
+        transport != _transportRevision ||
+        telemetry != _telemetryRevision) {
+      return;
+    }
+    for (final entry in const {
+      'bufferedAheadMs': 'bufferedAhead',
+      'positionMs': 'position',
+      'durationMs': 'duration',
+    }.entries) {
+      final value = state[entry.key];
+      if (value is num && value.isFinite && value >= 0) {
+        if (entry.key == 'positionMs' &&
+            value.toInt() == _position.inMilliseconds) {
+          continue;
+        }
+        if (entry.key == 'durationMs' &&
+            value.toInt() == _duration.inMilliseconds) {
+          continue;
+        }
+        _handleEvent({'type': entry.value, 'value': value.toInt()});
+      } else if (entry.key == 'bufferedAheadMs' &&
+          value == null &&
+          _bufferedAhead != null) {
+        _bufferedAhead = null;
+        _bufferedAheadCtrl.add(null);
+      }
+    }
+    for (final field in ['buffering', 'playing', 'completed']) {
+      final value = state[field];
+      final previous = switch (field) {
+        'buffering' => _buffering,
+        'playing' => _playing,
+        _ => _completed,
+      };
+      if (value is bool && value != previous) {
+        _handleEvent({'type': field, 'value': value});
+      }
+    }
+  }
+
   Future<void> _releaseNative(int id) async {
     if (_releaseRequested) return;
     _releaseRequested = true;
@@ -190,22 +273,39 @@ class NativePlayer {
     }
   }
 
+  final _transitions = PlaybackCommandQueue();
+  Future<void> transition(Future<void> Function() operation) =>
+      _transitions.run(operation);
+
+  /// Prepare/render on the existing backend with its playback clock paused.
+  /// The existing firstFrame event, not command completion, proves readiness.
+  Future<void> prepareFirstFrame() async {
+    _setPlaybackIntent(false);
+    if (_disposed || _playerId == null) return;
+    await _channel.invokeMethod('prepareFirstFrame', {'id': _playerId});
+  }
+
   Future<void> play() async {
     if (_disposed || _playerId == null) return;
+    _setPlaybackIntent(true);
     await _channel.invokeMethod('play', {'id': _playerId});
   }
 
   Future<void> pause() async {
     if (_disposed || _playerId == null) return;
+    _setPlaybackIntent(false);
     await _channel.invokeMethod('pause', {'id': _playerId});
   }
 
   Future<void> seek(Duration position) async {
     if (_disposed || _playerId == null) return;
+    ++_transportRevision;
+    _bufferedAhead = null;
     await _channel.invokeMethod('seek', {
       'id': _playerId,
       'positionMs': position.inMilliseconds,
     });
+    if (!_disposed) _completed = false;
   }
 
   Future<void> setVolume(double volume) async {
@@ -238,6 +338,7 @@ class NativePlayer {
 
   Future<void> dispose() async {
     if (_disposed) return;
+    _setPlaybackIntent(false);
     _disposed = true;
     if (_creation != null && !_createdCompleter.isCompleted) {
       _createdCompleter.completeError(StateError('播放器已关闭'));
@@ -246,8 +347,13 @@ class NativePlayer {
       _instances.remove(_playerId);
       await _releaseNative(_playerId!);
     }
+    if (!_firstFrameRendered && _firstFrameCtrl.hasListener) {
+      _firstFrameCtrl.addError(StateError('播放器已关闭'));
+    }
     _positionCtrl.close();
     _durationCtrl.close();
+    _intentCtrl.close();
+    _bufferedAheadCtrl.close();
     _playingCtrl.close();
     _completedCtrl.close();
     _bufferingCtrl.close();
@@ -261,6 +367,7 @@ class NativePlayer {
 
   void _handleEvent(dynamic event) {
     if (_disposed || event is! Map) return;
+    ++_telemetryRevision;
     final type = event['type'] as String?;
     if (const bool.fromEnvironment('SHORTPLAY_TRACE_STARTUP')) {
       if (type == 'buffering' || type == 'firstFrame' || type == 'error') {
@@ -275,6 +382,7 @@ class NativePlayer {
           _createdCompleter.complete(textureId);
         }
       case 'error':
+        _setPlaybackIntent(false);
         final message = event['value']?.toString() ?? '播放失败';
         _errorMessage = message;
         if (!_createdCompleter.isCompleted) {
@@ -294,6 +402,9 @@ class NativePlayer {
         final ms = event['value'] as int;
         _duration = Duration(milliseconds: ms);
         _durationCtrl.add(_duration);
+      case 'playbackIntent':
+        // 原生音频冲突可能终止播放意图，避免卡顿恢复又把它启动。
+        _setPlaybackIntent(event['value'] == true);
       case 'playing':
         if (_disposed) return;
         _playing = event['value'] as bool;
@@ -301,7 +412,18 @@ class NativePlayer {
       case 'completed':
         if (_disposed) return;
         _completed = event['value'] as bool;
+        if (_completed) _setPlaybackIntent(false);
         _completedCtrl.add(_completed);
+      case 'bufferedAhead':
+        final value = event['value'];
+        if (value is num) {
+          final ahead = Duration(milliseconds: value.toInt().clamp(0, 1 << 31));
+          if (_bufferedAhead != ahead) {
+            _bufferedAhead = ahead;
+            _bufferedAheadCtrl.add(ahead);
+          }
+        }
+        break;
       case 'buffering':
         if (_disposed) return;
         _buffering = event['value'] as bool;

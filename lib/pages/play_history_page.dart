@@ -4,6 +4,7 @@ import '../models/playback_record.dart';
 import '../services/api_client.dart';
 import '../services/download_service.dart';
 import '../services/playback_history_store.dart';
+import '../widgets/app_notice.dart';
 import '../widgets/tv_tap.dart';
 import 'playback_record_launcher.dart';
 
@@ -25,6 +26,41 @@ class PlayHistoryPageState extends State<PlayHistoryPage> {
   // Use a heterogeneous list for headers and items
   List<Object> _displayItems = [];
   bool _loading = true;
+  bool _managing = false;
+  bool _deleting = false;
+  int _loadRevision = 0;
+  final Set<String> _selected = {};
+
+  Iterable<PlaybackRecord> get _records =>
+      _displayItems.whereType<PlaybackRecord>();
+
+  void _toggleRecord(PlaybackRecord record) {
+    if (_deleting) return;
+    final key = PlaybackHistoryStore.recordKey(record);
+    setState(() {
+      if (!_selected.add(key)) _selected.remove(key);
+    });
+  }
+
+  Future<void> _deleteSelected() async {
+    if (_selected.isEmpty || _deleting) return;
+    setState(() => _deleting = true);
+    try {
+      await PlaybackHistoryStore.removeRecords(_selected);
+      if (!mounted) return;
+      setState(() {
+        _selected.clear();
+        _managing = false;
+      });
+      await _load(silent: true);
+    } catch (_) {
+      if (mounted) {
+        showAppNotice(context, message: '删除失败，请重试', kind: AppNoticeKind.error);
+      }
+    } finally {
+      if (mounted) setState(() => _deleting = false);
+    }
+  }
 
   @override
   void initState() {
@@ -44,13 +80,16 @@ class PlayHistoryPageState extends State<PlayHistoryPage> {
 
   Future<void> _load({bool silent = false}) async {
     if (!silent) setState(() => _loading = true);
+    final revision = ++_loadRevision;
     final rawItems = await PlaybackHistoryStore.load();
-    if (!mounted) return;
+    if (!mounted || revision != _loadRevision) return;
 
     final grouped = _groupItems(rawItems);
 
     setState(() {
       _displayItems = grouped;
+      _selected.retainAll(rawItems.map(PlaybackHistoryStore.recordKey));
+      if (rawItems.isEmpty) _managing = false;
       _loading = false;
     });
   }
@@ -99,8 +138,18 @@ class PlayHistoryPageState extends State<PlayHistoryPage> {
   }
 
   Future<void> _clearAll() async {
-    await PlaybackHistoryStore.clear();
-    await _load();
+    if (_deleting) return;
+    setState(() => _deleting = true);
+    try {
+      await PlaybackHistoryStore.clear();
+      if (mounted) await _load(silent: true);
+    } catch (_) {
+      if (mounted) {
+        showAppNotice(context, message: '清空失败，请重试', kind: AppNoticeKind.error);
+      }
+    } finally {
+      if (mounted) setState(() => _deleting = false);
+    }
   }
 
   void _openRecord(PlaybackRecord record) {
@@ -124,6 +173,38 @@ class PlayHistoryPageState extends State<PlayHistoryPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.white,
+      bottomNavigationBar: !_managing
+          ? null
+          : SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+                child: Row(children: [
+                  TextButton(
+                      onPressed: _deleting
+                          ? null
+                          : () => setState(() {
+                                final keys = _records
+                                    .map(PlaybackHistoryStore.recordKey)
+                                    .toSet();
+                                if (_selected.length == keys.length) {
+                                  _selected.clear();
+                                } else {
+                                  _selected.addAll(keys);
+                                }
+                              }),
+                      child: Text(
+                          _selected.length == _records.length ? '取消全选' : '全选')),
+                  const Spacer(),
+                  Text('已选 ${_selected.length} 条'),
+                  const SizedBox(width: 16),
+                  FilledButton(
+                      onPressed: _selected.isEmpty || _deleting
+                          ? null
+                          : _deleteSelected,
+                      child: Text(_deleting ? '删除中…' : '删除')),
+                ]),
+              )),
       body: _loading
           ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
           : CustomScrollView(
@@ -146,10 +227,19 @@ class PlayHistoryPageState extends State<PlayHistoryPage> {
                   foregroundColor: const Color(0xFF1D1D1F),
                   actions: [
                     if (_displayItems.isNotEmpty)
+                      TextButton(
+                          onPressed: _deleting
+                              ? null
+                              : () => setState(() {
+                                    _managing = !_managing;
+                                    _selected.clear();
+                                  }),
+                          child: Text(_managing ? '完成' : '管理')),
+                    if (_displayItems.isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.only(right: 16.0),
                         child: TextButton(
-                          onPressed: _clearAll,
+                          onPressed: _deleting ? null : _clearAll,
                           style: TextButton.styleFrom(
                             foregroundColor: const Color(0xFF999999),
                             textStyle: const TextStyle(
@@ -240,8 +330,10 @@ class PlayHistoryPageState extends State<PlayHistoryPage> {
     );
 
     return Dismissible(
-      key: ValueKey('${record.dramaId}_${record.episodeIndex}'),
-      direction: DismissDirection.endToStart,
+      key: ValueKey(PlaybackHistoryStore.recordKey(record)),
+      direction: _managing || _deleting
+          ? DismissDirection.none
+          : DismissDirection.endToStart,
       background: Container(
         alignment: Alignment.centerRight,
         padding: const EdgeInsets.only(right: 24),
@@ -273,17 +365,41 @@ class PlayHistoryPageState extends State<PlayHistoryPage> {
         });
 
         // 异步删除持久化数据
-        PlaybackHistoryStore.removeByKey(record.dramaId);
+        PlaybackHistoryStore.removeRecords(
+                [PlaybackHistoryStore.recordKey(record)])
+            .catchError((Object error) {
+          if (mounted) {
+            _load(silent: true);
+            showAppNotice(context,
+                message: '删除失败，请重试', kind: AppNoticeKind.error);
+          }
+        });
       },
       child: TvTap(
         ink: true,
         borderRadius: 0,
         focusScale: 1.0,
-        onTap: () => _openRecord(record),
+        onTap: () => _managing ? _toggleRecord(record) : _openRecord(record),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           child: Row(
             children: [
+              if (_managing)
+                Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: Icon(
+                      _selected.contains(PlaybackHistoryStore.recordKey(record))
+                          ? Icons.check_circle_rounded
+                          : Icons.radio_button_unchecked_rounded,
+                      color: _selected
+                              .contains(PlaybackHistoryStore.recordKey(record))
+                          ? const Color(0xFFFF2442)
+                          : Colors.grey,
+                      semanticLabel: _selected
+                              .contains(PlaybackHistoryStore.recordKey(record))
+                          ? '已选择'
+                          : '未选择'),
+                ),
               // Thumbnail (Horizontal 16:9)
               Container(
                 width: 110,
@@ -304,13 +420,13 @@ class PlayHistoryPageState extends State<PlayHistoryPage> {
                             errorBuilder: (_, __, ___) => defaultCover,
                           ),
                     // Optional: Darken overly
-                    Container(color: Colors.black.withOpacity(0.05)),
+                    Container(color: Colors.black.withValues(alpha: 0.05)),
                     // Center Play Icon (Small)
                     Center(
                       child: Container(
                         padding: const EdgeInsets.all(4),
                         decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.3),
+                          color: Colors.black.withValues(alpha: 0.3),
                           shape: BoxShape.circle,
                         ),
                         child: const Icon(

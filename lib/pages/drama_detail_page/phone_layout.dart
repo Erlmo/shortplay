@@ -160,6 +160,8 @@ extension _DetailPhoneLayout on _DramaDetailPageState {
 
   Widget _buildImmersiveActions(BuildContext context) => DetailActionBar(
         key: const ValueKey('detail-play-bar'),
+        isFavorite: _favorite,
+        onFavorite: _toggleFavorite,
         onPlay: () => _startPlay(context),
         onDownload: widget.downloadService != null && drama.isTheaterResource
             ? () => _downloadAll(context)

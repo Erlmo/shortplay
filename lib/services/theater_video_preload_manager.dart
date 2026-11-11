@@ -1,38 +1,94 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:shortplay_playback_sdk/shortplay_playback_sdk.dart';
 
 import '../config/api_config.dart';
 import '../models/episode.dart';
 import '../models/fq_video.dart';
 import 'api_client.dart';
 import 'crypto_native_channel.dart';
+import 'playback_media_cache.dart';
+import 'playback_network_sources.dart';
+import 'playback_policy_service.dart';
+import 'playback_preferences.dart';
 
 class TheaterVideoPreloadManager {
   TheaterVideoPreloadManager({
     required this.apiClient,
-  });
+    Future<MediaDownloader?> Function()? mediaDownloader,
+    Future<void> Function(FqVideoItem)? configureNetwork,
+    double? Function()? targetBitrateProvider,
+    bool Function(FqVideoItem)? hasCachedMedia,
+    List<String>? allowedDefinitions,
+    PlaybackPolicyService? playbackPolicies,
+  })  : _mediaDownloader =
+            mediaDownloader ?? (() => PlaybackMediaCache.instance),
+        _configureNetwork =
+            configureNetwork ?? PlaybackNetworkSources.configure,
+        _targetBitrateProvider = targetBitrateProvider,
+        _hasCachedMedia = hasCachedMedia ??
+            ((item) =>
+                PlaybackMediaCache.ready?.cache.hasVerifiedMedia(item.url) ??
+                false),
+        _allowedDefinitions = allowedDefinitions,
+        _playbackPolicies = playbackPolicies ?? apiClient.playbackPolicies;
+
+  final Future<MediaDownloader?> Function() _mediaDownloader;
+  final Future<void> Function(FqVideoItem) _configureNetwork;
 
   final ApiClient apiClient;
+  final double? Function()? _targetBitrateProvider;
+  final bool Function(FqVideoItem) _hasCachedMedia;
+  final List<String>? _allowedDefinitions;
+  final PlaybackPolicyService _playbackPolicies;
+  bool _manualQuality = false;
+  String _defaultPreference = 'auto';
 
-  final Map<String, String> _preloadedUrls = {};
-  final Map<String, String> _sourceUrls = {};
+  void _syncDefaultPreference() {
+    final value = PlaybackPreferences.defaultDefinition.value;
+    if (value == _defaultPreference) return;
+    _defaultPreference = value;
+    if (_manualQuality) return;
+    preferredDefinition = value == 'auto' ? '720p' : value;
+    _generation++;
+    _resolved.clear();
+    _preloading.clear();
+  }
+
+  bool get adaptiveQualityAvailable =>
+      !_manualQuality &&
+      PlaybackPreferences.defaultDefinition.value == 'auto' &&
+      _targetBitrateProvider != null;
+  final _models = PlaybackResourceCache<String, List<FqVideoItem>>(
+    capacity: 16,
+    isValid: (items) =>
+        items.isNotEmpty &&
+        items.every((item) =>
+            item.cacheable &&
+            (item.expiresAt == null ||
+                item.expiresAt!
+                    .isAfter(DateTime.now().add(const Duration(seconds: 30))))),
+  );
+
   String preferredDefinition = '720p';
-  final Map<String, List<FqVideoItem>> _videoItems = {};
-  final Map<String, String> _selectedDefinitions = {};
+
+  // One bounded entry owns the URL, selected quality and warm state. This keeps
+  // signing/quality changes from accidentally mixing native cache identities.
+  final _resolved = PlaybackResourceCache<String, _ResolvedTheaterVideo>(
+    capacity: 16,
+    isValid: (value) =>
+        value.cacheable &&
+        (value.expiresAt == null ||
+            value.expiresAt!
+                .isAfter(DateTime.now().add(const Duration(seconds: 30)))),
+  );
 
   String selectedDefinition(String videoId) =>
-      _selectedDefinitions[videoId] ?? '';
+      _resolved.get(videoId)?.definition ?? '';
 
-  Future<List<String>> availableDefinitions(String videoId) async {
-    _discardExpired(videoId);
-    final items = _videoItems[videoId] ??
-        await apiClient
-            .fetchFqVideoModel(videoId)
-            .timeout(ApiConfig.videoResolutionTimeout);
-    _videoItems[videoId] = items;
-    return definitionsFor(items);
-  }
+  Future<List<String>> availableDefinitions(String videoId) async =>
+      definitionsFor((await _resolveCached(videoId)).items);
 
   static List<String> definitionsFor(List<FqVideoItem> items) {
     final definitions = items
@@ -50,29 +106,34 @@ class TheaterVideoPreloadManager {
     return List.unmodifiable(definitions);
   }
 
-  void setPreferredDefinition(String definition) {
-    if (definition.trim().isNotEmpty) preferredDefinition = definition;
-    clear();
+  void setPreferredDefinition(String definition, {String? keepVideoId}) {
+    if (definition.trim().isEmpty) return;
+    preferredDefinition = definition.trim().toLowerCase();
+    _manualQuality = true;
+    _generation++;
+    _resolved.retainWhere((key) => key == keepVideoId);
+    _preloading.clear();
   }
 
-  final Set<int> _preloadingEpisodeIndexes = {};
+  /// The host must supply a real target predictor before enabling adaptive
+  /// startup/preload selection. This never starts a continuous MP4 switch loop.
+  void useAutomaticQuality() {
+    _manualQuality = false;
+    _generation++;
+    _resolved.clear();
+    _preloading.clear();
+  }
 
-  // 已解析的播放信息（地址 + key），预加载与正式播放共用，保证 native
-  // 预热缓存的 key（CDN url）前后一致。
-  final Map<String, _ResolvedTheaterVideo> _resolved = {};
+  final Map<String, Object> _preloading = {};
 
-  // 已完成的预热级别（按 videoId）。以前用 _preloadedUrls 判断“已预加载”，
-  // 但地址解析成功 ≠ 预热完成：预热被跳过/失败后这一集再也不会重试，
-  // 只做过 header-only 的集也永远拿不到 mdat 种子。
-  final Set<String> _fullPrewarmed = {};
-  final Set<String> _headerPrewarmed = {};
-
-  // 预热串行队列：同一时刻只跑一个 native prewarm（弱网下不占满连接池、
-  // 不和当前集抢带宽），但任务是排队而不是丢弃——以前忙时直接 return，
-  // 这一集的预热就永久丢失了。N+1 的预热在 prepareNextPlayer 里直接调用、
-  // 不进这个队列，相当于更高优先级。
+  // Native prewarm calls cannot currently be interrupted inside the platform
+  // channel. Serialize them; cancelled queued work is skipped before entering.
   Future<void> _prewarmTail = Future<void>.value();
   int _generation = 0;
+  int get sourceRevision => _generation;
+
+  bool isMediaPrefetched(String videoId) =>
+      _resolved.get(videoId)?.mediaPrefetched ?? false;
 
   Future<int> _enqueuePrewarm(Future<int> Function() task) {
     final completer = Completer<int>();
@@ -91,55 +152,77 @@ class TheaterVideoPreloadManager {
   void clear({Iterable<String> keepVideoIds = const []}) {
     _generation++;
     final keep = keepVideoIds.toSet();
-    bool drop(String videoId) => !keep.contains(videoId);
-    _preloadedUrls.removeWhere((videoId, _) => drop(videoId));
-    _sourceUrls.removeWhere((videoId, _) => drop(videoId));
-    _resolved.removeWhere((videoId, _) => drop(videoId));
-    _videoItems.removeWhere((videoId, _) => drop(videoId));
-    _fullPrewarmed.removeWhere(drop);
-    _headerPrewarmed.removeWhere(drop);
-    _preloadingEpisodeIndexes.clear();
+    _resolved.retainWhere(keep.contains);
+    _models.retainWhere(keep.contains);
+    _preloading.clear();
   }
 
   bool isNextEpisodeReady({
     required List<Episode> episodes,
     required int currentIndex,
   }) {
-    final nextIndex = currentIndex + 1;
-    if (nextIndex >= episodes.length) return true;
-    final videoId = episodes[nextIndex].url.trim();
-    _discardExpired(videoId);
-    return videoId.isNotEmpty && _preloadedUrls.containsKey(videoId);
+    final next = currentIndex + 1;
+    if (next >= episodes.length) return true;
+    return _resolved.get(episodes[next].url.trim()) != null;
   }
 
-  /// 解析（或复用已解析的）播放信息。首次结果被固定下来：之后不会再用
-  /// 新签名的 CDN url 覆盖，否则 native 预热缓存（以 CDN url 为 key）会失配。
   Future<_ResolvedTheaterVideo> _resolveCached(
     String videoId, {
     int maxRetries = 3,
-  }) async {
-    _discardExpired(videoId);
-    final cached = _resolved[videoId];
-    if (cached != null) return cached;
-    final fresh = await _resolveVideoWithRetry(videoId, maxRetries: maxRetries);
-    final kept = _resolved.putIfAbsent(videoId, () => fresh);
-    _preloadedUrls.putIfAbsent(videoId, () => kept.proxyUrl);
-    _sourceUrls.putIfAbsent(videoId, () => kept.sourceUrl);
-    return kept;
+    bool forPreload = false,
+    int episodeIndex = -1,
+  }) {
+    _syncDefaultPreference();
+    return _resolved.load(
+        videoId,
+        () => _resolveVideoWithRetry(videoId,
+            maxRetries: maxRetries,
+            forPreload: forPreload,
+            episodeIndex: episodeIndex));
   }
 
   Future<String> resolvePlayUrl(
     String videoId, {
     required int episodeIndex,
     int maxRetries = 3,
+    bool forPreload = false,
   }) async {
-    _discardExpired(videoId);
-    if (_resolved.containsKey(videoId)) {
-      debugPrint('使用预加载缓存，秒开');
-    }
-    final resolved = await _resolveCached(videoId, maxRetries: maxRetries);
+    final resolved = await _resolveCached(videoId,
+        maxRetries: maxRetries,
+        forPreload: forPreload,
+        episodeIndex: episodeIndex + 1);
     debugPrint('播放地址就绪');
     return resolved.proxyUrl;
+  }
+
+  /// Download the same raw media blocks that native playback will consume.
+  /// Failure is a cache miss: foreground/native reads retain their own fallback.
+  Future<void> prefetchMedia(
+      String videoId, PlaybackCancellation cancellation) async {
+    cancellation.check();
+    final resolved = _resolved.get(videoId);
+    if (resolved != null) await _prefetchResolved(resolved, cancellation);
+  }
+
+  Future<bool> _prefetchResolved(
+      _ResolvedTheaterVideo resolved, PlaybackCancellation cancellation) async {
+    try {
+      cancellation.check();
+      final downloader = await cancellation.wait(_mediaDownloader());
+      if (downloader == null) return false;
+      final info = await downloader.prefetch(resolved.sourceUrl,
+          cancellation: cancellation, expiresAt: resolved.expiresAt);
+      final complete = info.totalLength > 0 &&
+          info.cachedBytesFromZero >=
+              (info.totalLength < 800 * 1024 ? info.totalLength : 800 * 1024);
+      resolved.mediaPrefetched = complete;
+      return complete;
+    } on PlaybackCancelled {
+      rethrow;
+    } catch (error) {
+      debugPrint('[PlaybackSDK] 媒体字节预取失败，保留原生读取兜底: $error');
+      return false;
+    }
   }
 
   /// 完整预热：文件头 + 样本表 + mdat 种子。对只做过 header-only 的集，
@@ -150,12 +233,14 @@ class TheaterVideoPreloadManager {
     required int targetIndex,
     required bool Function() isStillCurrent,
     VoidCallback? onNextEpisodeReady,
+    PlaybackCancellation? cancellation,
   }) async {
     final ok = await _prewarmEpisode(
       episodes: episodes,
       targetIndex: targetIndex,
       isStillCurrent: isStillCurrent,
       headerOnly: false,
+      cancellation: cancellation,
     );
     if (ok && targetIndex == currentIndex + 1) {
       onNextEpisodeReady?.call();
@@ -163,17 +248,19 @@ class TheaterVideoPreloadManager {
   }
 
   /// 只预热文件头 + 样本表（不拉 mdat），用于更远的集。
-  Future<void> preloadEpisodeHeaderOnly({
+  Future<bool> preloadEpisodeHeaderOnly({
     required List<Episode> episodes,
     required int currentIndex,
     required int targetIndex,
     required bool Function() isStillCurrent,
+    PlaybackCancellation? cancellation,
   }) async {
-    await _prewarmEpisode(
+    return _prewarmEpisode(
       episodes: episodes,
       targetIndex: targetIndex,
       isStillCurrent: isStillCurrent,
       headerOnly: true,
+      cancellation: cancellation,
     );
   }
 
@@ -182,26 +269,32 @@ class TheaterVideoPreloadManager {
     required int targetIndex,
     required bool Function() isStillCurrent,
     required bool headerOnly,
+    PlaybackCancellation? cancellation,
   }) async {
     if (targetIndex < 0 || targetIndex >= episodes.length) return false;
-    if (_preloadingEpisodeIndexes.contains(targetIndex)) return false;
 
     final videoId = episodes[targetIndex].url.trim();
     if (videoId.isEmpty) return false;
-    final done = headerOnly ? _headerPrewarmed : _fullPrewarmed;
-    if (done.contains(videoId)) return true;
+    if (_preloading.containsKey(videoId)) return false;
 
     final label = headerOnly ? '剧集头部数据预缓存' : '剧集数据预缓存';
     final gen = _generation;
     bool stale() => !isStillCurrent() || gen != _generation;
 
-    _preloadingEpisodeIndexes.add(targetIndex);
+    final pending = Object();
+    _preloading[videoId] = pending;
     try {
       if (stale()) return false;
-      final resolved = await _resolveCached(videoId);
+      final resolved = await _resolveCached(videoId,
+          maxRetries: 1, forPreload: true, episodeIndex: targetIndex + 1);
       if (stale()) return false;
+      final prefetched = await _prefetchResolved(
+          resolved, cancellation ?? PlaybackCancellation());
+      if (stale()) return false;
+      if (headerOnly ? resolved.headerWarmed : resolved.fullWarmed) return true;
 
-      if (resolved.key.isEmpty) return false;
+      // Clear and encrypted sources now share the same raw byte cache.
+      if (resolved.key.isEmpty) return prefetched || headerOnly;
       final status = await _enqueuePrewarm(() async {
         // 排队期间可能已离开页面或切换清晰度，过期任务直接跳过。
         if (stale()) return -2;
@@ -217,8 +310,8 @@ class TheaterVideoPreloadManager {
         return false;
       }
       if (gen == _generation) {
-        _headerPrewarmed.add(videoId);
-        if (!headerOnly) _fullPrewarmed.add(videoId);
+        resolved.headerWarmed = true;
+        if (!headerOnly) resolved.fullWarmed = true;
       }
       debugPrint('$label完成: 第${targetIndex + 1}集');
       return true;
@@ -226,7 +319,7 @@ class TheaterVideoPreloadManager {
       debugPrint('$label失败 第${targetIndex + 1}集: $error');
       return false;
     } finally {
-      _preloadingEpisodeIndexes.remove(targetIndex);
+      if (identical(_preloading[videoId], pending)) _preloading.remove(videoId);
     }
   }
 
@@ -238,8 +331,9 @@ class TheaterVideoPreloadManager {
     final videoId = episodes[targetIndex].url.trim();
     if (videoId.isEmpty) return;
 
-    final sourceUrl = _sourceUrls[videoId];
-    if (sourceUrl == null || _resolved[videoId]?.key.isEmpty == true) return;
+    final resolved = _resolved.get(videoId);
+    if (resolved == null || resolved.key.isEmpty) return;
+    final sourceUrl = resolved.sourceUrl;
 
     try {
       final status =
@@ -258,36 +352,52 @@ class TheaterVideoPreloadManager {
   Future<_ResolvedTheaterVideo> _resolveVideoWithRetry(
     String videoId, {
     int maxRetries = 3,
+    bool forPreload = false,
+    int episodeIndex = -1,
   }) async {
     int attempt = 0;
     while (attempt < maxRetries) {
       try {
         attempt++;
-        return await _resolveVideo(videoId);
+        return await _resolveVideo(videoId,
+            forPreload: forPreload, episodeIndex: episodeIndex);
       } on TimeoutException catch (error) {
         debugPrint('解析视频超时 (尝试 $attempt/$maxRetries): $error');
         if (attempt >= maxRetries) rethrow;
         await Future<void>.delayed(const Duration(seconds: 1));
       } catch (error) {
         debugPrint('解析视频失败 (尝试 $attempt/$maxRetries): $error');
-        if (attempt >= maxRetries) rethrow;
+        if (attempt >= maxRetries ||
+            error is! ApiException ||
+            !error.retryable) {
+          rethrow;
+        }
         await Future<void>.delayed(const Duration(seconds: 1));
       }
     }
     throw Exception('解析视频失败：已重试$maxRetries次');
   }
 
-  Future<_ResolvedTheaterVideo> _resolveVideo(String videoId) async {
-    final videoItems = await apiClient
-        .fetchFqVideoModel(videoId)
-        .timeout(ApiConfig.videoResolutionTimeout);
+  Future<_ResolvedTheaterVideo> _resolveVideo(String videoId,
+      {required bool forPreload, required int episodeIndex}) async {
+    final generation = _generation;
+    final preferred = preferredDefinition;
+    final manual = _manualQuality || _defaultPreference != 'auto';
+    final videoItems = await _models.load(
+        videoId,
+        () async => List.unmodifiable(await apiClient
+            .fetchFqVideoModel(videoId)
+            .timeout(ApiConfig.videoResolutionTimeout)));
     if (videoItems.isEmpty) {
       throw Exception('未获取到视频信息');
     }
 
-    _videoItems[videoId] = videoItems;
     final selected = _selectBestVideo(
-        videoItems.where((item) => item.url.trim().isNotEmpty).toList());
+        videoItems.where((item) => item.url.trim().isNotEmpty).toList(),
+        preferred: preferred,
+        manual: manual,
+        forPreload: forPreload,
+        episodeIndex: episodeIndex);
     debugPrint(
       '选择画质: ${selected.definition} ${selected.width}x${selected.height} codec=${selected.codec}',
     );
@@ -301,14 +411,17 @@ class TheaterVideoPreloadManager {
                 .timeout(const Duration(seconds: 5));
     debugPrint(selected.isEncrypted ? '获取视频解密参数成功' : '视频无需解密，直接播放');
 
+    if (generation == _generation) await _configureNetwork(selected);
+
     // Decrypt in the player IO pipeline via the native crypto:// protocol
     // (no localhost proxy).
     final playUrl = key.isEmpty
         ? selected.url
         : CryptoNativeChannel.buildCryptoUrl(selected.url, key);
 
-    _selectedDefinitions[videoId] = selected.definition.trim().toLowerCase();
     return _ResolvedTheaterVideo(
+      definition: selected.definition.trim().toLowerCase(),
+      items: List.unmodifiable(videoItems),
       proxyUrl: playUrl,
       sourceUrl: selected.url,
       key: key,
@@ -317,40 +430,103 @@ class TheaterVideoPreloadManager {
     );
   }
 
-  void _discardExpired(String videoId) {
-    bool expired(DateTime? time) =>
-        time != null &&
-        !time.isAfter(DateTime.now().add(const Duration(seconds: 30)));
-    final resolved = _resolved[videoId];
-    final items = _videoItems[videoId];
-    if ((resolved != null &&
-            (!resolved.cacheable || expired(resolved.expiresAt))) ||
-        (items != null &&
-            items.any((item) => !item.cacheable || expired(item.expiresAt)))) {
-      _resolved.remove(videoId);
-      _videoItems.remove(videoId);
-      _preloadedUrls.remove(videoId);
-      _sourceUrls.remove(videoId);
-      _fullPrewarmed.remove(videoId);
-      _headerPrewarmed.remove(videoId);
+  FqVideoItem _selectBestVideo(List<FqVideoItem> items,
+      {required String preferred,
+      required bool manual,
+      required bool forPreload,
+      required int episodeIndex}) {
+    if (items.isEmpty) throw StateError('没有可用清晰度');
+    // Keep one complete, compatible representation per definition. A cache hit
+    // for a different codec/key must not be grafted onto the first variant.
+    final byDefinition = <String, FqVideoItem>{};
+    for (final item in items) {
+      byDefinition.putIfAbsent(
+          item.definition.trim().toLowerCase(), () => item);
     }
-  }
-
-  FqVideoItem _selectBestVideo(List<FqVideoItem> items) {
-    return items.firstWhere(
-      (item) =>
-          item.definition.trim().toLowerCase() ==
-          preferredDefinition.trim().toLowerCase(),
-      orElse: () => items.firstWhere(
-        (item) => item.definition == '1080p',
-        orElse: () => items.last,
-      ),
-    );
+    final supported = byDefinition.keys.toList();
+    // The host's available variants have already passed ApiClient codec checks.
+    final hostAllowed =
+        _allowedDefinitions ?? DramaQualitySelector.defaultAllowed;
+    final allowed = manual
+        ? hostAllowed
+        : _playbackPolicies.allowedDefinitions(hostAllowed);
+    String? cached;
+    if (!manual && _playbackPolicies.preferCache) {
+      cached = DramaQualitySelector.cached(
+          supported: supported,
+          hasCachedMedia: (definition) {
+            try {
+              return _hasCachedMedia(byDefinition[definition]!);
+            } catch (error) {
+              debugPrint('[PlaybackSDK] 缓存档位不可用: $error');
+              return false;
+            }
+          });
+    }
+    String? strategy;
+    final renditions = [
+      for (final item in items)
+        QualityRendition(item.definition, item.bitrate, item)
+    ];
+    if (!manual &&
+        _targetBitrateProvider != null &&
+        !_playbackPolicies.hasSettings) {
+      double? target;
+      try {
+        target = _targetBitrateProvider();
+      } catch (error) {
+        debugPrint('[PlaybackSDK] 目标码率不可用，保持默认档位: $error');
+      }
+      final fallback = renditions.firstWhere(
+          (item) => item.definition.trim().toLowerCase() == '720p',
+          orElse: () => renditions.first);
+      strategy =
+          PlaybackQualitySelector.byTargetBitrate(renditions, target, fallback)
+              .definition
+              .trim()
+              .toLowerCase();
+    }
+    if (!manual && cached == null) {
+      final remote = _playbackPolicies.evaluate(
+          renditions: [
+            for (final item in items)
+              RemoteDramaRendition(item.definition.toUpperCase(), item.bitrate)
+          ],
+          allowedDefinitions:
+              allowed.map((value) => value.toUpperCase()).toList(),
+          episodeIndex: episodeIndex,
+          isPreload: forPreload);
+      if (remote != null) {
+        strategy = remote.definition?.toLowerCase();
+        if (!remote.isResolved) {
+          debugPrint(
+              '[PlaybackSDK] 策略缺少实际观测，保留默认档位: ${remote.missingInputs.join(',')}');
+        }
+      }
+    }
+    final definition = forPreload
+        ? DramaQualitySelector.preload(
+            supported: supported,
+            allowed: allowed,
+            manual: manual ? preferred : null,
+            cached: cached,
+            strategy: strategy ?? preferred)
+        : DramaQualitySelector.playback(
+            supported: supported,
+            allowed: allowed,
+            manual: manual ? preferred : null,
+            cached: cached,
+            strategy: strategy ?? preferred);
+    // A native engine can retain its old/default resolution when there is no
+    // intersection. This host must open an actual URL, so retain a valid model.
+    return byDefinition[definition] ?? items.first;
   }
 }
 
 class _ResolvedTheaterVideo {
-  const _ResolvedTheaterVideo({
+  _ResolvedTheaterVideo({
+    required this.definition,
+    required this.items,
     required this.proxyUrl,
     required this.sourceUrl,
     required this.key,
@@ -358,6 +534,11 @@ class _ResolvedTheaterVideo {
     this.cacheable = true,
   });
 
+  final String definition;
+  final List<FqVideoItem> items;
+  bool mediaPrefetched = false;
+  bool headerWarmed = false;
+  bool fullWarmed = false;
   final String proxyUrl;
   final String sourceUrl;
   final String key;

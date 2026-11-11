@@ -1,6 +1,8 @@
 package com.example.shortplay
 
 import android.util.Log
+import com.shortplay.playback.MediaByteCache
+import com.shortplay.playback.MediaNetworkReader
 import androidx.annotation.Keep
 import okhttp3.Call
 import okhttp3.OkHttpClient
@@ -108,7 +110,7 @@ object HttpBridge {
         .connectTimeout(3, TimeUnit.SECONDS)
         .readTimeout(5, TimeUnit.SECONDS)
         .callTimeout(6, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(true)
+        .retryOnConnectionFailure(false)
         // Bypass the system/WiFi HTTP proxy and hit the CDN directly. OkHttp
         // defaults to ProxySelector.getDefault(), which picks up a per-network
         // proxy (e.g. a debugging proxy like Charles on 192.168.x.x:8888) and
@@ -119,22 +121,7 @@ object HttpBridge {
 
     // MP4 扫描会连续读取几个 8 字节 box 头。一次读取有界前缀，避免
     // 每个 box 都等待一次 CDN 往返；同一前缀也供首段预热复用。
-    private data class Prefix(val bytes: ByteArray, val createdAt: Long)
-    private val prefixes = LinkedHashMap<String, Prefix>()
     private const val PREFIX_SIZE = 256 * 1024
-    private const val PREFIX_TTL_MS = 30_000L
-
-    private fun cachedRange(url: String, start: Long, end: Long): ByteArray? {
-        synchronized(prefixes) {
-            val prefix = prefixes[url] ?: return null
-            if (android.os.SystemClock.elapsedRealtime() - prefix.createdAt > PREFIX_TTL_MS) {
-                prefixes.remove(url)
-                return null
-            }
-            if (start < 0 || end < start || end >= prefix.bytes.size) return null
-            return prefix.bytes.copyOfRange(start.toInt(), end.toInt() + 1)
-        }
-    }
 
     /** 一个播放器的打开操作共用取消范围，退出时立即关闭等待中的请求。 */
     class RequestScope {
@@ -169,78 +156,40 @@ object HttpBridge {
         }
     }
 
-    /** 有界 Range 读取；瞬时 CDN 故障自动重试一次，不在取消后继续请求。 */
+    /** Bounded raw media reads. Transport/CDN retry decisions live in the local
+     * SDK IO adapter; a cancelled request never starts another candidate. */
     @JvmStatic
     fun httpRange(url: String, start: Long, end: Long): ByteArray? {
         val scope = requestScope.get()
         try { scope?.ensureActive() } catch (_: InterruptedIOException) { return null }
         if (start < 0 || end < start || end - start >= Int.MAX_VALUE) return null
-        cachedRange(url, start, end)?.let { return it }
         val fetchPrefix = start == 0L && end <= 15L
         val requestEnd = if (fetchPrefix) PREFIX_SIZE - 1L else end
-        val request = Request.Builder().url(url)
-            .header("Range", "bytes=$start-$requestEnd").build()
-        val wanted = (requestEnd - start + 1).toInt()
-        repeat(2) { attempt ->
-            try { scope?.ensureActive() } catch (_: InterruptedIOException) { return null }
-            if (Thread.currentThread().isInterrupted) return null
-            val call = client.newCall(request)
-            scope?.register(call)
-            val clock = android.os.SystemClock.elapsedRealtime()
-            try {
-                val bytes = call.execute().use { response ->
-                    if (!response.isSuccessful) throw IOException("CDN HTTP ${response.code}")
-                    // Range 被忽略时不能把整个文件当作非零偏移的片段。
-                    if ((response.code == 200 && start != 0L) ||
-                        (response.code == 206 && !response.header("Content-Range", "")!!
-                            .startsWith("bytes $start-"))) {
-                        throw IOException("Invalid CDN range response")
-                    }
-                    val input = response.body?.byteStream() ?: throw IOException("Empty CDN body")
-                    val output = java.io.ByteArrayOutputStream(minOf(wanted, PREFIX_SIZE))
-                    val buffer = ByteArray(minOf(16 * 1024, wanted))
-                    while (output.size() < wanted) {
-                        val n = input.read(buffer, 0, minOf(buffer.size, wanted - output.size()))
-                        if (n < 0) break
-                        if (n == 0) throw IOException("Empty CDN read")
-                        output.write(buffer, 0, n)
-                    }
-                    output.toByteArray()
-                }
-                if (bytes.size < end - start + 1) throw IOException("Truncated CDN range")
-                if (fetchPrefix) {
-                    synchronized(prefixes) {
-                        prefixes[url] = Prefix(bytes, android.os.SystemClock.elapsedRealtime())
-                        while (prefixes.size > 4) prefixes.remove(prefixes.keys.first())
-                    }
-                }
-                Log.d("PlaybackNetwork", "host=${request.url.host} range=$start-$requestEnd " +
-                    "attempt=${attempt + 1} bytes=${bytes.size} elapsed_ms=" +
-                    (android.os.SystemClock.elapsedRealtime() - clock))
-                return if (fetchPrefix) bytes.copyOfRange(0, end.toInt() + 1) else bytes
-            } catch (error: IOException) {
-                if (call.isCanceled() || Thread.currentThread().isInterrupted) {
-                    // callTimeout 也会把 Call 标记为取消；播放器取消由 scope 单独判断。
-                    try { scope?.ensureActive() } catch (_: InterruptedIOException) { return null }
-                    if (Thread.currentThread().isInterrupted) return null
-                }
-                Log.w("PlaybackNetwork", "host=${request.url.host} range=$start-$requestEnd " +
-                    "attempt=${attempt + 1} elapsed_ms=" +
-                    (android.os.SystemClock.elapsedRealtime() - clock) + " error=${error.javaClass.simpleName}")
-                // 只清理空闲连接，避免再次借用已失效的连接；不关闭正在播放的流。
-                client.connectionPool.evictAll()
-            } finally {
-                scope?.remove(call)
+        val reader = MediaNetworkReader(url, start, client, requestEnd,
+            ensureActive = { scope?.ensureActive() },
+            registerCall = { scope?.register(it) }, removeCall = { scope?.remove(it) })
+        return try {
+            val wanted = (requestEnd - start + 1).toInt()
+            val output = java.io.ByteArrayOutputStream(minOf(wanted, PREFIX_SIZE))
+            val buffer = ByteArray(minOf(16 * 1024, wanted))
+            while (output.size() < wanted) {
+                val count = reader.read(buffer, 0, minOf(buffer.size, wanted - output.size()))
+                if (count < 0) break
+                output.write(buffer, 0, count)
             }
-        }
-        return null
+            val bytes = output.toByteArray()
+            val required = (end - start + 1).toInt()
+            if (bytes.size < required) null else if (fetchPrefix) bytes.copyOf(required) else bytes
+        } catch (_: IOException) { null }
+        finally { reader.close() }
     }
 
-    // ── Streaming GET (used for the mdat region) ────────────────────────────
-    // An open-ended `Range: bytes=start-` request whose body is read chunk by
-    // chunk, so the native producer can hand each arriving TCP segment to mpv
-    // immediately — the same shape as the Dart proxy's Dio stream + await-for.
-    private class Stream(val resp: Response, val input: InputStream)
+    /** JNI/C API remains unchanged; this raw reader owns exact-offset resume. */
+    private class Stream(url: String, start: Long) {
+        private val reader = MediaNetworkReader(url, start, streamClient)
+        fun read(buf: ByteArray): Int = reader.read(buf).let { if (it < 0) 0 else it }
+        fun close() = reader.close()
+    }
 
     private val streams = ConcurrentHashMap<Long, Stream>()
     private val nextId = AtomicLong(1L)
@@ -255,25 +204,12 @@ object HttpBridge {
     @JvmStatic
     fun streamOpen(url: String, start: Long): Long {
         return try {
-            val req = Request.Builder()
-                .url(url)
-                .header("Range", "bytes=$start-")
-                .build()
-            val resp = streamClient.newCall(req).execute()
-            val body = resp.body
-            if (!resp.isSuccessful || body == null) {
-                Log.e("sp_crypto", "streamOpen HTTP ${resp.code} for $url @$start")
-                resp.close()
-                return 0L
-            }
-            body.source().timeout().timeout(8, TimeUnit.SECONDS)
+            if (start < 0) return 0L
+            Request.Builder().url(url).build() // Validate before publishing the handle.
             val id = nextId.getAndIncrement()
-            streams[id] = Stream(resp, body.byteStream())
+            streams[id] = Stream(url, start)
             id
-        } catch (t: Throwable) {
-            Log.e("sp_crypto", "streamOpen threw @$start: ${t.javaClass.simpleName}: ${t.message}")
-            0L
-        }
+        } catch (_: Throwable) { 0L }
     }
 
     /**
@@ -285,10 +221,9 @@ object HttpBridge {
     fun streamRead(id: Long, buf: ByteArray): Int {
         val s = streams[id] ?: return -1
         return try {
-            s.input.read(buf)  // -1 at EOF, mapped below to 0 for the C core
-                .let { if (it < 0) 0 else it }
+            s.read(buf)
         } catch (t: Throwable) {
-            Log.e("sp_crypto", "streamRead threw id=$id: ${t.javaClass.simpleName}: ${t.message}")
+            Log.e("sp_crypto", "streamRead failed: ${t.javaClass.simpleName}")
             -1
         }
     }
@@ -298,7 +233,7 @@ object HttpBridge {
     fun streamClose(id: Long) {
         val s = streams.remove(id) ?: return
         try {
-            s.resp.close()  // also closes the body / underlying stream
+            s.close()
         } catch (_: Throwable) {
         }
     }

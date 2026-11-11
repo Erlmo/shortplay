@@ -1,110 +1,5 @@
 import Foundation
 
-// MARK: - Stream Buffer (thread-safe producer/consumer)
-
-/// Thread-safe byte buffer for streaming HTTP data from URLSession delegate
-/// to the synchronous C read callback.
-final class StreamBuffer {
-    private var data = Data()
-    private var finished = false
-    private var error = false
-    private let condition = NSCondition()
-
-    func append(_ chunk: Data) {
-        condition.lock()
-        data.append(chunk)
-        condition.signal()
-        condition.unlock()
-    }
-
-    func markFinished() {
-        condition.lock()
-        finished = true
-        condition.signal()
-        condition.unlock()
-    }
-
-    func markError() {
-        condition.lock()
-        error = true
-        finished = true
-        condition.signal()
-        condition.unlock()
-    }
-
-    /// Blocking read: waits until data is available, EOF, or error.
-    /// Returns bytes copied (>0), 0 on EOF, -1 on error.
-    func read(into buf: UnsafeMutablePointer<UInt8>, capacity: Int) -> Int {
-        condition.lock()
-        while data.isEmpty && !finished {
-            condition.wait()
-        }
-        if error {
-            condition.unlock()
-            return -1
-        }
-        if data.isEmpty && finished {
-            condition.unlock()
-            return 0
-        }
-        let count = min(data.count, capacity)
-        data.copyBytes(to: buf, count: count)
-        data.removeFirst(count)
-        condition.unlock()
-        return count
-    }
-}
-
-// MARK: - Stream Delegate
-
-/// URLSession delegate that feeds received data into a StreamBuffer.
-final class StreamDelegate: NSObject, URLSessionDataDelegate {
-    let buffer: StreamBuffer
-
-    init(buffer: StreamBuffer) {
-        self.buffer = buffer
-        super.init()
-    }
-
-    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
-                    didReceive data: Data) {
-        buffer.append(data)
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask,
-                    didCompleteWithError error: Error?) {
-        if error != nil {
-            buffer.markError()
-        } else {
-            buffer.markFinished()
-        }
-    }
-}
-
-// MARK: - Stream Context
-
-/// Holds a streaming HTTP connection: the URLSession, delegate, and buffer.
-final class StreamContext {
-    let session: URLSession
-    let delegate: StreamDelegate
-    let buffer: StreamBuffer
-    let task: URLSessionDataTask
-
-    init(session: URLSession, delegate: StreamDelegate,
-         buffer: StreamBuffer, task: URLSessionDataTask) {
-        self.session = session
-        self.delegate = delegate
-        self.buffer = buffer
-        self.task = task
-    }
-
-    func cancel() {
-        task.cancel()
-        session.invalidateAndCancel()
-        buffer.markError()
-    }
-}
-
 // MARK: - CryptoNativePlugin
 
 /// Singleton that manages the native crypto bridge lifecycle and stream registry.
@@ -113,7 +8,7 @@ final class CryptoNativePlugin {
     private init() {}
 
     private var initialized = false
-    private var streams: [Int64: StreamContext] = [:]
+    private var streams: [Int64: MediaCachedStream] = [:]
     private var nextStreamId: Int64 = 1
     private let lock = NSLock()
 
@@ -156,22 +51,8 @@ final class CryptoNativePlugin {
     // MARK: Stream Registry (called from C callbacks)
 
     func openStream(url: String, start: UInt64) -> Int64 {
-        let buffer = StreamBuffer()
-        let delegate = StreamDelegate(buffer: buffer)
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 60
-        config.timeoutIntervalForResource = 300
-        let session = URLSession(configuration: config, delegate: delegate,
-                                 delegateQueue: nil)
-
-        guard let reqUrl = URL(string: url) else { return 0 }
-        var request = URLRequest(url: reqUrl)
-        request.setValue("bytes=\(start)-", forHTTPHeaderField: "Range")
-        let task = session.dataTask(with: request)
-        task.resume()
-
-        let ctx = StreamContext(session: session, delegate: delegate,
-                                buffer: buffer, task: task)
+        guard start <= UInt64(Int64.max) else { return 0 }
+        let ctx = MediaCachedStream(url: url, start: Int64(start))
         lock.lock()
         let streamId = nextStreamId
         nextStreamId += 1
@@ -188,7 +69,7 @@ final class CryptoNativePlugin {
             return -1
         }
         lock.unlock()
-        return ctx.buffer.read(into: buf, capacity: capacity)
+        return ctx.read(into: buf, count: capacity)
     }
 
     func closeStream(id: Int64) {
@@ -216,28 +97,15 @@ private func iosHttpRange(
 ) -> Int {
     guard let url = url, let out = out else { return -1 }
     let urlStr = String(cString: url)
-    guard let reqUrl = URL(string: urlStr) else { return -1 }
-
-    let semaphore = DispatchSemaphore(value: 0)
-    var result: Int = -1
-
-    var request = URLRequest(url: reqUrl)
-    request.setValue("bytes=\(start)-\(end)", forHTTPHeaderField: "Range")
-    request.timeoutInterval = 30
-
-    let task = URLSession.shared.dataTask(with: request) { data, response, error in
-        defer { semaphore.signal() }
-        guard let data = data, error == nil else { return }
-        let httpResp = response as? HTTPURLResponse
-        let status = httpResp?.statusCode ?? 0
-        guard status >= 200, status < 400 else { return }
-        let count = min(data.count, outCap)
-        data.copyBytes(to: out, count: count)
-        result = count
-    }
-    task.resume()
-    semaphore.wait()
-    return result
+    guard start <= UInt64(Int64.max), end >= start,
+          end - start < UInt64(Int.max), !Thread.isMainThread else { return -1 }
+    let wanted = min(outCap, Int(end - start + 1))
+    do {
+        let bytes = try MediaCacheReader(url: urlStr).read(offset: Int64(start), count: wanted)
+        guard !bytes.isEmpty else { return -1 }
+        bytes.copyBytes(to: out, count: bytes.count)
+        return bytes.count
+    } catch { return -1 }
 }
 
 /// Stream open: start a streaming GET from `start` offset.

@@ -70,6 +70,7 @@ final class VvcPlayback {
         return result
     }
 
+    var hasDecodedFrames: Bool { !frames.isEmpty }
     var ended: Bool { finished && frames.isEmpty }
 
     private func pump() {

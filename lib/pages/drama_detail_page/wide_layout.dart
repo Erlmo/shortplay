@@ -176,6 +176,8 @@ extension _DetailWideLayout on _DramaDetailPageState {
         cover: cover,
         onBack: () => Navigator.of(context).pop(),
         onPlay: () => _startPlay(context),
+        onFavorite: _toggleFavorite,
+        isFavorite: _favorite,
         onDownload: widget.downloadService != null && drama.isTheaterResource
             ? () => _downloadAll(context)
             : null,

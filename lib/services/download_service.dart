@@ -6,11 +6,14 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:shortplay_playback_sdk/shortplay_playback_sdk.dart';
 
 import '../config/api_config.dart';
 import '../models/episode.dart';
 import 'api_client.dart';
 import 'crypto_native_channel.dart';
+import 'playback_media_cache.dart';
+import 'playback_network_sources.dart';
 
 enum DownloadStatus { pending, downloading, paused, completed, failed }
 
@@ -531,6 +534,7 @@ class DownloadService extends ChangeNotifier {
             : await apiClient
                 .fetchDecryptKey(selected.spadeA)
                 .timeout(const Duration(seconds: 5));
+    await PlaybackNetworkSources.configure(selected);
     return DownloadResolveResult(
         cdnUrl: selected.url, keyHex: key, isEncrypted: selected.isEncrypted);
   }
@@ -582,14 +586,26 @@ class DownloadService extends ChangeNotifier {
             status =
                 await _decryptToFile(result.cdnUrl, result.keyHex, run.path);
           } else {
-            await _dio
-                .download(result.cdnUrl, run.path, cancelToken: run.cancelToken,
-                    onReceiveProgress: (received, total) {
-              if (_canCommit(dl, run) && total > 0) {
-                dl._progress = received / total;
-                _notify();
-              }
-            });
+            final media = await PlaybackMediaCache.instance;
+            if (media != null) {
+              await media.downloadToFile(result.cdnUrl, File(run.path),
+                  cancellation: run.mediaCancellation,
+                  onProgress: (received, total) {
+                if (_canCommit(dl, run) && total > 0) {
+                  dl._progress = received / total;
+                  _notify();
+                }
+              });
+            } else {
+              await _dio.download(result.cdnUrl, run.path,
+                  cancelToken: run.cancelToken,
+                  onReceiveProgress: (received, total) {
+                if (_canCommit(dl, run) && total > 0) {
+                  dl._progress = received / total;
+                  _notify();
+                }
+              });
+            }
             status = 0;
           }
           if (!_canCommit(dl, run)) return;
@@ -678,10 +694,14 @@ class _DownloadRun {
   _DownloadRun(this.path);
   final String path;
   final CancelToken cancelToken = CancelToken();
+  final PlaybackCancellation mediaCancellation = PlaybackCancellation();
   bool _cancelled = false;
   bool get cancelled => _cancelled;
   set cancelled(bool value) {
     _cancelled = value;
-    if (value && !cancelToken.isCancelled) cancelToken.cancel();
+    if (value) {
+      mediaCancellation.cancel();
+      if (!cancelToken.isCancelled) cancelToken.cancel();
+    }
   }
 }

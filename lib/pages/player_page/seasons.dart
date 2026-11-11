@@ -44,13 +44,20 @@ extension _PlayerSeasons on _PlayerPageState {
         final episodes = (await future).toEpisodes();
         if (!stillCurrent() || episodes.isEmpty) return;
         _nextSeasonFirstVideoId = episodes.first.url.trim();
-        await _preloadManager.preloadEpisode(
-          episodes: episodes,
-          currentIndex: -1,
-          targetIndex: 0,
-          isStillCurrent: stillCurrent,
-        );
-        debugPrint('下一季首集预热完成: ${season.title}');
+        playbackSession.enqueue('season:${season.id}', (cancellation) async {
+          bool valid() => stillCurrent() && !cancellation.isCancelled;
+          if (!valid()) return false;
+          var ready = false;
+          await _preloadManager.preloadEpisode(
+            episodes: episodes,
+            currentIndex: -1,
+            targetIndex: 0,
+            isStillCurrent: valid,
+            cancellation: cancellation,
+            onNextEpisodeReady: () => ready = true,
+          );
+          return ready;
+        });
       } catch (error) {
         debugPrint('下一季预取失败（切季时会重新请求）: $error');
       }
@@ -131,6 +138,7 @@ extension _PlayerSeasons on _PlayerPageState {
       _pausedByLifecycle = false;
       _pausedByRoute = false;
     });
+    unawaited(_loadLikedState());
     // 释放上一季后再开新播放器，避免两季同时出声、占用解码器。
     if (oldPlayer != null) await oldPlayer.dispose();
     if (preparingPlayer != null) await preparingPlayer.dispose();

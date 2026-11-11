@@ -18,6 +18,7 @@ class ApiConfig {
 
   // 服务端下发请求规则，客户端执行上游请求并回传响应。
   static const String algorithmVideo = '/algorithm/video';
+  static const String algorithmPlaybackPolicy = '/algorithm/playbackpolicy';
   static const Duration videoResolutionTimeout = Duration(seconds: 30);
   static const String algorithmSpade = '/algorithm/spade';
 

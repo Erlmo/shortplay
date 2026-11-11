@@ -1,110 +1,5 @@
 import Foundation
 
-// MARK: - Stream Buffer (thread-safe producer/consumer)
-
-/// Thread-safe byte buffer for streaming HTTP data from URLSession delegate
-/// to the synchronous C read callback.
-final class StreamBuffer {
-    private var data = Data()
-    private var finished = false
-    private var error = false
-    private let condition = NSCondition()
-
-    func append(_ chunk: Data) {
-        condition.lock()
-        data.append(chunk)
-        condition.signal()
-        condition.unlock()
-    }
-
-    func markFinished() {
-        condition.lock()
-        finished = true
-        condition.signal()
-        condition.unlock()
-    }
-
-    func markError() {
-        condition.lock()
-        error = true
-        finished = true
-        condition.signal()
-        condition.unlock()
-    }
-
-    /// Blocking read: waits until data is available, EOF, or error.
-    /// Returns bytes copied (>0), 0 on EOF, -1 on error.
-    func read(into buf: UnsafeMutablePointer<UInt8>, capacity: Int) -> Int {
-        condition.lock()
-        while data.isEmpty && !finished {
-            condition.wait()
-        }
-        if error {
-            condition.unlock()
-            return -1
-        }
-        if data.isEmpty && finished {
-            condition.unlock()
-            return 0
-        }
-        let count = min(data.count, capacity)
-        data.copyBytes(to: buf, count: count)
-        data.removeFirst(count)
-        condition.unlock()
-        return count
-    }
-}
-
-// MARK: - Stream Delegate
-
-/// URLSession delegate that feeds received data into a StreamBuffer.
-final class StreamDelegate: NSObject, URLSessionDataDelegate {
-    let buffer: StreamBuffer
-
-    init(buffer: StreamBuffer) {
-        self.buffer = buffer
-        super.init()
-    }
-
-    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
-                    didReceive data: Data) {
-        buffer.append(data)
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask,
-                    didCompleteWithError error: Error?) {
-        if error != nil {
-            buffer.markError()
-        } else {
-            buffer.markFinished()
-        }
-    }
-}
-
-// MARK: - Stream Context
-
-/// Holds a streaming HTTP connection: the URLSession, delegate, and buffer.
-final class StreamContext {
-    let session: URLSession
-    let delegate: StreamDelegate
-    let buffer: StreamBuffer
-    let task: URLSessionDataTask
-
-    init(session: URLSession, delegate: StreamDelegate,
-         buffer: StreamBuffer, task: URLSessionDataTask) {
-        self.session = session
-        self.delegate = delegate
-        self.buffer = buffer
-        self.task = task
-    }
-
-    func cancel() {
-        task.cancel()
-        session.invalidateAndCancel()
-        buffer.markError()
-    }
-}
-
 // MARK: - CryptoNativePlugin
 
 /// Singleton that manages the native crypto bridge lifecycle and stream registry.
@@ -113,7 +8,9 @@ final class CryptoNativePlugin {
     private init() {}
 
     private var initialized = false
-    private var streams: [Int64: StreamContext] = [:]
+    private var streams: [Int64: IOSCryptoReadStream] = [:]
+    private var startupStreams: [String: IOSCryptoStartupStream] = [:]
+    private var startupOrder: [String] = []
     private var nextStreamId: Int64 = 1
     private let lock = NSLock()
 
@@ -134,7 +31,44 @@ final class CryptoNativePlugin {
 
     func prewarm(cdnUrl: String, keyHex: String) -> Int32 {
         ensureInit()
-        return sp_prewarm(cdnUrl, keyHex)
+        var retired: IOSCryptoStartupStream?
+        lock.lock()
+        let startup: IOSCryptoStartupStream
+        if let existing = startupStreams[cdnUrl] { startup = existing }
+        else {
+            if startupOrder.count >= 8 {
+                retired = startupStreams.removeValue(forKey: startupOrder.removeFirst())
+            }
+            startup = IOSCryptoStartupStream(url: cdnUrl)
+            startupStreams[cdnUrl] = startup
+            startupOrder.append(cdnUrl)
+            // Navigation may abandon a prewarm before any native handle exists.
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 30) { [weak self, weak startup] in
+                guard let self = self, let startup = startup else { return }
+                self.discardStartup(cdnUrl, matching: startup)
+            }
+        }
+        lock.unlock()
+        retired?.cancel()
+        let status = sp_prewarm(cdnUrl, keyHex)
+        if status != 0 { discardStartup(cdnUrl, matching: startup) }
+        return status
+    }
+
+    private func discardStartup(_ url: String, matching startup: IOSCryptoStartupStream) {
+        lock.lock()
+        let removed = startupStreams[url] === startup
+        if removed {
+            startupStreams.removeValue(forKey: url)
+            startupOrder.removeAll { $0 == url }
+        }
+        lock.unlock()
+        if removed { startup.cancel() }
+    }
+
+    fileprivate func startupBytes(url: String, start: UInt64, count: Int) throws -> Data? {
+        lock.lock(); let startup = startupStreams[url]; lock.unlock()
+        return try startup?.bytes(start: start, count: count)
     }
 
     func prewarmHeaderOnly(cdnUrl: String, keyHex: String) -> Int32 {
@@ -156,22 +90,17 @@ final class CryptoNativePlugin {
     // MARK: Stream Registry (called from C callbacks)
 
     func openStream(url: String, start: UInt64) -> Int64 {
-        let buffer = StreamBuffer()
-        let delegate = StreamDelegate(buffer: buffer)
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 60
-        config.timeoutIntervalForResource = 300
-        let session = URLSession(configuration: config, delegate: delegate,
-                                 delegateQueue: nil)
-
-        guard let reqUrl = URL(string: url) else { return 0 }
-        var request = URLRequest(url: reqUrl)
-        request.setValue("bytes=\(start)-", forHTTPHeaderField: "Range")
-        let task = session.dataTask(with: request)
-        task.resume()
-
-        let ctx = StreamContext(session: session, delegate: delegate,
-                                buffer: buffer, task: task)
+        guard start <= UInt64(Int64.max) else { return 0 }
+        lock.lock()
+        let startup = startupStreams.removeValue(forKey: url)
+        startupOrder.removeAll { $0 == url }
+        lock.unlock()
+        let ctx: IOSCryptoReadStream
+        if let handedOff = startup?.handoff(start: start) { ctx = handedOff }
+        else {
+            startup?.cancel()
+            ctx = IOSCryptoReadStream(tail: MediaCachedStream(url: url, start: Int64(start)))
+        }
         lock.lock()
         let streamId = nextStreamId
         nextStreamId += 1
@@ -188,7 +117,7 @@ final class CryptoNativePlugin {
             return -1
         }
         lock.unlock()
-        return ctx.buffer.read(into: buf, capacity: capacity)
+        return ctx.read(into: buf, count: capacity)
     }
 
     func closeStream(id: Int64) {
@@ -216,28 +145,37 @@ private func iosHttpRange(
 ) -> Int {
     guard let url = url, let out = out else { return -1 }
     let urlStr = String(cString: url)
-    guard let reqUrl = URL(string: urlStr) else { return -1 }
-
-    let semaphore = DispatchSemaphore(value: 0)
-    var result: Int = -1
-
-    var request = URLRequest(url: reqUrl)
-    request.setValue("bytes=\(start)-\(end)", forHTTPHeaderField: "Range")
-    request.timeoutInterval = 30
-
-    let task = URLSession.shared.dataTask(with: request) { data, response, error in
-        defer { semaphore.signal() }
-        guard let data = data, error == nil else { return }
-        let httpResp = response as? HTTPURLResponse
-        let status = httpResp?.statusCode ?? 0
-        guard status >= 200, status < 400 else { return }
-        let count = min(data.count, outCap)
-        data.copyBytes(to: out, count: count)
-        result = count
-    }
-    task.resume()
-    semaphore.wait()
-    return result
+    guard start <= UInt64(Int64.max), end >= start,
+          end - start < UInt64(Int.max), !Thread.isMainThread else { return -1 }
+    let wanted = min(outCap, Int(end - start + 1))
+    do {
+        if let bytes = try CryptoNativePlugin.shared.startupBytes(url: urlStr, start: start, count: wanted) {
+            guard !bytes.isEmpty else { return -1 }
+            bytes.copyBytes(to: out, count: bytes.count)
+            return bytes.count
+        }
+        let reader = MediaCacheReader(url: urlStr)
+        let relative = Int(start % UInt64(MediaByteCache.blockSize))
+        let bytes: Data
+        if start == 0, wanted <= MediaByteCache.blockSize {
+            // Coalesce the box scan, moov and the existing 128 KiB media seed
+            // into one bounded prefix read. Later native requests consume the
+            // same verified raw blocks; the seed size is not reduced.
+            let prefix = try reader.read(offset: 0, count: 256 * 1024)
+            guard wanted <= prefix.count else { return -1 }
+            bytes = prefix.subdata(in: 0..<wanted)
+        } else if wanted < MediaByteCache.blockSize, relative + wanted <= MediaByteCache.blockSize {
+            // Larger/non-frontloaded headers retain the aligned-block fallback.
+            let block = try reader.read(offset: Int64(start) - Int64(relative), count: MediaByteCache.blockSize)
+            guard relative + wanted <= block.count else { return -1 }
+            bytes = block.subdata(in: relative..<(relative + wanted))
+        } else {
+            bytes = try reader.read(offset: Int64(start), count: wanted)
+        }
+        guard !bytes.isEmpty else { return -1 }
+        bytes.copyBytes(to: out, count: bytes.count)
+        return bytes.count
+    } catch { return -1 }
 }
 
 /// Stream open: start a streaming GET from `start` offset.
@@ -277,4 +215,78 @@ private func iosStreamClose(
     guard let stream = stream else { return }
     let streamId = Int64(Int(bitPattern: stream))
     CryptoNativePlugin.shared.closeStream(id: streamId)
+}
+
+
+/// A foreground prewarm and its first native producer share one validated HTTP
+/// tail. Only a bounded raw prefix is retained; decryption still belongs to C.
+private final class IOSCryptoStartupStream {
+    private let tail: MediaCachedStream
+    private let lock = NSLock()
+    private var prefix = Data()
+    private var exhausted = false
+    private var failed = false
+    private let limit = 1024 * 1024
+
+    init(url: String) { tail = MediaCachedStream(url: url, start: 0) }
+
+    func bytes(start: UInt64, count: Int) throws -> Data? {
+        guard count > 0, start <= UInt64(limit), count <= limit - Int(start) else { return nil }
+        lock.lock(); defer { lock.unlock() }
+        let end = Int(start) + count
+        // Preserve the media seed and allow the usual moov to share one GET.
+        let target = min(limit, max(256 * 1024, ((end + 32767) / 32768) * 32768))
+        while prefix.count < target && !exhausted {
+            let length = min(64 * 1024, target - prefix.count)
+            var data = Data(count: length)
+            let n = data.withUnsafeMutableBytes { raw in
+                tail.read(into: raw.baseAddress!.assumingMemoryBound(to: UInt8.self), count: length)
+            }
+            guard n >= 0 else { failed = true; throw MediaNetworkFailure(.transport) }
+            if n == 0 { exhausted = true; break }
+            prefix.append(data.prefix(n))
+        }
+        guard start < UInt64(prefix.count) else { return Data() }
+        return prefix.subdata(in: Int(start)..<min(end, prefix.count))
+    }
+
+    func handoff(start: UInt64) -> IOSCryptoReadStream? {
+        lock.lock(); defer { lock.unlock() }
+        // A remote moov or a seek outside this prefix uses the existing fallback.
+        guard !failed, start <= UInt64(prefix.count) else { return nil }
+        return IOSCryptoReadStream(tail: tail, prefix: prefix, cursor: Int(start))
+    }
+    func cancel() { tail.cancel() }
+}
+
+/// The producer replays any prefetched suffix, then continues the exact same
+/// connection at the next byte. Closing must interrupt a blocked tail read.
+private final class IOSCryptoReadStream {
+    private let tail: MediaCachedStream
+    private let lock = NSLock()
+    private var prefix: Data
+    private var cursor: Int
+    private var cancelled = false
+    init(tail: MediaCachedStream, prefix: Data = Data(), cursor: Int = 0) {
+        self.tail = tail; self.prefix = prefix; self.cursor = cursor
+    }
+    func read(into output: UnsafeMutablePointer<UInt8>, count: Int) -> Int {
+        lock.lock()
+        guard !cancelled else { lock.unlock(); return -1 }
+        let take = min(count, prefix.count - cursor)
+        if take > 0 {
+            prefix.withUnsafeBytes { raw in
+                output.update(from: raw.baseAddress!.assumingMemoryBound(to: UInt8.self).advanced(by: cursor), count: take)
+            }
+            cursor += take
+            if cursor == prefix.count { prefix = Data(); cursor = 0 }
+            lock.unlock(); return take
+        }
+        lock.unlock()
+        return tail.read(into: output, count: count)
+    }
+    func cancel() {
+        lock.lock(); cancelled = true; prefix = Data(); cursor = 0; lock.unlock()
+        tail.cancel()
+    }
 }

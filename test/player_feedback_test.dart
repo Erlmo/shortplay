@@ -2,7 +2,6 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/cupertino.dart';
 import 'package:shortplay/models/fq_video.dart';
 import 'package:shortplay/services/theater_video_preload_manager.dart';
 import 'package:flutter/rendering.dart';

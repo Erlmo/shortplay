@@ -11,6 +11,7 @@ import '../models/episode.dart';
 import '../services/api_client.dart';
 import '../services/device_profile.dart';
 import '../services/download_service.dart';
+import '../services/favorite_drama_store.dart';
 import '../services/playback_history_store.dart';
 import '../widgets/app_notice.dart';
 import '../widgets/detail_action_bar.dart';
@@ -46,6 +47,8 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
   Drama? _detailDrama;
   bool _isLoading = true;
   bool _addingDownloads = false;
+  bool _favorite = false;
+  bool _savingFavorite = false;
   int? _lastEpisodeIndex;
   int? _lastPositionMs;
   final CancelToken _seasonsCancelToken = CancelToken();
@@ -63,6 +66,8 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
   void initState() {
     super.initState();
     _loadDramaDetail();
+    _loadFavorite();
+    FavoriteDramaStore.revision.addListener(_loadFavorite);
     _loadHistory();
     _prefetchEpisodes();
     if (widget.drama.isTheaterResource) unawaited(_loadSeasons());
@@ -75,8 +80,36 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
   @override
   void dispose() {
     PlaybackHistoryStore.revision.removeListener(_onHistoryChanged);
+    FavoriteDramaStore.revision.removeListener(_loadFavorite);
     _seasonsCancelToken.cancel('详情页已关闭');
     super.dispose();
+  }
+
+  Future<void> _loadFavorite() async {
+    try {
+      final favorite = await FavoriteDramaStore.contains(drama);
+      if (mounted) setState(() => _favorite = favorite);
+    } catch (_) {
+      if (mounted) {
+        showAppNotice(context, message: '读取收藏状态失败', kind: AppNoticeKind.error);
+      }
+    }
+  }
+
+  Future<void> _toggleFavorite() async {
+    if (_savingFavorite) return;
+    setState(() => _savingFavorite = true);
+    try {
+      final favorite = await FavoriteDramaStore.toggle(drama);
+      if (mounted) setState(() => _favorite = favorite);
+    } catch (_) {
+      if (mounted) {
+        showAppNotice(context,
+            message: '收藏保存失败，请重试', kind: AppNoticeKind.error);
+      }
+    } finally {
+      if (mounted) setState(() => _savingFavorite = false);
+    }
   }
 
   /// 供 part 文件里的 extension 刷新界面（setState 是 protected，extension 不能直接调）。

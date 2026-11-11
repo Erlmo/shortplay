@@ -24,3 +24,6 @@ void sp_ios_init(sp_http_range_fn_t range_fn,
                  sp_http_stream_open_fn_t open_fn,
                  sp_http_stream_read_fn_t read_fn,
                  sp_http_stream_close_fn_t close_fn);
+
+// iOS-only readiness query: 1 buffered, 0 pending, -1 unavailable.
+int sp_stream_range_ready(void *handle, uint64_t offset, uint64_t count);

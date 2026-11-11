@@ -9,11 +9,15 @@ class DetailActionBar extends StatelessWidget {
     super.key,
     required this.onPlay,
     this.onDownload,
+    this.onFavorite,
+    this.isFavorite = false,
     this.addingDownloads = false,
   });
 
   final VoidCallback onPlay;
   final VoidCallback? onDownload;
+  final VoidCallback? onFavorite;
+  final bool isFavorite;
   final bool addingDownloads;
 
   @override
@@ -28,6 +32,29 @@ class DetailActionBar extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   Expanded(child: _PlayAction(onPressed: onPlay)),
+                  if (onFavorite != null) ...[
+                    const SizedBox(width: 10),
+                    SizedBox(
+                        width: 58,
+                        child: TextButton(
+                          onPressed: onFavorite,
+                          child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                    isFavorite
+                                        ? Icons.star_rounded
+                                        : Icons.star_border_rounded,
+                                    color: isFavorite
+                                        ? const Color(0xFFFFAA32)
+                                        : const Color(0xFF515866)),
+                                const SizedBox(height: 5),
+                                Text(isFavorite ? '已收藏' : '收藏',
+                                    style: const TextStyle(fontSize: 11)),
+                              ]),
+                        )),
+                  ],
                   if (onDownload != null) ...[
                     const SizedBox(width: 10),
                     _DownloadAction(

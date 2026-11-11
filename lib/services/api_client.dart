@@ -17,14 +17,16 @@ import '../models/search_results.dart';
 import '../models/search_series_card.dart';
 import '../models/twixive.dart';
 import 'sign_interceptor.dart';
+import 'playback_policy_service.dart';
 
 export '../models/api_results.dart';
 
 class ApiException implements Exception {
-  ApiException(this.message, {this.code});
+  ApiException(this.message, {this.code, this.retryable = false});
 
   final String message;
   final int? code;
+  final bool retryable;
 
   @override
   String toString() => 'ApiException(message: $message, code: $code)';
@@ -60,6 +62,20 @@ class ApiClient {
   bool _disposed = false;
   final Map<String, ({String key, DateTime? expire})> _resolvedDecryptKeys = {};
   final Map<String, Future<List<FqVideoItem>>> _videoRequests = {};
+  PlaybackPolicyService? _playbackPolicies;
+  PlaybackPolicyService get playbackPolicies => _playbackPolicies ??=
+      PlaybackPolicyService(fetch: _fetchPlaybackPolicy, clock: _clock);
+
+  Future<Map<String, dynamic>?> _fetchPlaybackPolicy() async {
+    try {
+      final response = await _dio.get(ApiConfig.algorithmPlaybackPolicy);
+      return _asJsonMap(_decode(response)['data']);
+    } on DioException catch (error) {
+      final status = error.response?.statusCode;
+      if (status == 404 || status == 405) return null;
+      throw ApiException('播放策略刷新失败', code: status);
+    }
+  }
 
   /// 暴露已配置 SignInterceptor 的 Dio，供 ShareLinkResolver 等复用同一签名链路。
   Dio get dio => _dio;
@@ -67,6 +83,7 @@ class ApiClient {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    _playbackPolicies?.dispose();
     _dio.close(force: true);
   }
 
@@ -339,6 +356,8 @@ class ApiClient {
         if (uri == null ||
             !['https', 'http'].contains(uri.scheme) ||
             uri.host.isEmpty ||
+            uri.userInfo.isNotEmpty ||
+            uri.hasFragment ||
             (item.isEncrypted
                 ? !RegExp(r'^[0-9a-fA-F]{32}$').hasMatch(item.decryptKey) ||
                     item.spadeA.isEmpty
@@ -366,7 +385,9 @@ class ApiClient {
       return items;
     } on DioException catch (error) {
       if (CancelToken.isCancel(error)) {
-        if (timedOut) throw ApiException('播放解析超时，请稍后重试');
+        if (timedOut) {
+          throw ApiException('播放解析超时，请稍后重试', retryable: true);
+        }
         rethrow;
       }
       final status = error.response?.statusCode;
@@ -378,7 +399,14 @@ class ApiClient {
           body is Map
               ? body['message']?.toString() ?? '视频解析失败，请稍后重试'
               : '视频解析失败，请稍后重试',
-          code: status);
+          code: status,
+          retryable: {
+                DioExceptionType.connectionTimeout,
+                DioExceptionType.sendTimeout,
+                DioExceptionType.receiveTimeout,
+                DioExceptionType.connectionError,
+              }.contains(error.type) ||
+              {408, 429, 503, 504}.contains(status));
     } on FormatException {
       throw ApiException('视频解析结果无效');
     } on TypeError {

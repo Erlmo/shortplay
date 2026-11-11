@@ -62,3 +62,6 @@ CODEX.md
 
 # Native crypto core: source not distributed (only prebuilt binaries are shipped)
 /native/
+
+# Kotlin incremental compilation cache
+/android/.kotlin/

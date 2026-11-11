@@ -1,0 +1,8 @@
+name: shortplay_playback_sdk
+description: Local playback scheduling, resource caching and first-frame preparation.
+version: 0.1.0
+publish_to: none
+environment:
+  sdk: ^3.6.2
+dependencies:
+  crypto: ^3.0.3

@@ -15,6 +15,7 @@ final class NativePlayerPlugin: NSObject {
     private let messenger: FlutterBinaryMessenger
     private var players: [Int: PlayerInstance] = [:]
     private var nextPlayerId: Int = 1
+    private var pendingCreates = Set<Int>()
     private var eventSink: FlutterEventSink?
     private let lock = NSLock()
 
@@ -29,8 +30,36 @@ final class NativePlayerPlugin: NSObject {
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         let args = call.arguments as? [String: Any]
         switch call.method {
+        case "mediaCacheDirectory":
+            result(MediaByteCache.shared.root.path)
+        case "registerMediaSource":
+            guard let primary = args?["primaryUrl"] as? String,
+                  let urls = args?["urls"] as? [String] else {
+                result(FlutterError(code: "bad_args", message: "primaryUrl and urls required", details: nil))
+                return
+            }
+            MediaSourceRegistry.shared.register(primary: primary, urls: urls,
+                expiresAt: (args?["expiresAt"] as? NSNumber)?.doubleValue)
+            result(nil)
         case "create":
             handleCreate(args: args, result: result)
+        case "getBufferState":
+            guard let id = args?["id"] as? Int else {
+                result(nil)
+                return
+            }
+            // Queries must remain available when the playback clock is stopped.
+            // Do not start a timer or change rate/buffering state here.
+            DispatchQueue.main.async { [weak self] in
+                result(self?.getPlayer(id)?.bufferState())
+            }
+        case "prepareFirstFrame":
+            guard let id = args?["id"] as? Int, let player = getPlayer(id) else {
+                result(FlutterError(code: "not_found", message: "Player not found", details: nil))
+                return
+            }
+            player.prepareFirstFrame()
+            result(nil)
         case "play":
             handlePlay(args: args, result: result)
         case "pause":
@@ -65,14 +94,17 @@ final class NativePlayerPlugin: NSObject {
             return
         }
 
+        let initialPositionMs = max(0, (args?["initialPositionMs"] as? NSNumber)?.intValue ?? 0)
+
         let playerId = self.nextPlayerId
         self.nextPlayerId += 1
+        lock.lock(); pendingCreates.insert(playerId); lock.unlock()
         result(["playerId": playerId, "textureId": -1])
 
         if keyHex.isEmpty {
             // 本地文件或普通 URL，不走 crypto stream
             DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
+                guard let self = self, self.takePendingCreate(playerId) else { return }
                 let instance = PlayerInstance(
                     playerId: playerId,
                     fileUrl: cdnUrl,
@@ -83,6 +115,7 @@ final class NativePlayerPlugin: NSObject {
                 self.players[playerId] = instance
                 self.lock.unlock()
 
+                instance.setInitialPosition(initialPositionMs)
                 instance.setup()
 
                 self.sendEvent([
@@ -97,6 +130,7 @@ final class NativePlayerPlugin: NSObject {
                 let handle = sp_stream_open(cdnUrl, keyHex)
                 guard let handle = handle else {
                     DispatchQueue.main.async {
+                        guard self.takePendingCreate(playerId) else { return }
                         self.sendEvent([
                             "playerId": playerId,
                             "type": "error",
@@ -107,6 +141,10 @@ final class NativePlayerPlugin: NSObject {
                 }
 
                 DispatchQueue.main.async {
+                    guard self.takePendingCreate(playerId) else {
+                        DispatchQueue.global(qos: .utility).async { sp_stream_close(handle) }
+                        return
+                    }
                     let instance = PlayerInstance(
                         playerId: playerId,
                         streamHandle: handle,
@@ -117,6 +155,7 @@ final class NativePlayerPlugin: NSObject {
                     self.players[playerId] = instance
                     self.lock.unlock()
 
+                    instance.setInitialPosition(initialPositionMs)
                     instance.setup()
 
                     self.sendEvent([
@@ -193,7 +232,9 @@ final class NativePlayerPlugin: NSObject {
         }
         lock.lock()
         let player = players.removeValue(forKey: id)
+        let cancelledCreate = pendingCreates.remove(id) != nil
         lock.unlock()
+        if cancelledCreate { result(nil); return }
         guard let player = player else {
             result(FlutterError(code: "not_found", message: "Player not found", details: nil))
             return
@@ -217,6 +258,11 @@ final class NativePlayerPlugin: NSObject {
             ProcessInfo.processInfo.endActivity(activity)
             screenActivity = nil
         }
+    }
+
+    private func takePendingCreate(_ id: Int) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return pendingCreates.remove(id) != nil
     }
 
     private func getPlayer(_ id: Int) -> PlayerInstance? {
@@ -264,7 +310,12 @@ private final class PlayerInstance: NSObject, FlutterTexture {
     private var timeObserver: Any?
     private var latestPixelBuffer: CVPixelBuffer?
     private let bufferLock = NSLock()
+    private var avCompleted = false
     private var firstFrameSent = false
+    private var preRenderRequested = false
+    private var prerollInFlight = false
+    private var prerollGeneration = 0
+    private var playerStatusObservation: NSKeyValueObservation?
 
     private var statusObservation: NSKeyValueObservation?
     private var durationObservation: NSKeyValueObservation?
@@ -275,7 +326,16 @@ private final class PlayerInstance: NSObject, FlutterTexture {
 
     private let resourceLoaderQueue = DispatchQueue(label: "com.shortplay.resourceloader", qos: .userInitiated)
     private var resourceLoaderDelegate: CryptoResourceLoaderDelegate?
+    private var mediaResourceLoader: MediaCacheResourceLoader?
+    private var mediaSourceRangeProbeDone = false
+    private var mediaSourceUseLegacy = false
+    private let mediaSourceProbeCancellation = MediaReadCancellation()
+    private var initialPositionPending = false
+    private var initialSeekGeneration = 0
     private var disposed = false
+    private var wantsPlaying = false
+    private var pendingSeekMs: Int?
+    private var currentVolume: Float = 1
 
     init(playerId: Int, streamHandle: UnsafeMutableRawPointer,
          textureRegistry: FlutterTextureRegistry,
@@ -297,10 +357,68 @@ private final class PlayerInstance: NSObject, FlutterTexture {
         super.init()
     }
 
+    func setInitialPosition(_ milliseconds: Int) {
+        guard milliseconds > 0 else { return }
+        pendingSeekMs = milliseconds
+        initialPositionPending = true
+    }
+
+    private func seekInitialPosition(_ milliseconds: Int, in avPlayer: AVPlayer) {
+        initialPositionPending = true
+        initialSeekGeneration += 1
+        let generation = initialSeekGeneration
+        avPlayer.pause()
+        let time = CMTime(value: CMTimeValue(max(0, milliseconds)), timescale: 1000)
+        avPlayer.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak avPlayer] finished in
+            DispatchQueue.main.async {
+                guard let self = self, !self.disposed,
+                      self.player === avPlayer, self.initialSeekGeneration == generation else { return }
+                guard finished else {
+                    self.eventCallback(["playerId": self.playerId, "type": "error", "value": "初始播放位置定位失败"])
+                    return
+                }
+                self.initialPositionPending = false
+                self.applyPlaybackState()
+                self.startPendingPreroll()
+                self.displayLinkFired()
+            }
+        }
+    }
+
     // MARK: - Setup
 
     func setup() {
-        textureId = textureRegistry.register(self)
+        guard !disposed else { return }
+        if textureId < 0 { textureId = textureRegistry.register(self) }
+        // Multi-CDN plain HTTP needs our Range IO. Probe one bounded prefix
+        // first; a non-Range origin explicitly keeps its original URLAsset path.
+        if let path = fileUrl, MediaSourceRegistry.valid(path),
+           !mediaSourceRangeProbeDone,
+           MediaSourceRegistry.shared.context(path).hasAlternates,
+           MediaByteCache.shared.metadata(MediaSourceRegistry.shared.context(path).currentURL) == nil {
+            mediaSourceRangeProbeDone = true
+            resourceLoaderQueue.async { [self] in
+                do {
+                    _ = try MediaCacheReader(url: path, cancellation: mediaSourceProbeCancellation)
+                        .read(offset: 0, count: MediaByteCache.blockSize)
+                } catch {
+                    let failure = MediaNetworkFailure.classify(error)
+                    if case .rangeUnsupported = failure.kind {
+                        DispatchQueue.main.async { [self] in
+                            guard !disposed else { return }; mediaSourceUseLegacy = true; setup()
+                        }
+                        return
+                    }
+                    DispatchQueue.main.async { [self] in
+                        guard !disposed else { return }
+                        eventCallback(["playerId": playerId, "type": "error", "value": "视频网络请求失败"])
+                    }
+                    return
+                }
+                DispatchQueue.main.async { [self] in guard !disposed else { return }; setup() }
+            }
+            return
+        }
 
         let outputSettings: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
@@ -322,7 +440,19 @@ private final class PlayerInstance: NSObject, FlutterTexture {
             } else {
                 url = URL(fileURLWithPath: filePath)
             }
-            item = AVPlayerItem(url: url)
+            // Preserve original AVPlayer streaming for uncached/non-Range
+            // origins. A successful SDK prefetch opts the source into cache IO.
+            if ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+               !mediaSourceUseLegacy,
+               MediaByteCache.shared.metadata(MediaSourceRegistry.shared.context(filePath).currentURL) != nil {
+                let loader = MediaCacheResourceLoader(source: filePath, queue: resourceLoaderQueue)
+                mediaResourceLoader = loader
+                let asset = AVURLAsset(url: URL(string: "spmedia://player_\(playerId)/video.mp4")!)
+                asset.resourceLoader.setDelegate(loader, queue: resourceLoaderQueue)
+                item = AVPlayerItem(asset: asset)
+            } else {
+                item = AVPlayerItem(url: url)
+            }
         } else if let handle = streamHandle {
             // crypto stream 路径
             resourceLoaderDelegate = CryptoResourceLoaderDelegate(
@@ -343,9 +473,14 @@ private final class PlayerInstance: NSObject, FlutterTexture {
         let avPlayer = AVPlayer(playerItem: item)
         avPlayer.automaticallyWaitsToMinimizeStalling = false
         self.player = avPlayer
-
+        avPlayer.volume = currentVolume
         setupObservers()
+        if let ms = pendingSeekMs {
+            pendingSeekMs = nil
+            seekInitialPosition(ms, in: avPlayer)
+        }
         setupDisplayLink()
+        applyPlaybackState()
     }
 
     // MARK: - Observers
@@ -363,7 +498,12 @@ private final class PlayerInstance: NSObject, FlutterTexture {
                     "value": durationMs
                 ])
                 self.sendVideoSize(item.presentationSize)
+                DispatchQueue.main.async { self.startPendingPreroll() }
             }
+        }
+
+        playerStatusObservation = avPlayer.observe(\.status, options: [.initial, .new]) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.startPendingPreroll() }
         }
 
         durationObservation = item.observe(\.duration, options: [.new]) { [weak self] item, _ in
@@ -405,6 +545,23 @@ private final class PlayerInstance: NSObject, FlutterTexture {
         let interval = CMTime(value: 200, timescale: 1000)
         timeObserver = avPlayer.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             guard let self = self else { return }
+            let seconds = CMTimeGetSeconds(time)
+            var bufferedEnd = seconds
+            if seconds.isFinite, let item = self.player?.currentItem {
+                for value in item.loadedTimeRanges {
+                    let range = value.timeRangeValue
+                    let start = CMTimeGetSeconds(range.start)
+                    let end = CMTimeGetSeconds(CMTimeRangeGetEnd(range))
+                    if start.isFinite && end.isFinite && start <= bufferedEnd + 0.05 && end > bufferedEnd {
+                        bufferedEnd = end
+                    }
+                }
+                self.eventCallback([
+                    "playerId": self.playerId,
+                    "type": "bufferedAhead",
+                    "value": max(0, Int((bufferedEnd - seconds) * 1000))
+                ])
+            }
             let positionMs = Int(CMTimeGetSeconds(time) * 1000)
             self.eventCallback([
                 "playerId": self.playerId,
@@ -434,6 +591,7 @@ private final class PlayerInstance: NSObject, FlutterTexture {
     }
 
     @objc private func playerDidFinishPlaying(_ notification: Notification) {
+        avCompleted = true
         eventCallback([
             "playerId": playerId,
             "type": "completed",
@@ -453,7 +611,7 @@ private final class PlayerInstance: NSObject, FlutterTexture {
     }
 
     @objc private func displayLinkFired() {
-        guard let output = videoOutput else { return }
+        guard !disposed, !initialPositionPending, let output = videoOutput else { return }
         let currentTime = output.itemTime(forHostTime: CACurrentMediaTime())
         guard output.hasNewPixelBuffer(forItemTime: currentTime) else { return }
         guard let pixelBuffer = output.copyPixelBuffer(forItemTime: currentTime, itemTimeForDisplay: nil) else { return }
@@ -466,6 +624,7 @@ private final class PlayerInstance: NSObject, FlutterTexture {
 
         if !firstFrameSent {
             firstFrameSent = true
+            cancelPrerollPreparation()
             // 兜底：首帧时还没拿到 presentationSize，就用像素缓冲的宽高
             if lastSentVideoSize == .zero {
                 sendVideoSize(CGSize(width: CVPixelBufferGetWidth(pixelBuffer),
@@ -489,24 +648,126 @@ private final class PlayerInstance: NSObject, FlutterTexture {
         return Unmanaged.passRetained(pixelBuffer)
     }
 
+    /// Side-effect-free native state snapshot for the SDK's buffer monitor.
+    /// Unknown/indefinite timestamps remain null, never fabricated zeroes.
+    func bufferState() -> [String: Any]? {
+        guard !disposed else { return nil }
+        let position = player.flatMap { Self.milliseconds($0.currentTime()) }
+        let duration = playerItem.flatMap { Self.milliseconds($0.duration) }
+        var buffered: Int?
+        if let avPlayer = player {
+            let seconds = CMTimeGetSeconds(avPlayer.currentTime())
+            if seconds.isFinite && seconds >= 0, let item = playerItem {
+                let ranges = item.loadedTimeRanges.compactMap { value -> (Double, Double)? in
+                    let range = value.timeRangeValue
+                    let start = CMTimeGetSeconds(range.start)
+                    let end = CMTimeGetSeconds(CMTimeRangeGetEnd(range))
+                    guard start.isFinite, end.isFinite, end >= start else { return nil }
+                    return (start, end)
+                }.sorted { $0.0 < $1.0 }
+                var end = seconds
+                for range in ranges {
+                    // Match the existing contiguous-range tolerance; disjoint
+                    // later ranges must not be counted as playable headroom.
+                    if range.0 <= end + 0.05 && range.1 > end { end = range.1 }
+                }
+                let milliseconds = (end - seconds) * 1000
+                if milliseconds.isFinite, milliseconds >= 0,
+                   milliseconds < Double(Int.max) {
+                    buffered = Int(milliseconds)
+                }
+            }
+        }
+        return [
+            "bufferedAheadMs": buffered as Any? ?? NSNull(),
+            "positionMs": position as Any? ?? NSNull(),
+            "durationMs": duration as Any? ?? NSNull(),
+            "buffering": playerItem?.isPlaybackBufferEmpty == true ||
+                player?.timeControlStatus == .waitingToPlayAtSpecifiedRate,
+            "playing": (player?.rate ?? 0) > 0,
+            "completed": avCompleted
+        ]
+    }
+
+    private static func milliseconds(_ time: CMTime) -> Int? {
+        let value = CMTimeGetSeconds(time) * 1000
+        guard value.isFinite, value >= 0, value < Double(Int.max) else { return nil }
+        return Int(value)
+    }
+
     // MARK: - Player Controls
 
     private var currentRate: Float = 1.0
 
+    /// Prime the existing engine without moving its media clock. Completion
+    /// of preroll is not a first-frame event: displayLinkFired must still
+    /// publish an actual pixel buffer before Dart can reuse this instance.
+    func prepareFirstFrame() {
+        guard !disposed else { return }
+        setVolume(0)
+        pause()
+        preRenderRequested = !firstFrameSent
+        startPendingPreroll()
+    }
+
+    private func startPendingPreroll() {
+        guard !disposed, !initialPositionPending, preRenderRequested, !prerollInFlight,
+              let avPlayer = player, avPlayer.rate == 0,
+              avPlayer.status == .readyToPlay,
+              playerItem?.status == .readyToPlay else { return }
+        prerollInFlight = true
+        let generation = prerollGeneration
+        avPlayer.preroll(atRate: 1) { [weak self, weak avPlayer] finished in
+            DispatchQueue.main.async {
+                guard let self = self, !self.disposed,
+                      self.player === avPlayer,
+                      self.prerollGeneration == generation else { return }
+                self.prerollInFlight = false
+                guard self.preRenderRequested else { return }
+                if finished {
+                    self.displayLinkFired()
+                } else {
+                    self.preRenderRequested = false
+                    self.eventCallback(["playerId": self.playerId, "type": "error",
+                                        "value": "首帧预渲染准备失败"])
+                }
+            }
+        }
+    }
+
+    private func cancelPrerollPreparation() {
+        prerollGeneration += 1
+        preRenderRequested = false
+        prerollInFlight = false
+        player?.cancelPendingPrerolls()
+    }
+
     func play() {
-        player?.rate = currentRate
+        cancelPrerollPreparation()
+        wantsPlaying = true
+        applyPlaybackState()
+    }
+
+    private func applyPlaybackState() {
+        guard !disposed else { return }
+        player?.rate = wantsPlaying && !initialPositionPending ? currentRate : 0
     }
 
     func pause() {
+        wantsPlaying = false
         player?.pause()
     }
 
     func seek(toMs ms: Int) {
-        let time = CMTime(value: CMTimeValue(ms), timescale: 1000)
-        player?.seek(to: time)
+        avCompleted = false
+        guard let avPlayer = player else { pendingSeekMs = max(0, ms); return }
+        let time = CMTime(value: CMTimeValue(max(0, ms)), timescale: 1000)
+        if initialPositionPending { seekInitialPosition(ms, in: avPlayer) }
+        else { avPlayer.seek(to: time) }
     }
 
     func setVolume(_ volume: Float) {
+        currentVolume = volume
         player?.volume = volume
     }
 
@@ -514,13 +775,14 @@ private final class PlayerInstance: NSObject, FlutterTexture {
     /// fetching ~1MB past its read position so a paused prev/next player does
     /// not compete for bandwidth with the on-screen episode.
     func setActive(_ active: Bool) {
-        guard !disposed, let handle = streamHandle else { return }
-        sp_stream_set_active(handle, active ? 1 : 0)
+        guard !disposed else { return }
+        mediaResourceLoader?.setActive(active)
+        if let handle = streamHandle { sp_stream_set_active(handle, active ? 1 : 0) }
     }
 
     func setRate(_ rate: Float) {
         currentRate = rate
-        player?.rate = rate
+        applyPlaybackState()
     }
 
     // MARK: - Dispose
@@ -528,6 +790,11 @@ private final class PlayerInstance: NSObject, FlutterTexture {
     func dispose() {
         guard !disposed else { return }
         disposed = true
+        initialSeekGeneration += 1
+        mediaSourceProbeCancellation.cancel()
+        cancelPrerollPreparation()
+        playerStatusObservation?.invalidate()
+        playerStatusObservation = nil
 
         displayLink?.invalidate()
         displayLink = nil
@@ -569,6 +836,7 @@ private final class PlayerInstance: NSObject, FlutterTexture {
         }
 
         resourceLoaderDelegate?.invalidate()
+        mediaResourceLoader?.invalidate()
 
         if let handle = streamHandle {
             let loaderQueue = resourceLoaderQueue
@@ -578,6 +846,7 @@ private final class PlayerInstance: NSObject, FlutterTexture {
         }
 
         resourceLoaderDelegate = nil
+        mediaResourceLoader = nil
     }
 
     deinit {
@@ -645,6 +914,10 @@ private final class CryptoResourceLoaderDelegate: NSObject, AVAssetResourceLoade
     // MARK: - Request Processing
 
     private func processRequest(_ loadingRequest: AVAssetResourceLoadingRequest) {
+        requestLock.lock()
+        let active = !invalidated && pendingRequests.contains { $0 === loadingRequest }
+        requestLock.unlock()
+        guard active, !loadingRequest.isCancelled, !loadingRequest.isFinished else { return }
         // Fill content information if requested
         if let infoRequest = loadingRequest.contentInformationRequest {
             let totalSize = sp_stream_size(streamHandle)
@@ -689,38 +962,33 @@ private final class CryptoResourceLoaderDelegate: NSObject, AVAssetResourceLoade
             return
         }
 
-        // Read in chunks
+        // One bounded slice per turn: a request-to-EOF must not monopolize
+        // the serial stream and block AVPlayer's other track/header requests.
+        // Re-seek on each turn because another request may use the same handle.
         let chunkSize = 64 * 1024
         let buffer = UnsafeMutablePointer<CChar>.allocate(capacity: chunkSize)
         defer { buffer.deallocate() }
-
-        while bytesRemaining > 0 {
-            // Check cancellation
-            requestLock.lock()
-            let isInvalidated = invalidated
-            let stillPending = pendingRequests.contains { $0 === loadingRequest }
-            requestLock.unlock()
-            if isInvalidated || !stillPending || loadingRequest.isCancelled {
-                return
-            }
-
-            let toRead = min(UInt64(bytesRemaining), UInt64(chunkSize))
-            let bytesRead = sp_stream_read(streamHandle, buffer, toRead)
-            if bytesRead < 0 {
-                finishRequest(loadingRequest, error: NSError(domain: "NativePlayer", code: Int(bytesRead), userInfo: [NSLocalizedDescriptionKey: "read failed"]))
-                return
-            }
-            if bytesRead == 0 {
-                // EOF
-                break
-            }
-
-            let data = Data(bytes: buffer, count: Int(bytesRead))
-            dataRequest.respond(with: data)
-            bytesRemaining -= bytesRead
+        let toRead = min(UInt64(bytesRemaining), UInt64(chunkSize))
+        let bytesRead = sp_stream_read(streamHandle, buffer, toRead)
+        if bytesRead < 0 {
+            finishRequest(loadingRequest, error: NSError(domain: "NativePlayer", code: Int(bytesRead),
+                userInfo: [NSLocalizedDescriptionKey: "read failed"]))
+            return
         }
-
-        finishRequest(loadingRequest, error: nil)
+        requestLock.lock()
+        let stillActive = !invalidated && pendingRequests.contains { $0 === loadingRequest }
+        requestLock.unlock()
+        guard stillActive, !loadingRequest.isCancelled, !loadingRequest.isFinished else { return }
+        if bytesRead == 0 {
+            finishRequest(loadingRequest, error: nil)
+            return
+        }
+        dataRequest.respond(with: Data(bytes: buffer, count: Int(bytesRead)))
+        if bytesRemaining > bytesRead {
+            workQueue.async { [weak self] in self?.processRequest(loadingRequest) }
+        } else {
+            finishRequest(loadingRequest, error: nil)
+        }
     }
 
     private func finishRequest(_ request: AVAssetResourceLoadingRequest, error: Error?) {

@@ -1,6 +1,10 @@
 package com.example.shortplay
 
 import android.app.Activity
+import com.shortplay.playback.MediaByteCache
+import com.shortplay.playback.MediaCacheDataSource
+import com.shortplay.playback.NetworkRoutes
+import com.shortplay.playback.MediaNetworkLoadErrorPolicy
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -13,6 +17,7 @@ import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.extractor.mp4.Mp4Extractor
 import androidx.media3.extractor.mp4.Bvc2Mp4Extractor
 import androidx.media3.common.MediaItem
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
@@ -137,6 +142,11 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         flutterBinding = binding
+        try {
+            MediaByteCache.configure(File(binding.applicationContext.cacheDir, "shortplay_media_v1"))
+        } catch (error: Exception) {
+            android.util.Log.w("PlaybackCache", "Cache unavailable; using CDN", error)
+        }
         textureRegistry = binding.textureRegistry
         methodChannel = MethodChannel(binding.binaryMessenger, "shortplay/native_player")
         methodChannel.setMethodCallHandler(this)
@@ -168,11 +178,64 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
+            "registerMediaSource" -> {
+                val primary = call.argument<String>("primaryUrl")
+                val urls = call.argument<List<String>>("urls")
+                val expiry = call.argument<Number>("expiresAt")?.toLong()
+                try {
+                    require(primary != null && urls != null) { "Missing media routes" }
+                    NetworkRoutes.register(primary, urls, expiry)
+                    result.success(null)
+                } catch (_: IllegalArgumentException) {
+                    result.error("BAD_ARGS", "Invalid media routes", null)
+                }
+            }
+            "mediaCacheDirectory" -> result.success(MediaByteCache.root()?.absolutePath)
+            "mediaCacheStats" -> result.success(mapOf("hits" to MediaByteCache.hits,
+                "hitBytes" to MediaByteCache.hitBytes, "writtenBytes" to MediaByteCache.writtenBytes))
             "supportsBvc2" -> result.success(Bvc2Native.isAvailable())
             "create" -> {
                 val cdnUrl = call.argument<String>("cdnUrl")!!
                 val keyHex = call.argument<String>("keyHex")!!
-                handleCreate(cdnUrl, keyHex, result)
+                handleCreate(cdnUrl, keyHex, (call.argument<Number>("initialPositionMs")?.toLong() ?: 0L).coerceAtLeast(0L), result)
+            }
+            "getBufferState" -> {
+                val id = call.argument<Int>("id")
+                // Read ExoPlayer state on its existing application looper even
+                // while its media clock is stalled. This query has no controls.
+                handler.post {
+                    val player = id?.let { players[it]?.player }
+                    if (player == null) {
+                        result.success(null)
+                    } else {
+                        val duration = player.duration
+                        result.success(mapOf(
+                            "bufferedAheadMs" to player.totalBufferedDuration.coerceAtLeast(0L),
+                            "positionMs" to player.currentPosition.coerceAtLeast(0L),
+                            "durationMs" to if (duration >= 0L) duration else null,
+                            "buffering" to (player.playbackState == Player.STATE_BUFFERING),
+                            "playing" to player.isPlaying,
+                            "completed" to (player.playbackState == Player.STATE_ENDED)
+                        ))
+                    }
+                }
+            }
+            "prepareFirstFrame" -> {
+                val id = call.argument<Int>("id")!!
+                val instance = players[id]
+                if (instance == null) {
+                    result.error("not_found", "Player not found", null)
+                } else {
+                    // create already binds a Surface and calls prepare(). ExoPlayer
+                    // renders its first frame while paused; do not advance the
+                    // media clock merely to warm the next episode.
+                    instance.player.volume = 0f
+                    instance.player.playWhenReady = false
+                    if (instance.player.playbackState == Player.STATE_IDLE) {
+                        instance.player.prepare()
+                    }
+                    result.success(null)
+                }
             }
             "play" -> {
                 val id = call.argument<Int>("id")!!
@@ -228,14 +291,14 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         }
     }
 
-    private fun handleCreate(cdnUrl: String, keyHex: String, result: MethodChannel.Result) {
+    private fun handleCreate(cdnUrl: String, keyHex: String, initialPositionMs: Long, result: MethodChannel.Result) {
         val playerId = nextId.getAndIncrement()
         result.success(mapOf("playerId" to playerId, "textureId" to -1))
 
         if (keyHex.isEmpty()) {
             handler.post {
                 try {
-                    createPlayerWithUri(playerId, cdnUrl)
+                    createPlayerWithUri(playerId, cdnUrl, initialPositionMs)
                 } catch (error: Exception) {
                     disposePlayer(playerId)
                     sendEvent(playerId, "error", error.message ?: "无法打开视频")
@@ -245,7 +308,7 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
             CryptoNative.ensureInit()
             handler.post {
                 try {
-                    createPlayerWithCrypto(playerId, cdnUrl, keyHex)
+                    createPlayerWithCrypto(playerId, cdnUrl, keyHex, initialPositionMs)
                 } catch (error: Exception) {
                     disposePlayer(playerId)
                     sendEvent(playerId, "error", error.message ?: "无法打开视频")
@@ -260,7 +323,7 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         }.toTypedArray()
     }
 
-    private fun createPlayerWithUri(playerId: Int, uri: String) {
+    private fun createPlayerWithUri(playerId: Int, uri: String, initialPositionMs: Long) {
         val parsedUri = Uri.parse(uri)
         val mediaUri = if (parsedUri.scheme.isNullOrEmpty() || parsedUri.scheme == "file") {
             val file = File(if (parsedUri.scheme == "file") parsedUri.path.orEmpty() else uri)
@@ -274,21 +337,24 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         val textureEntry = textureRegistry.createSurfaceTexture()
         val surface = Surface(textureEntry.surfaceTexture())
         val player = ExoPlayer.Builder(flutterBinding.applicationContext, Bvc2RenderersFactory(flutterBinding.applicationContext))
-            .setMediaSourceFactory(DefaultMediaSourceFactory(flutterBinding.applicationContext, playbackExtractors()))
+            .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
+                .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(MediaCacheDataSource.Factory(flutterBinding.applicationContext), playbackExtractors())
+                .setLoadErrorHandlingPolicy(MediaNetworkLoadErrorPolicy()))
             .build()
         players[playerId] = PlayerInstance(playerId, player, textureEntry, null, surface)
         setupPlayerListener(playerId, player)
         player.setVideoSurface(surface)
 
         val mediaItem = MediaItem.fromUri(mediaUri)
-        player.setMediaItem(mediaItem)
+        player.setMediaItem(mediaItem, initialPositionMs)
         player.prepare()
 
         sendEvent(playerId, "created", textureEntry.id())
     }
 
     private fun createPlayerWithCrypto(
-        playerId: Int, cdnUrl: String, keyHex: String
+        playerId: Int, cdnUrl: String, keyHex: String, initialPositionMs: Long
     ) {
         val textureEntry = textureRegistry.createSurfaceTexture()
         val surface = Surface(textureEntry.surfaceTexture())
@@ -298,6 +364,8 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
         val player = ExoPlayer.Builder(flutterBinding.applicationContext, Bvc2RenderersFactory(flutterBinding.applicationContext))
+            .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
+                .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
             .setLoadControl(loadControl)
             .build()
         player.setVideoSurface(surface)
@@ -310,7 +378,7 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
             .createMediaSource(MediaItem.fromUri("crypto://$cdnUrl"))
         players[playerId] = PlayerInstance(playerId, player, textureEntry, slot, surface)
         setupPlayerListener(playerId, player)
-        player.setMediaSource(mediaSource)
+        player.setMediaSource(mediaSource, initialPositionMs)
         player.prepare()
         sendEvent(playerId, "created", textureEntry.id())
     }
@@ -339,6 +407,12 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
                 sendEvent(playerId, "playing", isPlaying)
                 if (isPlaying) {
                     startPositionUpdates(playerId)
+                }
+            }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS) {
+                    sendEvent(playerId, "playbackIntent", false)
                 }
             }
 
@@ -383,6 +457,7 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
                 val instance = players[playerId] ?: return
                 val player = instance.player
                 if (player.isPlaying) {
+                    sendEvent(playerId, "bufferedAhead", player.totalBufferedDuration.coerceAtLeast(0L))
                     sendEvent(playerId, "position", player.currentPosition)
                     handler.postDelayed(this, 200)
                 }

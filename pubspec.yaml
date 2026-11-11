@@ -17,7 +17,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
 # iOS 保持 3.2.0；Android 的独立版本号在 android/app/build.gradle 中设置。
-version: 3.2.0+27
+version: 3.2.0+29
 
 environment:
   sdk: ^3.6.2
@@ -31,6 +31,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  shortplay_playback_sdk:
+    path: packages/shortplay_playback_sdk
   dio: ^5.4.0
   shared_preferences: ^2.2.2
   connectivity_plus: ^6.0.5
@@ -47,6 +49,7 @@ dependencies:
   flutter_svg: ^2.2.0
 
 dev_dependencies:
+  crypto: ^3.0.3
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
