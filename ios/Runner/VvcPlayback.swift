@@ -15,6 +15,8 @@ final class VvcPlayback {
     private var disposed = false
     private var generation = 0
     private var finished = false
+    private var playing = false
+    private var presentedFrame = false
 
     // These fields are confined to queue, including decoder destruction.
     private var decoder: SPVvcDecoder?
@@ -32,11 +34,18 @@ final class VvcPlayback {
 
     func start() { seek(toMs: 0) }
 
+    func setPlaying(_ playing: Bool) {
+        guard self.playing != playing else { return }
+        self.playing = playing
+        if playing { pump() }
+    }
+
     func seek(toMs time: Int) {
         guard !disposed else { return }
         generation += 1
         let token = generation
         frames.removeAll()
+        presentedFrame = false
         finished = false
         pending = true
         let target = Int64(max(0, time)) * 1000
@@ -66,6 +75,7 @@ final class VvcPlayback {
         while let first = frames.first, first.presentationTimeUs <= timeUs + 16_667 {
             result = frames.removeFirst()
         }
+        if result != nil { presentedFrame = true }
         pump()
         return result
     }
@@ -74,7 +84,9 @@ final class VvcPlayback {
     var ended: Bool { finished && frames.isEmpty }
 
     private func pump() {
-        guard !disposed, !pending, !finished, frames.count < 10 else { return }
+        guard !disposed, !pending, !finished else { return }
+        // A paused or preloaded player only needs its preview frame.
+        guard playing ? frames.count < 10 : !presentedFrame && frames.isEmpty else { return }
         pending = true
         let token = generation
         queue.async { [self] in

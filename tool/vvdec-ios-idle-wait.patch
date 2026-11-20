@@ -1,0 +1,28 @@
+diff --git a/source/Lib/Utilities/ThreadPool.cpp b/source/Lib/Utilities/ThreadPool.cpp
+index f086747..cdfa9c9 100644
+--- a/source/Lib/Utilities/ThreadPool.cpp
++++ b/source/Lib/Utilities/ThreadPool.cpp
+@@ -56,11 +56,12 @@ using namespace std::chrono_literals;
+ std::mutex Barrier::s_exceptionLock{};
+ 
+ // block threads after busy-waiting this long
++// 短剧播放：手机上解完一帧后要空闲几十毫秒，空转等待白耗电，默认直接休眠。
+ const static auto VVDEC_BUSY_WAIT_TIME_MIN = [] {
+   const char* env = getenv( "VVDEC_BUSY_WAIT_TIME_MIN" );
+   if( env )
+     return std::chrono::microseconds( int( atof( env ) * 1000 ) );
+-  return std::chrono::microseconds( 1ms );
++  return std::chrono::microseconds( 0 );
+ }();
+ 
+ // block last waiting thread after this time
+@@ -68,7 +69,8 @@ const static auto VVDEC_BUSY_WAIT_TIME_MAX = [] {
+   const char* env = getenv( "VVDEC_BUSY_WAIT_TIME_MAX" );
+   if( env )
+     return atoi( env ) * 1ms;
+-  return 5ms;
++  // 最后一个等待线程最多空转 1 毫秒（原为 5 毫秒）再休眠，减少播放中的空转耗电。
++  return 1ms;
+ }();
+ 
+ 

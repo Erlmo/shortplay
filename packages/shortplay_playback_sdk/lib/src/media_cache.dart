@@ -30,6 +30,10 @@ class MediaCacheStore {
   int writeFailures = 0;
   int _sequence = 0;
 
+  /// 异步写入时两次磁盘清理的最小间隔。
+  static const pruneInterval = Duration(seconds: 30);
+  DateTime? _lastAsyncPrune;
+
   static String identity(String url) =>
       sha256.convert(utf8.encode(url)).toString();
   Directory _object(String url) =>
@@ -137,6 +141,7 @@ class MediaCacheStore {
     required int totalLength,
     String? etag,
     DateTime? expiresAt,
+    bool pruneAfterWrite = true,
   }) {
     if (maxBytes == 0 ||
         totalLength <= 0 ||
@@ -179,7 +184,7 @@ class MediaCacheStore {
         file.setLastModifiedSync(_clock());
         cacheBytesWritten += length;
       }
-      prune();
+      if (pruneAfterWrite) prune();
     } on FileSystemException {
       // Cache storage is expendable; callers still receive verified live data.
     }
@@ -199,13 +204,22 @@ class MediaCacheStore {
     final budget = maxBytes;
     final age = maxAge;
     final timestamp = now;
+    // 播放时预加载会频繁写入，每次写完都全盘清理会让 CPU 持续高负载导致发热，
+    // 所以最多每 pruneInterval 清理一次；系统时间被往回调时也照常清理。
+    final last = _lastAsyncPrune;
+    final pruneNow =
+        last == null || timestamp.difference(last).abs() >= pruneInterval;
+    if (pruneNow) _lastAsyncPrune = timestamp;
     final data = TransferableTypedData.fromList([bytes]);
     try {
       final written = await Isolate.run(() {
         final store = MediaCacheStore(Directory(root),
             maxBytes: budget, maxAge: age, clock: () => timestamp);
         store.write(url, offset, data.materialize().asUint8List(),
-            totalLength: totalLength, etag: etag, expiresAt: expiresAt);
+            totalLength: totalLength,
+            etag: etag,
+            expiresAt: expiresAt,
+            pruneAfterWrite: pruneNow);
         return store.cacheBytesWritten;
       }, debugName: 'media-cache-commit');
       cacheBytesWritten += written;
@@ -295,25 +309,35 @@ class MediaCacheStore {
   /// this block-mtime eviction algorithm is ours, not claimed MDL pseudocode.
   void prune() {
     try {
-      final blocks = <File>[];
+      // 每个文件只读取一次大小和修改时间，排序时直接用已读到的值。
+      // 以前在排序比较里反复读修改时间，缓存满（约 9600 个块）时一轮清理要
+      // 几十万次磁盘查询，播放中持续占用 CPU。
+      final blocks = <(File, int, DateTime)>[];
       var total = 0;
       for (final entity
           in directory.listSync(recursive: true, followLinks: false)) {
         if (entity is! File) continue;
-        final size = entity.lengthSync();
-        total += size;
-        if (entity.path.endsWith('.blk')) blocks.add(entity);
+        final stat = entity.statSync();
+        // 文件可能刚被原生端淘汰，跳过即可。
+        if (stat.type == FileSystemEntityType.notFound) continue;
+        total += stat.size;
+        if (entity.path.endsWith('.blk')) {
+          blocks.add((entity, stat.size, stat.modified));
+        }
       }
       if (total <= maxBytes) return;
-      blocks
-          .sort((a, b) => a.lastModifiedSync().compareTo(b.lastModifiedSync()));
-      for (final block in blocks) {
-        final size = block.lengthSync();
-        block.deleteSync();
+      blocks.sort((a, b) => a.$3.compareTo(b.$3));
+      for (final (block, size, _) in blocks) {
+        try {
+          block.deleteSync();
+        } on FileSystemException {
+          // 已被并发删除的块不计入释放量，继续淘汰下一个。
+          continue;
+        }
         total -= size;
         if (total <= maxBytes) break;
       }
-    } on FileSystemException {/* Native writers/evictors can race this pass. */}
+    } on FileSystemException {/* 原生端读写或淘汰可能与本次清理并发。 */}
   }
 }
 

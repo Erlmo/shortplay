@@ -161,7 +161,8 @@ object MediaByteCache {
 
     private fun requestTrim(force: Boolean) {
         val now = System.currentTimeMillis()
-        if ((!force && now - lastTrim < 2000) || !trimPending.compareAndSet(false, true)) return
+        // 播放写入时最多 30 秒全盘清理一次（与 iOS 一致），避免频繁扫描目录导致发热。
+        if ((!force && now - lastTrim < 30_000) || !trimPending.compareAndSet(false, true)) return
         lastTrim = now
         maintenance.execute {
             try { trimFiles() } catch (_: Exception) { } finally { trimPending.set(false) }
@@ -175,10 +176,12 @@ object MediaByteCache {
         val blocks = objects.flatMap { File(it, "blocks").listFiles().orEmpty().asList() }
             .filter { safe(it) && it.isFile && it.name.matches(Regex("[0-9]+\\.blk")) }
         val metadata = objects.map { File(it, "meta.json") }.filter { safe(it) && it.isFile }
-        var total = blocks.sumOf { it.length() } + metadata.sumOf { it.length() }
+        // 每个块只读取一次大小和修改时间；sortedBy 在每次比较时都会重新求值，
+        // 缓存满时会变成几十万次磁盘查询。
+        val blockInfo = blocks.map { Triple(it, it.length(), it.lastModified()) }
+        var total = blockInfo.sumOf { it.second } + metadata.sumOf { it.length() }
         if (total <= DEFAULT_BUDGET) return
-        for (file in blocks.sortedBy { it.lastModified() }) {
-            val size = file.length()
+        for ((file, size, _) in blockInfo.sortedBy { it.third }) {
             if (file.delete()) total -= size
             if (total <= DEFAULT_BUDGET) break
         }

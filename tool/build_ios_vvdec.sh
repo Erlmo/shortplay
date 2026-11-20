@@ -16,6 +16,9 @@ fi
 [ "$(git -C "$vvc_build_root/source" rev-parse HEAD)" = "$vvc_revision" ] || {
     echo 'VVdeC source revision differs from the pinned revision.' >&2; exit 1;
 }
+# 先还原源码再打补丁，保证重复执行结果一致：线程池空闲时直接休眠，不再空转耗电。
+git -C "$vvc_build_root/source" checkout -- .
+git -C "$vvc_build_root/source" apply "$vvc_repo_root/tool/vvdec-ios-idle-wait.patch"
 for vvc_sdk in iphoneos iphonesimulator; do
     "$vvc_cmake" -S "$vvc_build_root/source" -B "$vvc_build_root/$vvc_sdk" -G Ninja \
         -DCMAKE_MAKE_PROGRAM="$(command -v "$vvc_ninja")" \

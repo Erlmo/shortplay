@@ -347,6 +347,8 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
     /// BVC2 样本索引，跳转时用来换算目标位置在文件中的偏移。
     private var vvcSampleIndex: VvcSampleIndex?
     private var vvcAudioClock: VvcAudioClock?
+    /// BVC2 视频帧率，用于决定画面刷新回调频率；0 表示未知。
+    private var vvcFrameRate: Double = 0
     private var vvcDurationMs = 0
     private var vvcLastPositionMs = -200
     private var vvcCompleted = false
@@ -604,13 +606,20 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
                 vvcAudioClock?.setVolume(currentVolume)
             } catch { fail(error); return }
             vvcDurationMs = Int(index.samples.map { $0.presentationTimeUs + $0.durationUs }.max() ?? 0) / 1000
+            // 取帧时长的中位数估算帧率，个别异常帧不影响结果。
+            let frameDurations = index.samples.map { $0.durationUs }.filter { $0 > 0 }.sorted()
+            if !frameDurations.isEmpty {
+                vvcFrameRate = 1_000_000 / Double(frameDurations[frameDurations.count / 2])
+            }
             eventCallback(["playerId": playerId, "type": "duration", "value": vvcDurationMs])
             vvcSampleIndex = index
             vvcPlayback = VvcPlayback(index: index, queue: resourceLoaderQueue, read: readMediaBytes,
                                       onAvailable: { [weak self] in self?.displayLinkFired() },
                                       onError: { [weak self] error in self?.fail(error) })
+            vvcPlayback?.setPlaying(wantsPlaying && !audioInterrupted)
             vvcPlayback?.start()
             setupDisplayLink()
+            displayLink?.isPaused = !wantsPlaying || audioInterrupted
             if let ms = pendingSeekMs {
                 pendingSeekMs = nil
                 seek(toMs: ms)
@@ -657,6 +666,15 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
         guard !disposed else { return }
         let rate = wantsPlaying && !audioInterrupted && !vvcBuffering && !initialPositionPending ? currentRate : 0
         if let clock = vvcAudioClock {
+            let shouldDecode = wantsPlaying && !audioInterrupted
+            vvcPlayback?.setPlaying(shouldDecode)
+            if shouldDecode, displayLink?.isPaused == true {
+                // 刷新回调暂停期间停住检测不会更新，恢复时重新计时，
+                // 否则会把整个暂停时长误判为时钟停住，白白重新补入一次音频。
+                vvcStallClockUs = -1
+                vvcStallSince = CACurrentMediaTime()
+            }
+            displayLink?.isPaused = !shouldDecode
             clock.setRate(rate)
             if reportedPlaying != (rate > 0) {
                 reportedPlaying = rate > 0
@@ -790,13 +808,29 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
 
     private func setupDisplayLink() {
         let link = CADisplayLink(target: self, selector: #selector(displayLinkFired))
-        if #available(iOS 15.0, *) {
-            link.preferredFrameRateRange = CAFrameRateRange(minimum: 24, maximum: 60, preferred: 60)
-        } else {
-            link.preferredFramesPerSecond = 60
-        }
-        link.add(to: .main, forMode: .common)
         self.displayLink = link
+        applyDisplayLinkRate()
+        link.add(to: .main, forMode: .common)
+    }
+
+    /// 画面刷新回调频率：视频帧率×倍速正好整除 60 时（如 30 帧 1 倍速）按该频率回调，
+    /// 省掉一半空跑的回调；否则（如 25 帧或 1.5 倍速）仍用 60，避免帧间隔不均匀造成顿挫。
+    private func applyDisplayLinkRate() {
+        guard let link = displayLink else { return }
+        var target = 60
+        if vvcFrameRate > 0 {
+            let exact = vvcFrameRate * Double(max(1, currentRate))
+            let rounded = Int(exact.rounded())
+            if rounded > 0, rounded <= 60, 60 % rounded == 0, abs(exact - Double(rounded)) < 0.5 {
+                target = rounded
+            }
+        }
+        if #available(iOS 15.0, *) {
+            let rate = Float(target)
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
+        } else {
+            link.preferredFramesPerSecond = target
+        }
     }
 
     @objc private func displayLinkFired() {
@@ -1126,6 +1160,8 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
         guard !disposed, rate.isFinite, rate > 0 else { return }
         let changed = currentRate != rate
         currentRate = rate
+        // 倍速变化时同步调整刷新频率，例如 30 帧视频 2 倍速需要每秒 60 次。
+        applyDisplayLinkRate()
         applyPlaybackState()
         // Long-press release changes rate directly rather than calling play().
         // Give it the same bounded stalled-clock recovery as an explicit resume.

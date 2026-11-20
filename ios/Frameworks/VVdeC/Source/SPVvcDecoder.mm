@@ -2,6 +2,9 @@
 #include <vvdec/vvdec.h>
 #include <cstring>
 #include <vector>
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
 
 @implementation SPVvcFrame {
     CVPixelBufferRef _pixelBuffer;
@@ -77,6 +80,44 @@ static void setError(NSError **error, NSInteger code, NSString *message) {
                 const size_t dstPlane = plane == 0 ? 0 : 1;
                 auto *dst = static_cast<uint8_t *>(CVPixelBufferGetBaseAddressOfPlane(buffer, dstPlane));
                 const size_t dstStride = CVPixelBufferGetBytesPerRowOfPlane(buffer, dstPlane);
+#if defined(__aarch64__)
+                const auto &v = frame->planes[2];
+                if (plane == 1 && src.width == v.width && src.height == v.height &&
+                    src.bytesPerSample == v.bytesPerSample) {
+                    const auto shifts = vdupq_n_s16(-static_cast<int16_t>(shift));
+                    for (unsigned y = 0; y < src.height; ++y) {
+                        const auto *uRow = src.ptr + y * src.stride;
+                        const auto *vRow = v.ptr + y * v.stride;
+                        auto *out = dst + y * dstStride;
+                        unsigned x = 0;
+                        if (src.bytesPerSample == 1) {
+                            for (; x + 8 <= src.width; x += 8) {
+                                const uint8x8x2_t uv = {{vld1_u8(uRow + x), vld1_u8(vRow + x)}};
+                                vst2_u8(out + 2 * x, uv);
+                            }
+                            for (; x < src.width; ++x) {
+                                out[2 * x] = uRow[x];
+                                out[2 * x + 1] = vRow[x];
+                            }
+                        } else {
+                            const auto *u16 = reinterpret_cast<const uint16_t *>(uRow);
+                            const auto *v16 = reinterpret_cast<const uint16_t *>(vRow);
+                            for (; x + 8 <= src.width; x += 8) {
+                                const uint8x8x2_t uv = {{
+                                    vmovn_u16(vshlq_u16(vld1q_u16(u16 + x), shifts)),
+                                    vmovn_u16(vshlq_u16(vld1q_u16(v16 + x), shifts))
+                                }};
+                                vst2_u8(out + 2 * x, uv);
+                            }
+                            for (; x < src.width; ++x) {
+                                out[2 * x] = static_cast<uint8_t>(u16[x] >> shift);
+                                out[2 * x + 1] = static_cast<uint8_t>(v16[x] >> shift);
+                            }
+                        }
+                    }
+                    break;
+                }
+#endif
                 for (unsigned y = 0; y < src.height; ++y) {
                     const auto *row = src.ptr + y * src.stride;
                     auto *out = dst + y * dstStride;
@@ -84,7 +125,22 @@ static void setError(NSError **error, NSInteger code, NSString *message) {
                         memcpy(out, row, src.width);
                         continue;
                     }
-                    for (unsigned x = 0; x < src.width; ++x) {
+                    unsigned x = 0;
+#if defined(__aarch64__)
+                    if (src.bytesPerSample == 2) {
+                        const auto *samples = reinterpret_cast<const uint16_t *>(row);
+                        // VVdeC stores high bit depth samples in native 16-bit words.
+                        // Narrow eight pixels per iteration before the NV12 write.
+                        const auto shifts = vdupq_n_s16(-static_cast<int16_t>(shift));
+                        if (plane == 0) {
+                            for (; x + 8 <= src.width; x += 8) {
+                                const auto values = vld1q_u16(samples + x);
+                                vst1_u8(out + x, vmovn_u16(vshlq_u16(values, shifts)));
+                            }
+                        }
+                    }
+#endif
+                    for (; x < src.width; ++x) {
                         unsigned value = src.bytesPerSample == 1 ? row[x] : reinterpret_cast<const uint16_t *>(row)[x];
                         out[plane == 0 ? x : 2 * x + plane - 1] = static_cast<uint8_t>(value >> shift);
                     }

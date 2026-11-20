@@ -247,4 +247,23 @@ void main() {
     expect(store.read(url('a'), 0, 3), isNotNull);
     expect(store.read(url('b'), 0, 3), isNull);
   });
+  test('异步写入时最多每 30 秒清理一次磁盘，避免播放中频繁全盘扫描', () async {
+    var now = DateTime(2026, 11, 20);
+    final store = MediaCacheStore(directory, maxBytes: 66000, clock: () => now);
+    final data = Uint8List.fromList(List.filled(32768, 7));
+    int blockCount() => directory
+        .listSync(recursive: true)
+        .where((e) => e.path.endsWith('.blk'))
+        .length;
+    for (final name in ['a', 'b', 'c']) {
+      await store.writeAsync(url(name), 0, data, totalLength: data.length);
+      now = now.add(const Duration(seconds: 1));
+    }
+    expect(blockCount(), 3, reason: '30 秒内只在第一次写入时清理，暂时允许超出预算');
+    now = now.add(MediaCacheStore.pruneInterval);
+    await store.writeAsync(url('d'), 0, data, totalLength: data.length);
+    expect(blockCount(), lessThanOrEqualTo(2), reason: '间隔到了以后照常淘汰到预算以内');
+    expect(store.read(url('d'), 0, 3), isNotNull);
+    expect(store.read(url('a'), 0, 3), isNull);
+  });
 }
