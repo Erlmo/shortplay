@@ -160,6 +160,13 @@ final class VvcAudioClock {
         requesting = false
     }
 
+    /// 真机上切换倍速时，系统可能悄悄清空已排队的音频且不发通知，同步器没有音频可播
+    /// 就停住，而这里的记录仍以为音频已排好。按当前时钟位置清空并重新补入，补上后
+    /// 播放会自己继续。
+    func recoverStalledAudio() {
+        queue.async { [weak self] in self?.recoverAfterAutomaticFlush() }
+    }
+
     /// 时钟因音频不足停下时立即补入，不必等下一次轮询。
     func refillNow() {
         queue.async { [weak self] in self?.startRequesting() }

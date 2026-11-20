@@ -352,6 +352,9 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
     private var vvcCompleted = false
     private var reportedPlaying = false
     private var vvcBuffering = false
+    /// 用于检测播放中时钟停住：上次看到的时钟位置和它开始停住的时刻。
+    private var vvcStallClockUs: Int64 = -1
+    private var vvcStallSince: CFTimeInterval = 0
     private var vvcFrameTimeUs: Int64 = -1
     private var localSourceFile: FileHandle?
     private var vvcReadCache: VvcRangeReader?
@@ -834,6 +837,19 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
                 // 时钟停下后速率为 0，不会再自动触发补入，这里主动补一次。
                 vvcAudioClock?.refillNow()
                 eventCallback(["playerId": playerId, "type": "buffering", "value": true])
+            }
+            // 正常播放中时钟超过 0.3 秒没走，说明音频被系统悄悄清空了（真机切换倍速时
+            // 会发生且不发通知）。按当前位置重新补入音频，避免一直卡到兜底检查才恢复。
+            let now = CACurrentMediaTime()
+            if firstFrameSent, wantsPlaying, !vvcBuffering, !audioInterrupted, !vvcCompleted,
+               timeUs == vvcStallClockUs {
+                if now - vvcStallSince > 0.3 {
+                    vvcStallSince = now
+                    vvcAudioClock?.recoverStalledAudio()
+                }
+            } else {
+                vvcStallClockUs = timeUs
+                vvcStallSince = now
             }
             guard let frame = decoder.takeFrame(at: timeUs) else {
                 if firstFrameSent, !decoder.ended, !decoder.hasDecodedFrames,
