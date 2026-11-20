@@ -7,6 +7,7 @@ import com.shortplay.playback.NetworkRoutes
 import com.shortplay.playback.MediaNetworkLoadErrorPolicy
 import android.net.Uri
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.view.Surface
 import android.view.WindowManager
@@ -38,6 +39,7 @@ import io.flutter.view.TextureRegistry
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.FutureTask
 import java.util.concurrent.atomic.AtomicInteger
 
 class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
@@ -52,6 +54,11 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
     private val players = ConcurrentHashMap<Int, PlayerInstance>()
     private val nextId = AtomicInteger(1)
     private val handler = Handler(Looper.getMainLooper())
+    // ExoPlayer's application looper must never block Flutter's platform/UI
+    // thread while releasing codecs, waiting for a Surface or cancelling IO.
+    private val playbackThread = HandlerThread("ShortPlay:Control").apply { start() }
+    private val playbackHandler = Handler(playbackThread.looper)
+    @Volatile private var engineAttached = true
     private val backgroundExecutor = Executors.newCachedThreadPool()
 
     private var eventSink: EventChannel.EventSink? = null
@@ -173,10 +180,26 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         methodChannel.setMethodCallHandler(null)
         eventChannel.setStreamHandler(null)
-        players.keys.toList().forEach { disposePlayer(it) }
+        engineAttached = false
+        playbackHandler.post {
+            players.keys.toList().forEach { disposePlayer(it) }
+            playbackThread.quitSafely()
+        }
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
+        if (!engineAttached || !playbackHandler.post {
+                if (!engineAttached) {
+                    result.error("DETACHED", "Playback engine detached", null)
+                } else {
+                    handleMethodCall(call, result)
+                }
+            }) {
+            result.error("DETACHED", "Playback engine detached", null)
+        }
+    }
+
+    private fun handleMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "registerMediaSource" -> {
                 val primary = call.argument<String>("primaryUrl")
@@ -203,7 +226,7 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
                 val id = call.argument<Int>("id")
                 // Read ExoPlayer state on its existing application looper even
                 // while its media clock is stalled. This query has no controls.
-                handler.post {
+                playbackHandler.post {
                     val player = id?.let { players[it]?.player }
                     if (player == null) {
                         result.success(null)
@@ -295,25 +318,16 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         val playerId = nextId.getAndIncrement()
         result.success(mapOf("playerId" to playerId, "textureId" to -1))
 
-        if (keyHex.isEmpty()) {
-            handler.post {
-                try {
-                    createPlayerWithUri(playerId, cdnUrl, initialPositionMs)
-                } catch (error: Exception) {
-                    disposePlayer(playerId)
-                    sendEvent(playerId, "error", error.message ?: "无法打开视频")
-                }
+        try {
+            if (keyHex.isEmpty()) {
+                createPlayerWithUri(playerId, cdnUrl, initialPositionMs)
+            } else {
+                CryptoNative.ensureInit()
+                createPlayerWithCrypto(playerId, cdnUrl, keyHex, initialPositionMs)
             }
-        } else {
-            CryptoNative.ensureInit()
-            handler.post {
-                try {
-                    createPlayerWithCrypto(playerId, cdnUrl, keyHex, initialPositionMs)
-                } catch (error: Exception) {
-                    disposePlayer(playerId)
-                    sendEvent(playerId, "error", error.message ?: "无法打开视频")
-                }
-            }
+        } catch (error: Exception) {
+            disposePlayer(playerId)
+            sendEvent(playerId, "error", error.cause?.message ?: error.message ?: "无法打开视频")
         }
     }
 
@@ -321,6 +335,23 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         DefaultExtractorsFactory().createExtractors().map { extractor ->
             if (extractor is Mp4Extractor && Bvc2Native.isAvailable()) Bvc2Mp4Extractor() else extractor
         }.toTypedArray()
+    }
+
+    private fun createVideoSurface(): Pair<TextureRegistry.SurfaceTextureEntry, Surface> {
+        check(Looper.myLooper() == playbackThread.looper)
+        val task = FutureTask {
+            check(engineAttached) { "Playback engine detached" }
+            val entry = textureRegistry.createSurfaceTexture()
+            try {
+                Pair(entry, Surface(entry.surfaceTexture()))
+            } catch (error: Throwable) {
+                entry.release()
+                throw error
+            }
+        }
+        // Only the control thread waits; the UI thread never waits for a codec.
+        check(handler.post(task)) { "Platform thread unavailable" }
+        return task.get()
     }
 
     private fun createPlayerWithUri(playerId: Int, uri: String, initialPositionMs: Long) {
@@ -334,9 +365,9 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         } else {
             parsedUri
         }
-        val textureEntry = textureRegistry.createSurfaceTexture()
-        val surface = Surface(textureEntry.surfaceTexture())
+        val (textureEntry, surface) = createVideoSurface()
         val player = ExoPlayer.Builder(flutterBinding.applicationContext, Bvc2RenderersFactory(flutterBinding.applicationContext))
+            .setLooper(playbackThread.looper)
             .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
                 .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
             .setMediaSourceFactory(DefaultMediaSourceFactory(MediaCacheDataSource.Factory(flutterBinding.applicationContext), playbackExtractors())
@@ -356,14 +387,14 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
     private fun createPlayerWithCrypto(
         playerId: Int, cdnUrl: String, keyHex: String, initialPositionMs: Long
     ) {
-        val textureEntry = textureRegistry.createSurfaceTexture()
-        val surface = Surface(textureEntry.surfaceTexture())
+        val (textureEntry, surface) = createVideoSurface()
 
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(15000, 50000, 1000, 2500)
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
         val player = ExoPlayer.Builder(flutterBinding.applicationContext, Bvc2RenderersFactory(flutterBinding.applicationContext))
+            .setLooper(playbackThread.looper)
             .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
                 .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
             .setLoadControl(loadControl)
@@ -452,14 +483,14 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
     }
 
     private fun startPositionUpdates(playerId: Int) {
-        handler.post(object : Runnable {
+        playbackHandler.post(object : Runnable {
             override fun run() {
                 val instance = players[playerId] ?: return
                 val player = instance.player
                 if (player.isPlaying) {
                     sendEvent(playerId, "bufferedAhead", player.totalBufferedDuration.coerceAtLeast(0L))
                     sendEvent(playerId, "position", player.currentPosition)
-                    handler.postDelayed(this, 200)
+                    playbackHandler.postDelayed(this, 200)
                 }
             }
         })
@@ -477,9 +508,16 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         // Abort first so a loader thread blocked on a parked stream returns
         // and ExoPlayer can release promptly (and close its DataSource).
         val unused = instance.streams?.release() ?: 0L
-        instance.player.release()
-        instance.surface.release()
-        instance.textureEntry.release()
+        try {
+            instance.player.release()
+        } finally {
+            // Flutter texture registration/destruction belongs to the platform
+            // thread, after the playback thread has finished using its Surface.
+            handler.post {
+                instance.surface.release()
+                instance.textureEntry.release()
+            }
+        }
         if (unused != 0L) {
             backgroundExecutor.execute {
                 CryptoNative.nativePlayerStreamClose(unused)

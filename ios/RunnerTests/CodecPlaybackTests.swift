@@ -57,6 +57,40 @@ final class CodecPlaybackTests: XCTestCase {
     }
 
     @MainActor
+    func testRateChangeFlushRequeuesCurrentAudioWithoutAdvancingClock() throws {
+        let bytes = try Data(contentsOf: fixtures().appendingPathComponent("bvc2.mp4"))
+        let index = try XCTUnwrap(VvcSampleIndex.load(size: Int64(bytes.count)) { offset, count in
+            bytes.subdata(in: Int(offset)..<(Int(offset) + count))
+        })
+        let audio = try XCTUnwrap(index.audio)
+        let renderer = AVSampleBufferAudioRenderer()
+        renderer.volume = 0
+        let queue = DispatchQueue(label: "shortplay.test.audio-rate-flush")
+        let lock = NSLock()
+        var offsets: [Int64] = []
+        func snapshot() -> [Int64] {
+            lock.lock(); defer { lock.unlock() }
+            return offsets
+        }
+        let clock = try VvcAudioClock(audio: audio, queue: queue, read: { offset, count in
+            lock.lock(); offsets.append(offset); lock.unlock()
+            return bytes.subdata(in: Int(offset)..<(Int(offset) + count))
+        }, renderer: renderer, onError: { XCTFail("音频补入失败：\($0)") })
+        defer { clock.dispose() }
+        waitUntil("初始音频已排队", timeout: 5) { !snapshot().isEmpty }
+        for _ in 0..<3 {
+            let previous = snapshot()
+            let firstOffset = try XCTUnwrap(previous.first)
+            NotificationCenter.default.post(name: .AVSampleBufferAudioRendererWasFlushedAutomatically,
+                                            object: renderer)
+            waitUntil("系统清空后重新补入当前位置音频", timeout: 5) {
+                snapshot().dropFirst(previous.count).contains(firstOffset)
+            }
+            XCTAssertEqual(clock.rate, 0, "恢复音频不能擅自启动暂停的时钟")
+        }
+    }
+
+    @MainActor
     func testActualH264() throws { try exercise(file: "h264.mp4", backend: "avfoundation") }
 
     @MainActor
@@ -108,6 +142,21 @@ final class CodecPlaybackTests: XCTestCase {
         engine.play()
         waitUntil("暂停后直接恢复播放", timeout: 10) {
             position > paused + 400 && registry.displayedFrames > framesBeforeResume + 2
+        }
+
+        if backend == "vvdec" {
+            let beforeBoost = position
+            let boostFrames = registry.displayedFrames
+            engine.setRate(2)
+            waitUntil("长按倍速连续出画", timeout: 6) {
+                position >= beforeBoost + 1800 && registry.displayedFrames > boostFrames + 8
+            }
+            let beforeRelease = position
+            let releaseFrames = registry.displayedFrames
+            engine.setRate(1)
+            waitUntil("松开后恢复原速并继续出画", timeout: 5) {
+                position >= beforeRelease + 600 && registry.displayedFrames > releaseFrames + 4
+            }
         }
 
         let frameCount = registry.displayedFrames

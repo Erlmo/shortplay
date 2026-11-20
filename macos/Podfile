@@ -34,6 +34,7 @@ target 'Runner' do
   # 与 iOS 共用的预编译原生库（xcframework 含 macos-arm64_x86_64 切片）
   pod 'ShortplayCrypto', :path => '../ios/Frameworks'
   pod 'WeeouSign', :path => '../ios/Frameworks'
+  pod 'ShortplayVvc', :path => 'Frameworks/ShortplayVvc'
   target 'RunnerTests' do
     inherit! :search_paths
   end

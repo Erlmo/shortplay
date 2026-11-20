@@ -815,12 +815,20 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
                 eventCallback(["playerId": playerId, "type": "position", "value": vvcDurationMs])
                 eventCallback(["playerId": playerId, "type": "completed", "value": true])
             }
-            // Decoded future frames are enough to leave buffering. Waiting for
-            // one to become due while the master clock is stopped deadlocks.
-            if vvcBuffering && decoder.hasDecodedFrames {
+            let audioReady = vvcAudioClock?.hasBufferedAudio(
+                at: timeUs, minimumUs: vvcBuffering ? Int64(120_000 * max(1, currentRate)) : 1
+            ) ?? true
+            if vvcBuffering && (decoder.hasDecodedFrames || decoder.ended) && (!firstFrameSent || audioReady) {
                 vvcBuffering = false
                 eventCallback(["playerId": playerId, "type": "buffering", "value": false])
                 applyPlaybackState()
+            }
+            // Keep rendering the paused first frame even if audio is warming up.
+            // During playback do not let the master clock outrun queued audio.
+            if firstFrameSent, wantsPlaying, !audioReady, !vvcBuffering {
+                vvcBuffering = true
+                applyPlaybackState()
+                eventCallback(["playerId": playerId, "type": "buffering", "value": true])
             }
             guard let frame = decoder.takeFrame(at: timeUs) else {
                 if firstFrameSent, !decoder.ended, !decoder.hasDecodedFrames,
@@ -833,11 +841,6 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
             }
             pixelBuffer = frame.pixelBuffer
             vvcFrameTimeUs = frame.presentationTimeUs
-            if vvcBuffering {
-                vvcBuffering = false
-                eventCallback(["playerId": playerId, "type": "buffering", "value": false])
-                applyPlaybackState()
-            }
         } else {
             guard let output = videoOutput else { return }
             let currentTime = output.itemTime(forHostTime: CACurrentMediaTime())
@@ -1083,8 +1086,15 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
     }
 
     func setRate(_ rate: Float) {
+        guard !disposed, rate.isFinite, rate > 0 else { return }
+        let changed = currentRate != rate
         currentRate = rate
         applyPlaybackState()
+        // Long-press release changes rate directly rather than calling play().
+        // Give it the same bounded stalled-clock recovery as an explicit resume.
+        if changed, firstFrameSent, wantsPlaying, !vvcBuffering {
+            checkResumeProgress(recovered: false)
+        }
     }
 
     // MARK: - Dispose

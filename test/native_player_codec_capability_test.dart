@@ -15,7 +15,11 @@ void main() {
     messenger.setMockMethodCallHandler(channel, null);
   });
 
-  for (final platform in [TargetPlatform.iOS, TargetPlatform.android]) {
+  for (final platform in [
+    TargetPlatform.iOS,
+    TargetPlatform.android,
+    TargetPlatform.macOS
+  ]) {
     test('$platform 仅在原生确认解码能力后开放BVC2', () async {
       debugDefaultTargetPlatformOverride = platform;
       messenger.setMockMethodCallHandler(channel, (call) async {
@@ -28,11 +32,10 @@ void main() {
     });
   }
 
-  test('macOS保留现有编码能力', () async {
+  test('原生插件缺失时不宣告支持BVC2', () async {
     debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
-    messenger.setMockMethodCallHandler(channel, (_) async {
-      fail('macOS不应查询尚未接入的VVC解码器');
-    });
+    messenger.setMockMethodCallHandler(
+        channel, (_) async => throw MissingPluginException());
     expect(await NativePlayer.supportsByteVc2(), isFalse);
   });
 }

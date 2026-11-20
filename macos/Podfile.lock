@@ -11,6 +11,7 @@ PODS:
     - Flutter
     - FlutterMacOS
   - ShortplayCrypto (1.0.0)
+  - ShortplayVvc (1.0.0)
   - sqflite_darwin (0.0.4):
     - Flutter
     - FlutterMacOS
@@ -23,6 +24,7 @@ DEPENDENCIES:
   - path_provider_foundation (from `Flutter/ephemeral/.symlinks/plugins/path_provider_foundation/darwin`)
   - shared_preferences_foundation (from `Flutter/ephemeral/.symlinks/plugins/shared_preferences_foundation/darwin`)
   - ShortplayCrypto (from `../ios/Frameworks`)
+  - ShortplayVvc (from `Frameworks/ShortplayVvc`)
   - sqflite_darwin (from `Flutter/ephemeral/.symlinks/plugins/sqflite_darwin/darwin`)
   - WeeouSign (from `../ios/Frameworks`)
 
@@ -39,6 +41,8 @@ EXTERNAL SOURCES:
     :path: Flutter/ephemeral/.symlinks/plugins/shared_preferences_foundation/darwin
   ShortplayCrypto:
     :path: "../ios/Frameworks"
+  ShortplayVvc:
+    :path: Frameworks/ShortplayVvc
   sqflite_darwin:
     :path: Flutter/ephemeral/.symlinks/plugins/sqflite_darwin/darwin
   WeeouSign:
@@ -51,9 +55,10 @@ SPEC CHECKSUMS:
   path_provider_foundation: 2b6b4c569c0fb62ec74538f866245ac84301af46
   shared_preferences_foundation: fcdcbc04712aee1108ac7fda236f363274528f78
   ShortplayCrypto: 0677da4fb0cbcce85fe416f50b0efd74dd0ab80c
+  ShortplayVvc: 69d059cf7bc951440ba4f571533df5910b109049
   sqflite_darwin: 5a7236e3b501866c1c9befc6771dfd73ffb8702d
   WeeouSign: 2500155349968adbbe11cd3694b1727fe62956e7
 
-PODFILE CHECKSUM: 3c6ea9736f3b7b05a1db2d280e0deced68d4a9f8
+PODFILE CHECKSUM: 1d14c3fe2e8168092c8c9cd6bf6156144a4569b6
 
 COCOAPODS: 1.16.2

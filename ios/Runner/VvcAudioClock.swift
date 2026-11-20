@@ -5,7 +5,7 @@ import Foundation
 /// AVPlayer performing unrelated file seeks while the VVC decoder is reading.
 final class VvcAudioClock {
     private let synchronizer = AVSampleBufferRenderSynchronizer()
-    private let renderer = AVSampleBufferAudioRenderer()
+    private let renderer: AVSampleBufferAudioRenderer
     private let audio: VvcSampleIndex.AudioTrack?
     private let queue: DispatchQueue
     private let read: VvcSampleIndex.Read
@@ -14,17 +14,26 @@ final class VvcAudioClock {
     private var format: CMAudioFormatDescription?
     private var framesPerPacket: UInt32 = 1024
     private var nextSample = 0
+    private let audioBufferLock = NSLock()
+    private var enqueuedThroughUs: Int64?
+    private var audioRange: Range<Int64>? {
+        guard let first = audio?.samples.first, let last = audio?.samples.last else { return nil }
+        return first.presentationTimeUs..<(last.presentationTimeUs + last.durationUs)
+    }
     private var stopped = false
     private var requesting = false
     private var refillScheduled = false
     private var generation = 0
     private var statusObservation: NSKeyValueObservation?
+    private var automaticFlushObserver: NSObjectProtocol?
 
     init(audio: VvcSampleIndex.AudioTrack?, queue: DispatchQueue,
          read: @escaping VvcSampleIndex.Read,
          tryRead: ((Int64, Int) throws -> Data?)? = nil,
+         renderer: AVSampleBufferAudioRenderer = AVSampleBufferAudioRenderer(),
          onError: @escaping (Error) -> Void) throws {
         self.audio = audio
+        self.renderer = renderer
         self.queue = queue
         self.read = read
         self.tryRead = tryRead
@@ -36,6 +45,13 @@ final class VvcAudioClock {
             format = description
             framesPerPacket = CMAudioFormatDescriptionGetStreamBasicDescription(description)!.pointee.mFramesPerPacket
             synchronizer.addRenderer(renderer)
+            automaticFlushObserver = NotificationCenter.default.addObserver(
+                forName: .AVSampleBufferAudioRendererWasFlushedAutomatically,
+                object: renderer, queue: nil) { [weak self] _ in
+                    // Rate changes may discard queued AAC without stopping the
+                    // master clock. Rewind the sample cursor on the enqueue queue.
+                    self?.queue.async { [weak self] in self?.recoverAfterAutomaticFlush() }
+                }
             statusObservation = renderer.observe(\.status, options: [.new]) { [weak self] renderer, _ in
                 if renderer.status == .failed {
                     let error = renderer.error ?? VvcSampleIndex.invalid("AAC 音频解码失败")
@@ -73,8 +89,25 @@ final class VvcAudioClock {
     var currentTime: CMTime { synchronizer.currentTime() }
     var rate: Float { synchronizer.rate }
 
+    // Both clocks stop on underrun. Refill to a higher threshold before
+    // resuming to avoid alternating between playing and buffering each frame.
+    func hasBufferedAudio(at timeUs: Int64, minimumUs: Int64) -> Bool {
+        guard let range = audioRange, range.contains(timeUs) else { return true }
+        audioBufferLock.lock()
+        defer { audioBufferLock.unlock() }
+        return (enqueuedThroughUs ?? Int64.min) >= min(timeUs + minimumUs, range.upperBound)
+    }
+
+    private func updateAudioBuffer(through endUs: Int64?) {
+        audioBufferLock.lock()
+        enqueuedThroughUs = endUs
+        audioBufferLock.unlock()
+    }
+
     func setRate(_ rate: Float) {
-        synchronizer.setRate(rate, time: synchronizer.currentTime())
+        if synchronizer.rate != rate {
+            synchronizer.setRate(rate, time: synchronizer.currentTime())
+        }
         if rate > 0 { queue.async { [weak self] in self?.startRequesting() } }
     }
     func setVolume(_ volume: Float) { renderer.volume = volume }
@@ -88,12 +121,32 @@ final class VvcAudioClock {
             refillScheduled = false
             stopRequesting()
             renderer.flush()
+            updateAudioBuffer(through: nil)
             guard let audio = audio else { return }
             let targetUs = Int64(max(0, time)) * 1000
             nextSample = audio.samples.firstIndex { $0.presentationTimeUs + $0.durationUs > targetUs } ?? audio.samples.count
             nextSample = max(0, nextSample - 1)
             startRequesting()
         }
+    }
+
+    /// Serialized with sample enqueueing. A system flush can race an enqueue,
+    /// so explicitly clear the remaining future packets before refilling.
+    private func recoverAfterAutomaticFlush() {
+        guard !stopped, let audio = audio else { return }
+        generation += 1
+        refillScheduled = false
+        stopRequesting()
+        renderer.flush()
+        updateAudioBuffer(through: nil)
+        let seconds = CMTimeGetSeconds(synchronizer.currentTime())
+        guard seconds.isFinite else { return }
+        let targetUs = Int64(max(0, seconds) * 1_000_000)
+        nextSample = audio.samples.firstIndex {
+            $0.presentationTimeUs + $0.durationUs > targetUs
+        } ?? audio.samples.count
+        nextSample = max(0, nextSample - 1)
+        startRequesting()
     }
 
     private func startRequesting() {
@@ -167,6 +220,7 @@ final class VvcAudioClock {
                     packetDescriptions: &packet, sampleBufferOut: &buffer)
                 guard status == noErr, let buffer = buffer else { throw VvcSampleIndex.invalid("AAC 音频包构造失败：\(status)") }
                 renderer.enqueue(buffer)
+                updateAudioBuffer(through: sample.presentationTimeUs + sample.durationUs)
                 nextSample += 1
                 supplied += 1
             }
@@ -179,6 +233,10 @@ final class VvcAudioClock {
 
     func dispose() {
         synchronizer.setRate(0, time: synchronizer.currentTime())
+        if let observer = automaticFlushObserver {
+            NotificationCenter.default.removeObserver(observer)
+            automaticFlushObserver = nil
+        }
         statusObservation?.invalidate()
         statusObservation = nil
         queue.async { [self] in
