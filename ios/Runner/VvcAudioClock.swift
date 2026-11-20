@@ -160,11 +160,20 @@ final class VvcAudioClock {
         requesting = false
     }
 
+    /// 时钟因音频不足停下时立即补入，不必等下一次轮询。
+    func refillNow() {
+        queue.async { [weak self] in self?.startRequesting() }
+    }
+
     private func scheduleRefill(whilePaused: Bool = false) {
-        guard !stopped, !refillScheduled, whilePaused || synchronizer.rate > 0 else { return }
+        guard !stopped, !refillScheduled else { return }
         refillScheduled = true
         let token = generation
-        queue.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+        // 切换倍速时同步器可能短暂读到速率为 0。此时若不再安排补入，
+        // 排队的音频播完后时钟会因等待音频而停住，补入再也不会被重新触发，
+        // 画面就永久卡死。所以暂停时也继续检查，只是间隔放长。
+        let delay = whilePaused || synchronizer.rate > 0 ? 0.05 : 0.25
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self = self else { return }
             guard self.generation == token else { return }
             self.refillScheduled = false

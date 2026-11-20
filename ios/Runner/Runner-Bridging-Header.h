@@ -27,3 +27,6 @@ void sp_ios_init(sp_http_range_fn_t range_fn,
 
 // iOS-only readiness query: 1 buffered, 0 pending, -1 unavailable.
 int sp_stream_range_ready(void *handle, uint64_t offset, uint64_t count);
+
+// 仅 iOS：跳转播放位置时让下载线程直接从目标偏移开始，不再顺序下载中间数据。
+void sp_stream_prefetch_from(void *handle, uint64_t offset);

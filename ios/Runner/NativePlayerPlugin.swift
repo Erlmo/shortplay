@@ -344,6 +344,8 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
     private var pendingSeekMs: Int?
     private var currentVolume: Float = 1
     private var vvcPlayback: VvcPlayback?
+    /// BVC2 样本索引，跳转时用来换算目标位置在文件中的偏移。
+    private var vvcSampleIndex: VvcSampleIndex?
     private var vvcAudioClock: VvcAudioClock?
     private var vvcDurationMs = 0
     private var vvcLastPositionMs = -200
@@ -600,6 +602,7 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
             } catch { fail(error); return }
             vvcDurationMs = Int(index.samples.map { $0.presentationTimeUs + $0.durationUs }.max() ?? 0) / 1000
             eventCallback(["playerId": playerId, "type": "duration", "value": vvcDurationMs])
+            vvcSampleIndex = index
             vvcPlayback = VvcPlayback(index: index, queue: resourceLoaderQueue, read: readMediaBytes,
                                       onAvailable: { [weak self] in self?.displayLinkFired() },
                                       onError: { [weak self] error in self?.fail(error) })
@@ -828,6 +831,8 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
             if firstFrameSent, wantsPlaying, !audioReady, !vvcBuffering {
                 vvcBuffering = true
                 applyPlaybackState()
+                // 时钟停下后速率为 0，不会再自动触发补入，这里主动补一次。
+                vvcAudioClock?.refillNow()
                 eventCallback(["playerId": playerId, "type": "buffering", "value": true])
             }
             guard let frame = decoder.takeFrame(at: timeUs) else {
@@ -1061,6 +1066,7 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
             eventCallback(["playerId": playerId, "type": "buffering", "value": true])
             vvcCompleted = false
             vvcLastPositionMs = -200
+            prefetchVvc(fromMs: ms)
             vvcAudioClock?.seek(toMs: ms)
             decoder.seek(toMs: ms)
         } else if let avPlayer = player, initialPositionPending {
@@ -1068,6 +1074,21 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
         } else {
             player?.seek(to: time)
         }
+    }
+
+    /// 跳转后解码从目标前最近的关键帧开始，音频从目标处开始；取两者中靠前的
+    /// 文件偏移，让下载线程直接从那里下载，而不是从当前窗口顺序下载到目标。
+    private func prefetchVvc(fromMs ms: Int) {
+        // 销毁后流句柄会在 IO 队列上关闭，这里不能再碰它。
+        guard !disposed, let handle = streamHandle, let index = vvcSampleIndex else { return }
+        let targetUs = Int64(max(0, ms)) * 1000
+        guard let keyframe = index.samples.last(where: { $0.sync && $0.presentationTimeUs <= targetUs })
+                ?? index.samples.first else { return }
+        var offset = keyframe.offset
+        if let audio = index.audio?.samples.first(where: { $0.presentationTimeUs + $0.durationUs > targetUs }) {
+            offset = min(offset, audio.offset)
+        }
+        sp_stream_prefetch_from(handle, UInt64(max(0, offset)))
     }
 
     func setVolume(_ volume: Float) {
