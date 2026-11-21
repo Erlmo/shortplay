@@ -132,6 +132,50 @@ class MediaCacheStore {
     }
   }
 
+  /// 在后台线程读取并校验一段已缓存的开头数据（同 [readPrefix]），
+  /// 避免逐块计算 SHA-256 占住界面线程导致掉帧。
+  Future<Uint8List?> readPrefixAsync(
+      String url, int start, int maxLength) async {
+    final root = directory.path;
+    final budget = maxBytes;
+    final age = maxAge;
+    final timestamp = now;
+    try {
+      final result = await Isolate.run(() {
+        final store = MediaCacheStore(Directory(root),
+            maxBytes: budget, maxAge: age, clock: () => timestamp);
+        final bytes = store.readPrefix(url, start, maxLength);
+        return (
+          bytes == null ? null : TransferableTypedData.fromList([bytes]),
+          store.cacheBytesRead,
+          store.corruptBlocks,
+        );
+      }, debugName: 'media-cache-read');
+      cacheBytesRead += result.$2;
+      corruptBlocks += result.$3;
+      return result.$1?.materialize().asUint8List();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 在后台线程统计已缓存的范围（同 [inspect]，会逐块校验，数据多时很耗时）。
+  Future<MediaCacheInfo> inspectAsync(String url) async {
+    final root = directory.path;
+    final budget = maxBytes;
+    final age = maxAge;
+    final timestamp = now;
+    try {
+      return await Isolate.run(() {
+        final store = MediaCacheStore(Directory(root),
+            maxBytes: budget, maxAge: age, clock: () => timestamp);
+        return store.inspect(url);
+      }, debugName: 'media-cache-inspect');
+    } catch (_) {
+      return const MediaCacheInfo(0, 0, []);
+    }
+  }
+
   /// Only complete verified blocks are published. Temp files never represent
   /// cached bytes. A cancelled transfer can still contribute completed blocks.
   void write(

@@ -3,12 +3,7 @@ part of '../player_page.dart';
 /// 剧集页的 UI：竖向 PageView、每一页的画面 / 弹幕 / 控件叠加层。
 extension _PlayerView on _PlayerPageState {
   Widget _buildPageView() {
-    // 本地文件可直接打开，不必等待下一集播放器预热完成。
-    final bool blockForward = !nextPlayerReady &&
-        cachedEpisodePath(_currentEpisodeIndex + 1) == null &&
-        _currentEpisodeIndex < _episodes.length - 1 &&
-        !_loading;
-
+    // 随时可以翻页：命中预渲染就秒开，没命中就新建播放器加载。
     return NotificationListener<ScrollNotification>(
       onNotification: (notification) {
         // 最后一集继续上滑：拖过阈值就进入下一季（此时是回弹物理，越界体现在 pixels 上）
@@ -21,13 +16,6 @@ extension _PlayerView on _PlayerPageState {
           unawaited(_advanceToNextSeason());
           return false;
         }
-        if (!blockForward) return false;
-        // 检测上滑（向前翻页）的 overscroll，显示胶囊提示
-        if (notification is OverscrollNotification &&
-            notification.overscroll > 0 &&
-            !_swipeBlocked) {
-          _showSwipeBlocked();
-        }
         return false;
       },
       child: PageView.builder(
@@ -36,9 +24,7 @@ extension _PlayerView on _PlayerPageState {
         scrollDirection: Axis.vertical,
         physics: _sleepStopped || _isDirectVideo
             ? const NeverScrollableScrollPhysics()
-            : blockForward
-                ? const BlockForwardScrollPhysics()
-                : const BouncingScrollPhysics(),
+            : const BouncingScrollPhysics(),
         onPageChanged: _onPageChanged,
         itemCount: _episodes.length,
         itemBuilder: (context, index) => _buildEpisodePage(index),
@@ -46,11 +32,11 @@ extension _PlayerView on _PlayerPageState {
     );
   }
 
-  /// 第 [index] 页使用 3-Player 窗口里的哪个播放器（没有则为 null）。
+  /// 第 [index] 页显示哪个播放器的画面：当前集，或预渲染好的相邻集（拖动时就能看到真实首帧）。
   NativePlayer? _pagePlayerFor(int index) {
     if (index == _currentEpisodeIndex) return _player;
-    if (index == nextEpisodeIndex && nextPlayer != null) return nextPlayer;
-    if (index == prevEpisodeIndex && prevPlayer != null) return prevPlayer;
+    if (index == standbyIndex && standbyReady) return standbyPlayer;
+    if (index == parkedIndex) return parkedPlayer;
     return null;
   }
 
@@ -114,9 +100,11 @@ extension _PlayerView on _PlayerPageState {
     final isActive = index == _currentEpisodeIndex;
     final pagePlayer = _pagePlayerFor(index);
     final textureId = pagePlayer?.textureId;
-    final hasTexture = textureId != null;
+    // 没有播放器画面时，用这一集离开时截下的画面顶上，往回滑看起来像没离开过。
+    final snapshot = textureId == null ? snapshotOf(index) : null;
+    final hasTexture = textureId != null || snapshot != null;
 
-    final videoWidget = hasTexture
+    final videoWidget = textureId != null
         ? PlayerVideoSurface(
             textureId: textureId,
             videoWidth: pagePlayer!.videoWidth,
@@ -124,7 +112,15 @@ extension _PlayerView on _PlayerPageState {
             isLandscapeFullScreen: _systemUi.isLandscapeFullScreen,
             fillScreen: _landscapeFill,
           )
-        : const SizedBox.shrink();
+        : snapshot != null
+            ? PlayerVideoSurface(
+                snapshot: snapshot.bytes,
+                videoWidth: snapshot.width,
+                videoHeight: snapshot.height,
+                isLandscapeFullScreen: _systemUi.isLandscapeFullScreen,
+                fillScreen: _landscapeFill,
+              )
+            : const SizedBox.shrink();
 
     return Stack(
       fit: StackFit.expand,
@@ -133,7 +129,7 @@ extension _PlayerView on _PlayerPageState {
         if (hasTexture) isActive ? _shrinkable(videoWidget) : videoWidget,
         if (isActive && hasTexture && !_isDirectVideo)
           _hideWhileShrunk(_buildDanmaku(index)),
-        if (isActive && _loading)
+        if (isActive && _loading && snapshot == null)
           const Center(
             child: CircularProgressIndicator(
               color: Colors.white,

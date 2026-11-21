@@ -32,8 +32,8 @@ android {
             cmake { arguments "-DANDROID_STL=c++_static" }
         }
         // Android 独立维护版本及构建号，iOS 继续使用 pubspec.yaml 中的版本。
-        versionCode = 30
-        versionName = "3.2.10"
+        versionCode = 31
+        versionName = "3.2.11"
     }
 
     // 支持 arm64-v8a 和 armeabi-v7a（32 位：老手机和大量电视盒子）。

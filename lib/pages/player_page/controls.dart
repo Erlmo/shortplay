@@ -165,8 +165,8 @@ extension _PlayerControls on _PlayerPageState {
       // Selecting the displayed quality still locks it against automatic
       // startup selection, without reopening the current media.
       _preloadManager.setPreferredDefinition(value, keepVideoId: videoId);
-      dispose3PWindow();
-      startPlaybackSession(_currentEpisodeIndex);
+      discardStandby();
+      startPreparation(_currentEpisodeIndex);
       _updatePlaybackScheduling();
       return;
     }
@@ -262,45 +262,12 @@ extension _PlayerControls on _PlayerPageState {
     _jumpToEpisode(target);
   }
 
-  /// 显示“下一集加载中”胶囊，5 秒后自动收起（之后允许翻页，走新建路径）。
-  void _showSwipeBlocked() {
-    _refresh(() => _swipeBlocked = true);
-    _swipeBlockTimer?.cancel();
-    _swipeBlockTimer = Timer(const Duration(seconds: 5), () {
-      if (!mounted) return;
-      _refresh(() => _swipeBlocked = false);
-    });
-  }
-
   void _onPageChanged(int index) {
     if (_sleepStopped) return;
     if (_programmaticJump) return;
     if (index == _currentEpisodeIndex) return;
-    final isForward = index > _currentEpisodeIndex;
-
-    // 向前滑且下一集没准备好：弹回原位并提示
-    if (isForward &&
-        !nextPlayerReady &&
-        cachedEpisodePath(index) == null &&
-        !_swipeBlocked) {
-      _programmaticJump = true;
-      _pageController?.animateToPage(
-        _currentEpisodeIndex,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
-      );
-      _programmaticJump = false;
-      _showSwipeBlocked();
-      return;
-    }
-
-    // 正常翻页：新的一集会自动播放，清掉上一集的“用户已暂停”状态，
-    // 否则中间的播放图标会一直挂着
-    _swipeBlockTimer?.cancel();
-    _refresh(() {
-      _swipeBlocked = false;
-      _userPaused = false;
-    });
+    // 新的一集会自动播放，清掉上一集的“用户已暂停”状态，否则中间的播放图标会一直挂着。
+    _refresh(() => _userPaused = false);
     unawaited(_openEpisode(index));
   }
 

@@ -34,4 +34,21 @@ void main() {
     expect(records.single.episodeIndex, 0);
     expect(records.single.positionMs, 2000);
   });
+
+  test('播放记录保存当前集的视频编号，续播时可提前解析；旧记录没有也能读取', () {
+    const record = PlaybackRecord(
+      dramaId: 7,
+      dramaName: '测试剧',
+      cover: '',
+      episodeIndex: 2,
+      positionMs: 1500,
+      updatedAtMs: 1,
+      videoId: '7600000000000000003',
+    );
+    final restored = PlaybackRecord.fromJson(record.toJson());
+    expect(restored.videoId, '7600000000000000003');
+    final legacy = Map<String, dynamic>.from(record.toJson())
+      ..remove('videoId');
+    expect(PlaybackRecord.fromJson(legacy).videoId, isNull);
+  });
 }

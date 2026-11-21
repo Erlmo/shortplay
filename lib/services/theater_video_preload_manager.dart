@@ -132,6 +132,19 @@ class TheaterVideoPreloadManager {
   int _generation = 0;
   int get sourceRevision => _generation;
 
+  /// 进播放页前提前下载开头的任务（见 playback_startup_warmup.dart），按视频编号记录。
+  final Map<String, PlaybackCancellation> _warmups = {};
+
+  /// 开始一项提前下载；同一视频的旧任务会被取消。
+  PlaybackCancellation beginWarmup(String videoId) {
+    _warmups.remove(videoId)?.cancel();
+    return _warmups[videoId] = PlaybackCancellation();
+  }
+
+  /// 播放器开始加载这一集时调用：取消还没完成的提前下载，避免和播放器同时下载同一段数据、抢带宽。
+  /// 已经下好的部分照样能用。
+  void cancelWarmup(String videoId) => _warmups.remove(videoId)?.cancel();
+
   bool isMediaPrefetched(String videoId) =>
       _resolved.get(videoId)?.mediaPrefetched ?? false;
 
@@ -197,24 +210,35 @@ class TheaterVideoPreloadManager {
 
   /// Download the same raw media blocks that native playback will consume.
   /// Failure is a cache miss: foreground/native reads retain their own fallback.
-  Future<void> prefetchMedia(
-      String videoId, PlaybackCancellation cancellation) async {
+  Future<void> prefetchMedia(String videoId, PlaybackCancellation cancellation,
+      {int? bytes}) async {
     cancellation.check();
     final resolved = _resolved.get(videoId);
-    if (resolved != null) await _prefetchResolved(resolved, cancellation);
+    if (resolved != null) {
+      await _prefetchResolved(resolved, cancellation, bytes: bytes);
+    }
   }
 
+  /// 预取开头 [bytes] 字节（默认 800KB）；至少预取到 800KB 或整个文件才算「已预取」。
   Future<bool> _prefetchResolved(
-      _ResolvedTheaterVideo resolved, PlaybackCancellation cancellation) async {
+      _ResolvedTheaterVideo resolved, PlaybackCancellation cancellation,
+      {int? bytes}) async {
     try {
       cancellation.check();
       final downloader = await cancellation.wait(_mediaDownloader());
       if (downloader == null) return false;
-      final info = await downloader.prefetch(resolved.sourceUrl,
-          cancellation: cancellation, expiresAt: resolved.expiresAt);
+      final info = bytes == null
+          ? await downloader.prefetch(resolved.sourceUrl,
+              cancellation: cancellation, expiresAt: resolved.expiresAt)
+          : await downloader.prefetch(resolved.sourceUrl,
+              bytes: bytes,
+              cancellation: cancellation,
+              expiresAt: resolved.expiresAt);
+      final threshold =
+          bytes == null || bytes > 800 * 1024 ? 800 * 1024 : bytes;
       final complete = info.totalLength > 0 &&
           info.cachedBytesFromZero >=
-              (info.totalLength < 800 * 1024 ? info.totalLength : 800 * 1024);
+              (info.totalLength < threshold ? info.totalLength : threshold);
       resolved.mediaPrefetched = complete;
       return complete;
     } on PlaybackCancelled {
@@ -234,6 +258,7 @@ class TheaterVideoPreloadManager {
     required bool Function() isStillCurrent,
     VoidCallback? onNextEpisodeReady,
     PlaybackCancellation? cancellation,
+    int? prefetchBytes,
   }) async {
     final ok = await _prewarmEpisode(
       episodes: episodes,
@@ -241,6 +266,7 @@ class TheaterVideoPreloadManager {
       isStillCurrent: isStillCurrent,
       headerOnly: false,
       cancellation: cancellation,
+      prefetchBytes: prefetchBytes,
     );
     if (ok && targetIndex == currentIndex + 1) {
       onNextEpisodeReady?.call();
@@ -270,6 +296,7 @@ class TheaterVideoPreloadManager {
     required bool Function() isStillCurrent,
     required bool headerOnly,
     PlaybackCancellation? cancellation,
+    int? prefetchBytes,
   }) async {
     if (targetIndex < 0 || targetIndex >= episodes.length) return false;
 
@@ -289,7 +316,8 @@ class TheaterVideoPreloadManager {
           maxRetries: 1, forPreload: true, episodeIndex: targetIndex + 1);
       if (stale()) return false;
       final prefetched = await _prefetchResolved(
-          resolved, cancellation ?? PlaybackCancellation());
+          resolved, cancellation ?? PlaybackCancellation(),
+          bytes: prefetchBytes);
       if (stale()) return false;
       if (headerOnly ? resolved.headerWarmed : resolved.fullWarmed) return true;
 
@@ -315,6 +343,9 @@ class TheaterVideoPreloadManager {
       }
       debugPrint('$label完成: 第${targetIndex + 1}集');
       return true;
+    } on PlaybackCancelled {
+      // 用户切集或当前集卡顿时取消，不算失败。
+      return false;
     } catch (error) {
       debugPrint('$label失败 第${targetIndex + 1}集: $error');
       return false;

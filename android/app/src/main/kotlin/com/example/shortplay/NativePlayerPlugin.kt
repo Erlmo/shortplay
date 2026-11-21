@@ -6,6 +6,7 @@ import com.shortplay.playback.MediaCacheDataSource
 import com.shortplay.playback.NetworkRoutes
 import com.shortplay.playback.MediaNetworkLoadErrorPolicy
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
@@ -300,6 +301,17 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
                 disposePlayer(id)
                 result.success(null)
             }
+            "captureFrame" -> {
+                // 截取播放器最后显示的一帧（缩到 maxWidth 宽，JPEG），用于往回滑时先显示画面。
+                val id = call.argument<Int>("id")!!
+                val maxWidth = (call.argument<Int>("maxWidth") ?: 540).coerceIn(64, 1080)
+                val instance = players[id]
+                if (instance == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+                    result.success(null)
+                } else {
+                    playbackHandler.post { captureFrame(instance, maxWidth, result) }
+                }
+            }
             "setKeepScreenOn" -> {
                 val on = call.argument<Boolean>("on") ?: false
                 handler.post {
@@ -311,6 +323,42 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
                 result.success(null)
             }
             else -> result.notImplemented()
+        }
+    }
+
+    private fun captureFrame(instance: PlayerInstance, maxWidth: Int, result: MethodChannel.Result) {
+        val size = instance.player.videoSize
+        if (size.width <= 0 || size.height <= 0 || !instance.surface.isValid) {
+            result.success(null)
+            return
+        }
+        val scale = minOf(1f, maxWidth.toFloat() / size.width)
+        val width = maxOf(1, (size.width * scale).toInt())
+        val height = maxOf(1, (size.height * scale).toInt())
+        val bitmap = android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888)
+        try {
+            android.view.PixelCopy.request(instance.surface, bitmap, { code ->
+                if (code != android.view.PixelCopy.SUCCESS) {
+                    bitmap.recycle()
+                    result.success(null)
+                    return@request
+                }
+                backgroundExecutor.execute {
+                    try {
+                        val out = java.io.ByteArrayOutputStream()
+                        bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, out)
+                        result.success(mapOf("bytes" to out.toByteArray(), "width" to width, "height" to height))
+                    } catch (_: Throwable) {
+                        result.success(null)
+                    } finally {
+                        bitmap.recycle()
+                    }
+                }
+            }, handler)
+        } catch (_: Throwable) {
+            // 画面输出已释放或不支持截取：不影响播放，只是没有截图。
+            bitmap.recycle()
+            result.success(null)
         }
     }
 
@@ -390,7 +438,9 @@ class NativePlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         val (textureEntry, surface) = createVideoSurface()
 
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(15000, 50000, 1000, 2500)
+            // 最多往前缓冲 20 秒（参考红果 dynamic_buffer_upper_bound）：短剧常常看几秒就划走，
+            // 缓冲太多浪费流量和电量；最少保持 10 秒，弱网下不至于频繁卡顿。
+            .setBufferDurationsMs(10000, 20000, 1000, 2500)
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
         val player = ExoPlayer.Builder(flutterBinding.applicationContext, Bvc2RenderersFactory(flutterBinding.applicationContext))

@@ -68,6 +68,8 @@ extension _DetailActions on _DramaDetailPageState {
           result.bookInfo!.id == requestedId) {
         _refresh(() => _detailDrama = result.bookInfo);
       }
+      // 用户大多会点「立即播放」从第 1 集开始，先把它准备好。
+      if (mounted && requestedId == drama.id) _warmUpFirstEpisode(result);
       return result;
     }).catchError((Object e) {
       debugPrint('详情页预取剧集列表失败(将由播放页回退): $e');
@@ -76,6 +78,23 @@ extension _DetailActions on _DramaDetailPageState {
     _prefetchedEpisodes = future;
     // 目录区域尚未构建或页面已退出时，也接住失败；原 Future 仍供界面显示错误。
     unawaited(future.then<void>((_) {}, onError: (Object _, StackTrace __) {}));
+  }
+
+  /// 提前准备第 1 集（解析地址、下载开头）。从播放页返回时再调用一次，再点播放仍然秒开；
+  /// 地址和数据还在缓存里时会直接命中，不会重复请求。
+  void _warmUpFirstEpisode([TheaterEpisodesResult? result]) {
+    if (result == null) {
+      final future = _prefetchedEpisodes;
+      if (future == null) return;
+      unawaited(future.then<void>((value) {
+        if (mounted) _warmUpFirstEpisode(value);
+      }, onError: (Object _, StackTrace __) {}));
+      return;
+    }
+    final episodes = result.toEpisodes();
+    if (episodes.isEmpty) return;
+    warmUpEpisode(_preloads, episodes.first.url,
+        episodeIndex: 0, fromStart: true);
   }
 
   Future<void> _loadHistory() async {
@@ -104,20 +123,24 @@ extension _DetailActions on _DramaDetailPageState {
       {bool resume = false, int? episodeIndex}) {
     Navigator.of(context)
         .push(
-          MaterialPageRoute(
-            builder: (_) => PlayerPage(
-              drama: drama,
-              apiClient: apiClient,
-              downloadService: widget.downloadService,
-              initialEpisodeIndex:
-                  episodeIndex ?? (resume ? (_lastEpisodeIndex ?? 0) : 0),
-              initialPositionMs: resume ? _lastPositionMs : null,
-              prefetchedEpisodes: _prefetchedEpisodes,
-              seasons: _seasons,
-            ),
-          ),
-        )
-        .then((_) => _loadHistory());
+      MaterialPageRoute(
+        builder: (_) => PlayerPage(
+          drama: drama,
+          apiClient: apiClient,
+          downloadService: widget.downloadService,
+          initialEpisodeIndex:
+              episodeIndex ?? (resume ? (_lastEpisodeIndex ?? 0) : 0),
+          initialPositionMs: resume ? _lastPositionMs : null,
+          prefetchedEpisodes: _prefetchedEpisodes,
+          preloadManager: _preloads,
+          seasons: _seasons,
+        ),
+      ),
+    )
+        .then((_) {
+      _loadHistory();
+      _warmUpFirstEpisode();
+    });
   }
 
   Future<void> _downloadAll(BuildContext context) async {

@@ -9,6 +9,7 @@ class PlaybackRecord {
     this.episodeNumber,
     this.durationMs,
     this.episodeCount,
+    this.videoId,
   });
 
   final int dramaId;
@@ -24,6 +25,9 @@ class PlaybackRecord {
 
   /// 这一季的总集数；旧记录没有。
   final int? episodeCount;
+
+  /// 当前这一集的视频编号，续播时可以不等剧集列表、提前解析播放地址；旧记录没有。
+  final String? videoId;
 
   /// 当前集的观看进度 0~1；没有时长信息时为 null。
   double? get episodeProgress {
@@ -42,6 +46,7 @@ class PlaybackRecord {
         'updatedAtMs': updatedAtMs,
         if (durationMs != null) 'durationMs': durationMs,
         if (episodeCount != null) 'episodeCount': episodeCount,
+        if (videoId != null) 'videoId': videoId,
       };
 
   factory PlaybackRecord.fromJson(Map<String, dynamic> json) {
@@ -65,6 +70,10 @@ class PlaybackRecord {
           : int.tryParse(json['updatedAtMs']?.toString() ?? '') ?? 0,
       durationMs: _optInt(json['durationMs']),
       episodeCount: _optInt(json['episodeCount']),
+      videoId:
+          json['videoId'] is String && (json['videoId'] as String).isNotEmpty
+              ? json['videoId'] as String
+              : null,
     );
   }
 

@@ -37,6 +37,18 @@ class CryptoNativeChannel {
     return 'crypto://$encoded?key=$keyHex';
   }
 
+  /// 拆开 [buildCryptoUrl] 生成的地址；非加密地址原样返回、密钥为空；格式不对返回 null。
+  static ({String cdnUrl, String keyHex})? splitCryptoUrl(String url) {
+    if (!url.startsWith('crypto://')) return (cdnUrl: url, keyHex: '');
+    final encoded = url.substring('crypto://'.length);
+    final split = encoded.indexOf('?key=');
+    if (split < 0) return null;
+    return (
+      cdnUrl: Uri.decodeComponent(encoded.substring(0, split)),
+      keyHex: encoded.substring(split + 5),
+    );
+  }
+
   /// Register the "crypto://" protocol on the given mpv [handle]
   /// (from `await player.handle`). Must be called once per Player instance,
   /// before `player.open(...)`.

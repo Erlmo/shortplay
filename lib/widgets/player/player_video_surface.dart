@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show Uint8List;
 import 'package:flutter/material.dart';
 
 /// 按用户要求启用红果 j65.u 的裁切优化分支（模式7）：
@@ -9,14 +10,17 @@ import 'package:flutter/material.dart';
 class PlayerVideoSurface extends StatelessWidget {
   const PlayerVideoSurface({
     super.key,
-    required this.textureId,
+    this.textureId,
+    this.snapshot,
     required this.videoWidth,
     required this.videoHeight,
     required this.isLandscapeFullScreen,
     this.fillScreen = false,
   });
 
-  final int textureId;
+  /// 播放器画面；为空时显示 [snapshot]（往回滑时先显示的停住画面）。
+  final int? textureId;
+  final Uint8List? snapshot;
   final int videoWidth;
   final int videoHeight;
   final bool isLandscapeFullScreen;
@@ -82,7 +86,12 @@ class PlayerVideoSurface extends StatelessWidget {
     }
     final width = videoWidth.toDouble();
     final height = videoHeight.toDouble();
-    final texture = Texture(textureId: textureId);
+    final texture = textureId != null
+        ? Texture(textureId: textureId!)
+        : Image.memory(snapshot!,
+            fit: BoxFit.fill,
+            gaplessPlayback: true,
+            filterQuality: FilterQuality.medium);
 
     return LayoutBuilder(builder: (context, constraints) {
       final box = Size(constraints.maxWidth, constraints.maxHeight);

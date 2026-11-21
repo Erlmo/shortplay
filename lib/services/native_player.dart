@@ -286,6 +286,28 @@ class NativePlayer {
     await _channel.invokeMethod('prepareFirstFrame', {'id': _playerId});
   }
 
+  /// 截取当前显示的一帧（JPEG，宽不超过 [maxWidth]）。安卓和 iOS 支持，其他平台或失败时返回 null。
+  Future<FrameSnapshot?> captureFrame({int maxWidth = 540}) async {
+    if (_disposed ||
+        _playerId == null ||
+        (defaultTargetPlatform != TargetPlatform.android &&
+            defaultTargetPlatform != TargetPlatform.iOS)) {
+      return null;
+    }
+    try {
+      final result = await _channel.invokeMethod<Map<Object?, Object?>>(
+          'captureFrame', {'id': _playerId, 'maxWidth': maxWidth});
+      final bytes = result?['bytes'];
+      final width = result?['width'];
+      final height = result?['height'];
+      if (bytes is! Uint8List || width is! int || height is! int) return null;
+      return FrameSnapshot(bytes, width, height);
+    } catch (error) {
+      debugPrint('[Player] 截取画面失败: $error');
+      return null;
+    }
+  }
+
   Future<void> play() async {
     if (_disposed || _playerId == null) return;
     _setPlaybackIntent(true);
@@ -441,4 +463,12 @@ class NativePlayer {
             Size(_videoWidth.toDouble(), _videoHeight.toDouble());
     }
   }
+}
+
+/// 播放器截下的一帧画面。
+class FrameSnapshot {
+  const FrameSnapshot(this.bytes, this.width, this.height);
+  final Uint8List bytes;
+  final int width;
+  final int height;
 }

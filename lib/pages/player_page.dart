@@ -130,10 +130,11 @@ class _PlayerPageState extends State<PlayerPage>
   NativePlayer? _preparingPlayer;
   List<Episode> _episodes = const [];
   int _currentEpisodeIndex = 0;
+  // 切集前正在播的那一集，换下来的播放器画面留在这一页上直到翻页停稳。
+  int _retiredIndex = 0;
   bool _playerInitialized = false;
   int _requestId = 0;
   int _catalogRequestId = 0;
-  int _startupPositionMs = 0;
   int _lastHistorySaveMs = 0;
 
   StreamSubscription<String>? _errorSub;
@@ -144,7 +145,6 @@ class _PlayerPageState extends State<PlayerPage>
   StreamSubscription<bool>? _bufferingSub;
   StreamSubscription<Duration?>? _bufferedAheadSub;
   StreamSubscription<bool>? _playbackIntentSub;
-  PlaybackBufferMonitor? _bufferMonitor;
 
   final positionMsNotifier = ValueNotifier<int>(0);
   final playingNotifier = ValueNotifier<bool>(false);
@@ -167,8 +167,6 @@ class _PlayerPageState extends State<PlayerPage>
 
   PageController? _pageController;
   bool _programmaticJump = false;
-  bool _swipeBlocked = false;
-  Timer? _swipeBlockTimer;
 
   // ─── 播放状态 ──────────────────────────────────────────────────────────
 
@@ -225,6 +223,10 @@ class _PlayerPageState extends State<PlayerPage>
   TheaterVideoPreloadManager get preloadManager => _preloadManager;
   @override
   bool get isOfflinePlayback => widget.offlineEpisodes != null;
+  @override
+  NativePlayer? get currentPlayer => _player;
+  @override
+  int get currentEpisodeIndex => _currentEpisodeIndex;
   @override
   String? cachedEpisodePath(int index) {
     if (index < 0 || index >= _episodes.length) return null;
@@ -373,7 +375,6 @@ class _PlayerPageState extends State<PlayerPage>
     appRouteObserver.unsubscribe(this);
     WidgetsBinding.instance.removeObserver(this);
     NativePlayer.setKeepScreenOn(false);
-    _swipeBlockTimer?.cancel();
     _keyHintTimer?.cancel();
     _okHoldTimer?.cancel();
     _keyFocus.dispose();
@@ -383,9 +384,9 @@ class _PlayerPageState extends State<PlayerPage>
     if (_preparingPlayer != null) enqueueDispose(_preparingPlayer!);
     _cancelPlayerSubscriptions();
     if (_player != null) enqueueDispose(_player!);
-    dispose3PWindow();
-    playbackSession.close();
-    _preloadManager.clear();
+    closePreparation();
+    // 详情页等传进来的管理器归它们自己管：清掉会让返回后再播放时重新解析地址。
+    if (widget.preloadManager == null) _preloadManager.clear();
     _systemUi.exitFullScreen();
     _systemUi.dispose();
     _danmakuController.dispose();
@@ -428,12 +429,6 @@ class _PlayerPageState extends State<PlayerPage>
 
   @override
   Widget build(BuildContext context) {
-    // nextPlayerReady 变为 true 时自动清除 swipeBlocked
-    if (nextPlayerReady && _swipeBlocked) {
-      _swipeBlocked = false;
-      _swipeBlockTimer?.cancel();
-    }
-
     // 电视先关闭屏显；手机横屏全屏时先退回竖屏。
     return PopScope(
       canPop: !_systemUi.isLandscapeFullScreen &&
@@ -463,14 +458,14 @@ class _PlayerPageState extends State<PlayerPage>
                 if (_pageController != null) _buildPageView(),
                 if (_pageController != null && !DeviceProfile.usesFocusUi)
                   const PlayerBottomEdgeGuard(),
-                if (_loading)
+                // 回到看过的集时已有停住的画面顶着，不再盖上加载界面。
+                if (_loading && snapshotOf(_currentEpisodeIndex) == null)
                   PlayerWorkflowProgress(
                     steps: _steps,
                     loadingStatusText: _loadingStatusText,
                   ),
                 if (!_loading && _errorMessage != null)
                   PlayerErrorView(message: _errorMessage),
-                if (_swipeBlocked) const PlayerSwipeBlockedHint(),
                 if (_showNextLoading) const PlayerNextLoading(),
                 if (_showKeyHint) const PlayerKeyHint(),
               ],

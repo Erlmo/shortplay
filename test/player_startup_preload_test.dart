@@ -17,7 +17,6 @@ import 'package:shortplay/services/crypto_native_channel.dart';
 import 'package:shortplay/services/download_service.dart';
 import 'package:shortplay/services/native_player.dart';
 import 'package:shortplay/services/theater_video_preload_manager.dart';
-import 'package:shortplay/widgets/player/player_page_overlays.dart';
 
 import 'support/video_resolution_adapter.dart';
 
@@ -54,9 +53,14 @@ class _Preloads extends TheaterVideoPreloadManager {
       required int targetIndex,
       required bool Function() isStillCurrent,
       VoidCallback? onNextEpisodeReady,
-      PlaybackCancellation? cancellation}) async {
+      PlaybackCancellation? cancellation,
+      int? prefetchBytes}) async {
     full.add(targetIndex);
+    bytes.add(prefetchBytes);
+    onNextEpisodeReady?.call();
   }
+
+  final bytes = <int?>[];
 }
 
 class _CachedDownloads extends DownloadService {
@@ -96,18 +100,47 @@ void main() {
           cached: cached,
           start: start,
           swipe: false,
-          telemetry: false,
-          lifecycle: false
+          stall: false,
+          lifecycle: false,
+          count: 3
         ),
-    (cached: true, start: 0, swipe: true, telemetry: false, lifecycle: false),
-    (cached: false, start: 0, swipe: false, telemetry: true, lifecycle: false),
-    (cached: true, start: 0, swipe: false, telemetry: false, lifecycle: true),
+    (
+      cached: true,
+      start: 0,
+      swipe: true,
+      stall: false,
+      lifecycle: false,
+      count: 3
+    ),
+    (
+      cached: false,
+      start: 0,
+      swipe: false,
+      stall: true,
+      lifecycle: false,
+      count: 3
+    ),
+    (
+      cached: true,
+      start: 0,
+      swipe: false,
+      stall: false,
+      lifecycle: true,
+      count: 3
+    ),
+    (
+      cached: false,
+      start: 0,
+      swipe: false,
+      stall: false,
+      lifecycle: false,
+      count: 5
+    ),
   ]) {
     final cached = scenario.cached;
-    final telemetry = scenario.telemetry;
     final start = scenario.start;
     testWidgets(
-        '从${start}ms起播，缓存=$cached，立即上滑=${scenario.swipe}，真实缓冲=$telemetry，生命周期=${scenario.lifecycle}',
+        '从${start}ms起播，缓存=$cached，滑动=${scenario.swipe}，起播卡顿=${scenario.stall}，生命周期=${scenario.lifecycle}，共${scenario.count}集',
         (tester) async {
       SharedPreferences.setMockInitialValues({});
       final adapter = VideoResolutionAdapter(
@@ -145,7 +178,6 @@ void main() {
       final createdUrls = <String>[];
       var nextId = 0;
       final nativeCalls = <(String, Object?)>[];
-      Map<String, Object?>? nativeSnapshot;
       final warmedUrls = <String>[];
       messenger.setMockMethodCallHandler(events, (_) async => null);
       messenger.setMockMethodCallHandler(crypto, (call) async {
@@ -158,12 +190,11 @@ void main() {
           SystemChannels.platform, (_) async => null);
       messenger.setMockMethodCallHandler(channel, (call) async {
         nativeCalls.add((call.method, call.arguments));
-        if (call.method == 'getBufferState') return nativeSnapshot;
         if (call.method == 'create') {
           createdUrls.add((call.arguments as Map)['cdnUrl'] as String);
           final id = ++nextId;
           await emit(id, 'duration', 120000);
-          if (telemetry) await emit(id, 'bufferedAhead', 14000);
+          if (id == 1 && scenario.stall) await emit(id, 'buffering', true);
           if (id == 1) await emit(id, 'firstFrame', true);
           return {'playerId': id, 'textureId': id};
         }
@@ -173,6 +204,8 @@ void main() {
         if (call.method == 'play' || call.method == 'pause') {
           final id = (call.arguments as Map)['id'] as int;
           await emit(id, 'playing', call.method == 'play');
+          // 新建后直接播放的播放器在播放时出首帧。
+          if (call.method == 'play') await emit(id, 'firstFrame', true);
         }
         return null;
       });
@@ -182,6 +215,19 @@ void main() {
           messenger.setMockMethodCallHandler(c, null);
         }
       });
+      Future<void> settle() async {
+        for (var n = 0; n < 4; n++) {
+          await tester.pump(const Duration(milliseconds: 50));
+          await tester.runAsync(
+              () => Future<void>.delayed(const Duration(milliseconds: 30)));
+        }
+        await tester.pump();
+      }
+
+      List<String> callsOf(int id) => nativeCalls
+          .where((c) => (c.$2 as Map?)?['id'] == id)
+          .map((c) => c.$1)
+          .toList();
       try {
         // Apple 保留起播预取；Android 仍在原生读取线程准备。
         if (!cached && start == 45000) {
@@ -205,42 +251,30 @@ void main() {
           seasons:
               const DramaSeasons(albumId: '', currentSeason: 1, seasons: []),
           prefetchedEpisodes: Future.value(TheaterEpisodesResult(allItemIds: [
-            '1',
-            '2',
-            '3'
+            for (var n = 1; n <= scenario.count; n++) '$n'
           ], chapters: [
-            for (var n = 1; n <= 3; n++)
+            for (var n = 1; n <= scenario.count; n++)
               TheaterChapter(
                   itemId: '$n', title: '第$n集', realChapterOrder: '$n'),
           ])),
         )));
-        await tester.pump();
-        await tester.runAsync(
-            () => Future<void>.delayed(const Duration(milliseconds: 30)));
-        await tester.pump(const Duration(milliseconds: 100));
-        await tester.runAsync(
-            () => Future<void>.delayed(const Duration(milliseconds: 30)));
-        await tester.pump();
-        expect(createdUrls, [
-          cached
-              ? files[1]!.absolute.uri.toString()
-              : "https://cdn.example/1.mp4",
-          if (cached) files[2]!.absolute.uri.toString(),
-        ]);
-        expect(manager.resolved, cached ? isEmpty : ['1']);
-        expect(
-            warmedUrls,
-            !cached && start == 45000
-                ? ['https://cdn.example/1.mp4']
-                : isEmpty);
+        await settle();
+
+        if (scenario.stall) {
+          // 当前集卡顿时照常预渲染相邻集（只下够首帧），但不预下载更远的集。
+          expect(createdUrls,
+              ['https://cdn.example/1.mp4', 'https://cdn.example/2.mp4']);
+          expect(manager.resolved, ['1', '2']);
+          expect(manager.full, isEmpty);
+          await emit(1, 'buffering', false);
+          await settle();
+        }
+
         if (scenario.lifecycle) {
           final observer =
               tester.state(find.byType(PlayerPage)) as WidgetsBindingObserver;
-          List<String> currentCommands() => nativeCalls
-              .where((c) => (c.$2 as Map?)?['id'] == 1)
-              .map((c) => c.$1)
-              .where((c) => c == 'play' || c == 'pause')
-              .toList();
+          List<String> currentCommands() =>
+              callsOf(1).where((c) => c == 'play' || c == 'pause').toList();
           nativeCalls.clear();
           // 通知栏、弹窗和分屏失焦不能暂停或重启当前集。
           observer.didChangeAppLifecycleState(AppLifecycleState.inactive);
@@ -270,86 +304,19 @@ void main() {
           expect(currentCommands(), isEmpty);
           return;
         }
-        if (scenario.swipe) {
-          expect(
-              nativeCalls.where((c) =>
-                  c.$1 == 'prepareFirstFrame' && (c.$2 as Map?)?['id'] == 2),
-              hasLength(1));
-          expect(
-              nativeCalls
-                  .where((c) => c.$1 == 'play' && (c.$2 as Map?)?['id'] == 2),
-              isEmpty);
-          final pages = tester.widget<PageView>(find.byType(PageView));
-          expect(pages.physics, isNot(isA<BlockForwardScrollPhysics>()));
-          await tester.drag(find.byType(PageView), const Offset(0, -500));
-          await tester.pump(const Duration(milliseconds: 500));
-          await tester.runAsync(
-              () => Future<void>.delayed(const Duration(milliseconds: 30)));
-          await tester.pump();
-          expect(find.byType(PlayerSwipeBlockedHint), findsNothing);
-          expect(createdUrls, [
-            files[1]!.absolute.uri.toString(),
-            files[2]!.absolute.uri.toString(),
-            'https://cdn.example/3.mp4',
-          ]);
-          // The cached current episode is fully buffered, so the SDK can
-          // prepare the following network episode without starving playback.
-          expect(manager.resolved, ['3']);
-          // Completion arrives while the old engine is parked: returning to
-          // it must rewind before play and reuse the same native instance.
-          await emit(1, 'completed', true);
-          nativeCalls.clear();
-          await tester.drag(find.byType(PageView), const Offset(0, 500));
-          await tester.pump(const Duration(milliseconds: 500));
-          await tester.runAsync(
-              () => Future<void>.delayed(const Duration(milliseconds: 30)));
-          await tester.pump();
-          expect(createdUrls, hasLength(3));
-          final oldEngineCalls =
-              nativeCalls.where((c) => (c.$2 as Map?)?['id'] == 1).toList();
-          final seek = oldEngineCalls.indexWhere((c) => c.$1 == 'seek');
-          final play = oldEngineCalls.indexWhere((c) => c.$1 == 'play');
-          expect(seek, greaterThanOrEqualTo(0));
-          expect(play, greaterThan(seek));
-          expect((oldEngineCalls[seek].$2 as Map)['positionMs'], 0);
-          return;
-        }
-        await emit(1, 'position', start + 2999);
-        await tester.pump();
-        expect(manager.resolved, cached ? isEmpty : ['1']);
-        await emit(1, 'buffering', true);
-        await emit(1, 'position', start + 3000);
-        await tester.pump();
-        expect(manager.resolved, cached ? isEmpty : ['1']);
-        await emit(1, 'buffering', false);
-        await emit(1, 'position', start + 3100);
-        await tester.pump();
-        if (telemetry) {
-          // 14 seconds exactly is not safe yet, even after 3s of playback.
-          expect(manager.resolved, ['1']);
-          // Position stays frozen: only the independent cache poll discovers
-          // that the real native buffer became safe again.
-          nativeSnapshot = {
-            'bufferedAheadMs': 14001,
-            'positionMs': start + 3100,
-            'durationMs': 120000,
-            'buffering': false,
-            'playing': false,
-            'completed': false,
-          };
-          await tester.pump(const Duration(milliseconds: 300));
-          await tester.pump();
-        }
-        if (!cached && !telemetry) {
-          expect(manager.resolved, ['1']);
-          await emit(1, 'position', start + 6000);
-          await tester.pump();
-        }
-        await tester.runAsync(
-            () => Future<void>.delayed(const Duration(milliseconds: 30)));
-        await tester.pump(const Duration(milliseconds: 20));
+
+        // 当前集出首帧后立即预渲染下一集，不等当前集缓冲到一定时长。
+        expect(createdUrls, [
+          cached
+              ? files[1]!.absolute.uri.toString()
+              : 'https://cdn.example/1.mp4',
+          cached
+              ? files[2]!.absolute.uri.toString()
+              : 'https://cdn.example/2.mp4',
+        ]);
         expect(manager.resolved, cached ? isEmpty : ['1', '2']);
-        expect(createdUrls, hasLength(2));
+        expect(callsOf(2), containsAllInOrder(['prepareFirstFrame', 'pause']));
+        expect(callsOf(2), isNot(contains('play')));
         expect(
             warmedUrls,
             cached
@@ -358,18 +325,42 @@ void main() {
                     if (start == 45000) 'https://cdn.example/1.mp4',
                     'https://cdn.example/2.mp4',
                   ]);
-        expect(
-            createdUrls.last,
-            cached
-                ? files[2]!.absolute.uri.toString()
-                : 'https://cdn.example/2.mp4');
-        expect(manager.full, isEmpty);
-        await emit(1, 'position', start + 3500);
-        await tester.pump();
-        expect(manager.resolved, cached ? isEmpty : ['1', '2']);
+        // 预渲染之后沿方向预下载第 3 集的开头，不建播放器。
+        expect(manager.full, scenario.count == 5 ? [2, 3] : [2]);
+        expect(manager.bytes, everyElement(greaterThanOrEqualTo(1024 * 1024)));
+        expect(createdUrls, hasLength(2));
+
+        if (scenario.swipe) {
+          nativeCalls.clear();
+          await tester.drag(find.byType(PageView), const Offset(0, -500));
+          await tester.pump(const Duration(seconds: 2));
+          await settle();
+          // 命中预渲染：第 2 集直接接管播放，不重新创建。
+          expect(callsOf(2), contains('play'));
+          // 第 1 集停声、停止下载后停放，不释放，往回滑时可以原位接着播。
+          expect(callsOf(1),
+              containsAllInOrder(['setVolume', 'pause', 'setActive']));
+          expect(callsOf(1), isNot(contains('dispose')));
+          // 接着沿方向预渲染第 3 集。
+          expect(createdUrls.last, 'https://cdn.example/3.mp4');
+          expect(manager.resolved, ['3']);
+          // 往回滑：直接接管停放的第 1 集，不新建、不跳转进度，也不显示加载。
+          nativeCalls.clear();
+          await tester.drag(find.byType(PageView), const Offset(0, 500));
+          await tester.pump(const Duration(seconds: 2));
+          await settle();
+          expect(createdUrls, hasLength(3));
+          expect(callsOf(1), contains('play'));
+          expect(callsOf(1), isNot(contains('seek')));
+          expect(callsOf(1), isNot(contains('dispose')));
+          // 预渲染的第 3 集不再相邻，释放；第 2 集改为停放，不重复预渲染。
+          expect(callsOf(3), contains('dispose'));
+          expect(callsOf(2), isNot(contains('dispose')));
+          return;
+        }
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());
-        await tester.pump(const Duration(milliseconds: 100));
+        await tester.pump(const Duration(milliseconds: 400));
         debugDefaultTargetPlatformOverride = null;
       }
       expect(tester.takeException(), isNull);

@@ -44,7 +44,7 @@ extension _PlayerSeasons on _PlayerPageState {
         final episodes = (await future).toEpisodes();
         if (!stillCurrent() || episodes.isEmpty) return;
         _nextSeasonFirstVideoId = episodes.first.url.trim();
-        playbackSession.enqueue('season:${season.id}', (cancellation) async {
+        enqueueBackground('season:${season.id}', (cancellation) async {
           bool valid() => stillCurrent() && !cancellation.isCancelled;
           if (!valid()) return false;
           var ready = false;
@@ -110,14 +110,14 @@ extension _PlayerSeasons on _PlayerPageState {
     final preparingPlayer = _preparingPlayer;
     _player = null;
     _preparingPlayer = null;
-    dispose3PWindow();
+    cancelPlaybackPreparation();
+    discardStandby();
     // 自动接下一季时首集已提前预热：保留它的解析结果，避免重新签名导致预热失效。
     final keepVideoId =
         _nextSeasonPrefetchId == season.id ? _nextSeasonFirstVideoId : null;
     _preloadManager.clear(
         keepVideoIds: keepVideoId == null ? const [] : [keepVideoId]);
     _danmakuController.clearComments();
-    _swipeBlockTimer?.cancel();
     _pageController?.dispose();
     _pageController = null;
     positionMsNotifier.value = 0;
@@ -131,7 +131,6 @@ extension _PlayerSeasons on _PlayerPageState {
       _loading = true;
       _errorMessage = null;
       _showNextLoading = false;
-      _swipeBlocked = false;
       _seekingPositionMs = null;
       _userPaused = false;
       _sleepStopped = false;

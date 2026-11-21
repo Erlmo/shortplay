@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../models/drama.dart';
@@ -6,6 +8,8 @@ import '../models/playback_record.dart';
 import '../services/api_client.dart';
 import '../services/download_service.dart';
 import '../services/offline_playback_cache.dart';
+import '../services/playback_startup_warmup.dart';
+import '../services/theater_video_preload_manager.dart';
 import 'player_page.dart';
 
 /// 从一条播放记录续播：定位到记录的那一集和进度；这部剧有已下载完成的
@@ -39,6 +43,22 @@ Future<void> openPlaybackRecord(
     }
   }
 
+  // 在线续播：剧集列表和播放地址同时开始请求，不再一个等一个。
+  Future<TheaterEpisodesResult>? episodes;
+  TheaterVideoPreloadManager? preloads;
+  final videoId = record.videoId;
+  if (offlineEpisodes == null && drama.isTheaterResource) {
+    episodes = apiClient.fetchTheaterEpisodes(record.dramaId.toString());
+    // 失败由播放页处理（会重新请求），这里只防止未处理的异步错误。
+    unawaited(
+        episodes.then<void>((_) {}, onError: (Object _, StackTrace __) {}));
+    if (videoId != null) {
+      preloads = TheaterVideoPreloadManager(apiClient: apiClient);
+      warmUpEpisode(preloads, videoId,
+          episodeIndex: record.episodeIndex, fromStart: record.positionMs <= 0);
+    }
+  }
+
   return Navigator.of(context).push(
     MaterialPageRoute(
       builder: (_) => PlayerPage(
@@ -49,6 +69,8 @@ Future<void> openPlaybackRecord(
         initialEpisodeNumber: record.episodeNumber,
         initialPositionMs: record.positionMs,
         offlineEpisodes: offlineEpisodes,
+        prefetchedEpisodes: episodes,
+        preloadManager: preloads,
       ),
     ),
   );

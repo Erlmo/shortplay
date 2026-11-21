@@ -1,5 +1,6 @@
 import Flutter
 import UIKit
+import CoreImage
 import AVFoundation
 import CoreVideo
 
@@ -89,6 +90,17 @@ final class NativePlayerPlugin: NSObject, FlutterPlugin {
             handleSetRate(args: args, result: result)
         case "dispose":
             handleDispose(args: args, result: result)
+        case "captureFrame":
+            // 截取当前显示的一帧（缩到 maxWidth 宽，JPEG），用于往回滑时先显示画面。
+            guard let id = args?["id"] as? Int, let player = getPlayer(id) else {
+                result(nil)
+                return
+            }
+            let maxWidth = min(max(args?["maxWidth"] as? Int ?? 540, 64), 1080)
+            DispatchQueue.global(qos: .userInitiated).async {
+                let snapshot = player.captureFrame(maxWidth: maxWidth)
+                DispatchQueue.main.async { result(snapshot) }
+            }
         case "setKeepScreenOn":
             let on = args?["on"] as? Bool ?? false
             DispatchQueue.main.async {
@@ -924,6 +936,30 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
                 "value": true
             ])
         }
+    }
+
+    // MARK: - 截取画面
+
+    private static let snapshotContext = CIContext(options: [.cacheIntermediates: false])
+
+    /// 把最近送给 Flutter 的那一帧缩小后编码成 JPEG；还没有画面时返回 nil。
+    func captureFrame(maxWidth: Int) -> [String: Any]? {
+        bufferLock.lock()
+        let pb = latestPixelBuffer
+        bufferLock.unlock()
+        guard let pixelBuffer = pb else { return nil }
+        let width = CGFloat(CVPixelBufferGetWidth(pixelBuffer))
+        guard width > 0 else { return nil }
+        let scale = min(1, CGFloat(maxWidth) / width)
+        let image = CIImage(cvPixelBuffer: pixelBuffer)
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        guard let cgImage = Self.snapshotContext.createCGImage(image, from: image.extent),
+              let data = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.8) else {
+            return nil
+        }
+        return ["bytes": FlutterStandardTypedData(bytes: data),
+                "width": cgImage.width,
+                "height": cgImage.height]
     }
 
     // MARK: - FlutterTexture

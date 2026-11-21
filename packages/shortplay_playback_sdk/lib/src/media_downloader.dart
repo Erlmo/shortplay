@@ -175,7 +175,7 @@ class MediaDownloader {
     int? total = cache.metadata(url)?.totalLength;
     while (cursor <= end && (total == null || cursor < total)) {
       token.check();
-      final cached = cache.readPrefix(url, cursor, end - cursor + 1);
+      final cached = await cache.readPrefixAsync(url, cursor, end - cursor + 1);
       if (cached != null && cached.isNotEmpty) {
         output.add(cached);
         cursor += cached.length;
@@ -268,7 +268,7 @@ class MediaDownloader {
       cursor += result.bytes.length;
       if (cursor >= result.totalLength || result.bytes.isEmpty) break;
     }
-    return cache.inspect(activeSourceUrl(url));
+    return cache.inspectAsync(activeSourceUrl(url));
   }
 
   /// Writes a caller-owned temporary file. It is only renamed by the caller

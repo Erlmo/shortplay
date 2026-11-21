@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -6,7 +8,9 @@ import '../models/drama.dart';
 import '../services/api_client.dart';
 import '../services/download_service.dart';
 import '../services/hidden_feed_access.dart';
+import '../services/playback_startup_warmup.dart';
 import '../services/share_link_resolver.dart';
+import '../services/theater_video_preload_manager.dart';
 import 'player_page.dart';
 
 class ShareLinkPage extends StatefulWidget {
@@ -99,6 +103,19 @@ class _ShareLinkPageState extends State<ShareLinkPage> {
         throw ApiException('未识别到有效短剧，请检查分享内容后重试');
       }
       final title = info.title?.trim();
+      // 识别出剧后，剧集列表和第 1 集的播放地址马上开始准备，和下面取详情同时进行，
+      // 打开播放页时直接复用，不用再一步一步等。
+      final episodes = widget.apiClient.fetchTheaterEpisodes(info.videoId);
+      final preloads = TheaterVideoPreloadManager(apiClient: widget.apiClient);
+      unawaited(episodes.then<void>((result) {
+        final list = result.toEpisodes();
+        if (list.isNotEmpty) {
+          warmUpEpisode(preloads, list.first.url,
+              episodeIndex: 0, fromStart: true);
+        }
+      }, onError: (Object _, StackTrace __) {
+        // 失败由播放页处理（会重新请求）。
+      }));
       // 顺便取一次详情：封面、简介、标签等，播放页 / 选集面板 / 观看历史 /
       // 离线缓存都会用到。取不到（超时、旧版服务端、漫剧等）就退回只有剧名的壳。
       Drama? detail;
@@ -131,6 +148,8 @@ class _ShareLinkPageState extends State<ShareLinkPage> {
           apiClient: widget.apiClient,
           downloadService: widget.downloadService,
           initialEpisodeIndex: 0,
+          prefetchedEpisodes: episodes,
+          preloadManager: preloads,
         ),
       ));
     } on ApiException catch (error) {

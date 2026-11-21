@@ -84,61 +84,6 @@ class PlayerNextLoading extends StatelessWidget {
   }
 }
 
-/// 下一集还没准备好时上滑弹出的“下一集加载中”胶囊。
-class PlayerSwipeBlockedHint extends StatelessWidget {
-  const PlayerSwipeBlockedHint({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Positioned(
-      left: 0,
-      right: 0,
-      bottom: MediaQuery.of(context).padding.bottom + 120,
-      child: IgnorePointer(
-        child: Center(
-          child: TweenAnimationBuilder<double>(
-            tween: Tween(begin: 0.0, end: 1.0),
-            duration: const Duration(milliseconds: 200),
-            builder: (context, opacity, child) =>
-                Opacity(opacity: opacity, child: child),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.86),
-                borderRadius: BorderRadius.circular(999),
-                border: Border.all(
-                  color: Colors.white.withValues(alpha: 0.12),
-                ),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    '下一集加载中',
-                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w700,
-                        ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 /// 屏幕底边是系统“上滑回桌面 / 呼出导航栏”的手势区。从这里起手的上滑
 /// 交给系统，不让播放页的 PageView 接住（否则回桌面时会误翻到下一集）。
 /// 只吞竖向拖动，点击照常落到下面的选集栏。
@@ -166,35 +111,5 @@ class PlayerBottomEdgeGuard extends StatelessWidget {
         onVerticalDragEnd: (_) {},
       ),
     );
-  }
-}
-
-/// 下一集没准备好时使用：在最后一页边界阻止向前滑动，也不产生惯性。
-class BlockForwardScrollPhysics extends ScrollPhysics {
-  const BlockForwardScrollPhysics({super.parent});
-
-  @override
-  BlockForwardScrollPhysics applyTo(ScrollPhysics? ancestor) {
-    return BlockForwardScrollPhysics(parent: buildParent(ancestor));
-  }
-
-  @override
-  double applyBoundaryConditions(ScrollMetrics position, double value) {
-    // 阻止向前滑（向下滚动 = value > position.pixels）
-    if (value > position.pixels &&
-        position.pixels >= position.maxScrollExtent - 1) {
-      return value - position.pixels;
-    }
-    return super.applyBoundaryConditions(position, value);
-  }
-
-  @override
-  Simulation? createBallisticSimulation(
-      ScrollMetrics position, double velocity) {
-    // 向前滑时不产生惯性
-    if (velocity > 0 && position.pixels >= position.maxScrollExtent - 1) {
-      return null;
-    }
-    return super.createBallisticSimulation(position, velocity);
   }
 }

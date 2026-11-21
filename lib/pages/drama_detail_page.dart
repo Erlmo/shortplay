@@ -13,6 +13,8 @@ import '../services/device_profile.dart';
 import '../services/download_service.dart';
 import '../services/favorite_drama_store.dart';
 import '../services/playback_history_store.dart';
+import '../services/playback_startup_warmup.dart';
+import '../services/theater_video_preload_manager.dart';
 import '../widgets/app_notice.dart';
 import '../widgets/detail_action_bar.dart';
 import '../widgets/detail_episode_strip.dart';
@@ -58,6 +60,10 @@ class _DramaDetailPageState extends State<DramaDetailPage> {
 
   /// 进详情页就后台发起的剧集列表请求，进播放页时复用，省掉首集那次 App 接口往返。
   Future<TheaterEpisodesResult>? _prefetchedEpisodes;
+
+  /// 详情页提前解析第 1 集并预取开头，点「立即播放」时播放页直接复用，起播不再等后端。
+  late final TheaterVideoPreloadManager _preloads =
+      TheaterVideoPreloadManager(apiClient: widget.apiClient);
 
   Drama get drama => _detailDrama ?? widget.drama;
   ApiClient get apiClient => widget.apiClient;
