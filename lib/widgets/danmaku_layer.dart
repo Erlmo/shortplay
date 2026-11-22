@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
 import '../models/danmaku.dart';
@@ -29,22 +28,26 @@ class _Piece {
   }
 }
 
+/// 一条弹幕：出现时把描边文字和表情一次性画成一张图片，之后每帧只移动这张图片，
+/// 不再逐帧重新渲染描边文字（描边文字在 GPU 上很耗时，是播放时发热的主要来源之一）。
 class _DanmakuItem {
   double x;
   final double width;
-  final List<_Piece> pieces;
+  final ui.Image image;
+
+  /// 图片左上角相对「文字左上角」的偏移（四周留了描边余量，表情可能比文字高）。
+  final Offset imageOffset;
+  final double pixelRatio;
 
   _DanmakuItem({
     required this.x,
     required this.width,
-    required this.pieces,
+    required this.image,
+    required this.imageOffset,
+    required this.pixelRatio,
   });
 
-  void dispose() {
-    for (final p in pieces) {
-      p.dispose();
-    }
-  }
+  void dispose() => image.dispose();
 }
 
 /// 53 个弹幕表情（assets/danmaku_emoji）的解码图片，全局只加载一次。
@@ -107,13 +110,17 @@ class DanmakuLayer extends StatefulWidget {
   State<DanmakuLayer> createState() => _DanmakuLayerState();
 }
 
-class _DanmakuLayerState extends State<DanmakuLayer>
-    with SingleTickerProviderStateMixin {
+class _DanmakuLayerState extends State<DanmakuLayer> {
   final List<List<_DanmakuItem>> _tracks = [];
   final Map<String, _DanmakuItem> _items = {};
   final DanmakuMediaClock _clock = DanmakuMediaClock();
   final _repaintNotifier = _RepaintNotifier();
-  late final Ticker _ticker;
+
+  /// 弹幕位置按真实流逝时间计算；刷新由定时器驱动，每秒约 30 次（和多数短剧的视频帧率一致），
+  /// 不再像逐帧计时器那样每秒 60 次，开着弹幕时界面重绘和系统合成都少一半。
+  final Stopwatch _stopwatch = Stopwatch()..start();
+  Timer? _frameTimer;
+  static const _frameInterval = Duration(milliseconds: 33);
   DanmakuTimeline? _timeline;
   String? _layoutSignature;
   List<(String, String, int, int, bool)> _commentSnapshot = [];
@@ -130,7 +137,26 @@ class _DanmakuLayerState extends State<DanmakuLayer>
       if (!mounted) return;
       setState(() => _emojiReady = true);
     }));
-    _ticker = createTicker(_onTick)..start();
+    _syncTicker();
+  }
+
+  /// 只有播放中且弹幕可见时才定时刷新。暂停或隐藏时停掉定时器，暂停期间界面不再重绘。
+  void _syncTicker() {
+    if (widget.isPlaying && widget.visible) {
+      _frameTimer ??=
+          Timer.periodic(_frameInterval, (_) => _onTick(_stopwatch.elapsed));
+    } else {
+      _frameTimer?.cancel();
+      _frameTimer = null;
+    }
+  }
+
+  /// 暂停时数据或进度变了（换集、拖动进度、开关弹幕），在这一帧构建完后补刷一次。
+  void _requestSingleTick() {
+    if (_frameTimer != null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _onTick(_stopwatch.elapsed);
+    });
   }
 
   @override
@@ -146,6 +172,12 @@ class _DanmakuLayerState extends State<DanmakuLayer>
         oldWidget.playbackSpeed != widget.playbackSpeed ||
         oldWidget.isPlaying != widget.isPlaying) {
       _clock.reset();
+    }
+    _syncTicker();
+    if (!_sameComments() ||
+        oldWidget.seekGeneration != widget.seekGeneration ||
+        oldWidget.visible != widget.visible) {
+      _requestSingleTick();
     }
   }
 
@@ -169,7 +201,7 @@ class _DanmakuLayerState extends State<DanmakuLayer>
 
   @override
   void dispose() {
-    _ticker.dispose();
+    _frameTimer?.cancel();
     _disposeItems();
     _repaintNotifier.dispose();
     super.dispose();
@@ -330,10 +362,55 @@ class _DanmakuLayerState extends State<DanmakuLayer>
         pieces.add(_Piece.text(make(text, fillStyle), make(text, strokeStyle)));
       }
     }
+    final width = pieces.fold<double>(0, (sum, piece) => sum + piece.width);
+    final item = _rasterize(pieces, width, emojiSize, pixelRatio);
+    for (final piece in pieces) {
+      piece.dispose();
+    }
+    return item;
+  }
+
+  /// 把一条弹幕的各段（描边文字、白字、表情）画到一张图片上，只做一次。
+  _DanmakuItem _rasterize(
+      List<_Piece> pieces, double width, double emojiSize, double pixelRatio) {
+    final textHeight = _textHeight(context);
+    // 描边会超出字形约 1～2 个点，四周留出余量；表情可能比文字高，整体按较高者放。
+    const pad = 3.0;
+    final contentHeight = emojiSize > textHeight ? emojiSize : textHeight;
+    final textTop = pad + (contentHeight - textHeight) / 2;
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder)..scale(pixelRatio);
+    final imagePaint = Paint()..filterQuality = FilterQuality.medium;
+    var dx = pad;
+    for (final piece in pieces) {
+      final image = piece.image;
+      if (image != null) {
+        final top = textTop + (textHeight - piece.width) / 2;
+        canvas.drawImageRect(
+          image,
+          Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+          Rect.fromLTWH(dx, top, piece.width, piece.width),
+          imagePaint,
+        );
+      } else {
+        final offset = Offset(dx, textTop);
+        piece.stroke!.paint(canvas, offset);
+        piece.fill!.paint(canvas, offset);
+      }
+      dx += piece.width;
+    }
+    final picture = recorder.endRecording();
+    final image = picture.toImageSync(
+      ((width + pad * 2) * pixelRatio).ceil().clamp(1, 1 << 14),
+      ((contentHeight + pad * 2) * pixelRatio).ceil(),
+    );
+    picture.dispose();
     return _DanmakuItem(
       x: 0,
-      width: pieces.fold<double>(0, (width, piece) => width + piece.width),
-      pieces: pieces,
+      width: width,
+      image: image,
+      imageOffset: Offset(-pad, -textTop),
+      pixelRatio: pixelRatio,
     );
   }
 
@@ -415,26 +492,16 @@ class _DanmakuPainter extends CustomPainter {
     for (int i = 0; i < tracks.length; i++) {
       final y = topOffset + i * trackHeight;
       for (final item in tracks[i]) {
-        var dx = item.x;
-        for (final piece in item.pieces) {
-          final image = piece.image;
-          if (image != null) {
-            final size = piece.width;
-            final top = y + (textHeight - size) / 2;
-            canvas.drawImageRect(
-              image,
-              Rect.fromLTWH(
-                  0, 0, image.width.toDouble(), image.height.toDouble()),
-              Rect.fromLTWH(dx, top, size, size),
-              _imagePaint,
-            );
-          } else {
-            final offset = Offset(dx, y);
-            piece.stroke!.paint(canvas, offset);
-            piece.fill!.paint(canvas, offset);
-          }
-          dx += piece.width;
-        }
+        final image = item.image;
+        final src = Rect.fromLTWH(
+            0, 0, image.width.toDouble(), image.height.toDouble());
+        final dst = Rect.fromLTWH(
+          item.x + item.imageOffset.dx,
+          y + item.imageOffset.dy,
+          image.width / item.pixelRatio,
+          image.height / item.pixelRatio,
+        );
+        canvas.drawImageRect(image, src, dst, _imagePaint);
       }
     }
   }

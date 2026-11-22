@@ -360,7 +360,10 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
     private var vvcSampleIndex: VvcSampleIndex?
     private var vvcAudioClock: VvcAudioClock?
     /// BVC2 视频帧率，用于决定画面刷新回调频率；0 表示未知。
+    /// 视频帧率（BVC2 由样本表算出，系统播放器从视频轨读取），用于设置画面回调频率。
     private var vvcFrameRate: Double = 0
+    /// 系统播放器暂停后连续没有新画面的回调次数，达到一定次数就停掉回调，暂停时不再空转。
+    private var avIdleTicks = 0
     private var vvcDurationMs = 0
     private var vvcLastPositionMs = -200
     private var vvcCompleted = false
@@ -644,6 +647,7 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
 
     private func attachPlayer(item: AVPlayerItem, video: Bool) {
         if video {
+            // 保持 BGRA：实测改成 NV12 后，Flutter 每帧在 GPU 上自己转换颜色，App 的 CPU 和 GPU 开销反而更高。
             let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
                 kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
             ])
@@ -692,7 +696,18 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
                 reportedPlaying = rate > 0
                 eventCallback(["playerId": playerId, "type": "playing", "value": rate > 0])
             }
-        } else { player?.rate = rate }
+        } else {
+            player?.rate = rate
+            wakeDisplayLink()
+        }
+    }
+
+    /// 系统播放器路径：状态变化（播放、暂停后的首帧、跳转）后恢复画面回调，
+    /// 由回调在暂停且画面不再变化时自行停下。
+    private func wakeDisplayLink() {
+        guard vvcAudioClock == nil else { return }
+        avIdleTicks = 0
+        displayLink?.isPaused = false
     }
 
     // MARK: - Observers
@@ -707,7 +722,15 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
                 return
             }
             if item.status == .readyToPlay {
-                DispatchQueue.main.async { self.applyPlaybackState() }
+                let fps = item.asset.tracks(withMediaType: .video).first?.nominalFrameRate ?? 0
+                DispatchQueue.main.async {
+                    // 回调频率跟视频帧率走：30 帧的视频每秒回调 30 次，省掉一半空跑。
+                    if fps > 0, self.vvcFrameRate <= 0 {
+                        self.vvcFrameRate = Double(fps)
+                        self.applyDisplayLinkRate()
+                    }
+                    self.applyPlaybackState()
+                }
                 let durationMs = Int(CMTimeGetSeconds(item.duration) * 1000)
                 self.eventCallback([
                     "playerId": self.playerId,
@@ -912,7 +935,15 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
             guard let output = videoOutput else { return }
             let currentTime = output.itemTime(forHostTime: CACurrentMediaTime())
             guard output.hasNewPixelBuffer(forItemTime: currentTime),
-                  let buffer = output.copyPixelBuffer(forItemTime: currentTime, itemTimeForDisplay: nil) else { return }
+                  let buffer = output.copyPixelBuffer(forItemTime: currentTime, itemTimeForDisplay: nil) else {
+                // 暂停且首帧已显示后，连续约 0.5 秒没有新画面就停掉回调；播放、跳转、准备首帧时再唤醒。
+                avIdleTicks += 1
+                if !wantsPlaying, firstFrameSent, avIdleTicks >= 15 {
+                    displayLink?.isPaused = true
+                }
+                return
+            }
+            avIdleTicks = 0
             pixelBuffer = buffer
         }
 
@@ -1145,6 +1176,8 @@ final class IOSPlaybackEngine: NSObject, FlutterTexture {
         cancelResumeProgressCheck()
         avCompleted = false
         guard player != nil || vvcAudioClock != nil else { pendingSeekMs = ms; return }
+        // 暂停时跳转也要显示新位置的画面。
+        wakeDisplayLink()
         let time = CMTime(value: CMTimeValue(max(0, ms)), timescale: 1000)
         if let decoder = vvcPlayback {
             vvcBuffering = true
