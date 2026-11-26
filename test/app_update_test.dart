@@ -189,6 +189,9 @@ void main() {
     await tester.tap(find.text('检查更新'));
     await tester.pumpAndSettle();
     expect(find.text('当前已是最新版本'), findsOneWidget);
+    // 等提示自动消失，避免居中的提示挡住下方的“检查更新”
+    await tester.pump(const Duration(milliseconds: 2500));
+    await tester.pumpAndSettle();
     service.checkError = ApiException('网络不可用');
     await tester.tap(find.text('检查更新'));
     await tester.pumpAndSettle();

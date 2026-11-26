@@ -36,6 +36,7 @@ import '../widgets/player/player_loading.dart';
 import '../widgets/player/player_more_menu.dart';
 import '../widgets/player/player_page_overlays.dart';
 import '../widgets/player/player_video_surface.dart';
+import '../services/screen_awake_controller.dart';
 import 'player_preload_mixin.dart';
 
 // 播放页按职责拆成多个 part 文件，共享 _PlayerPageState 的私有状态：
@@ -148,6 +149,10 @@ class _PlayerPageState extends State<PlayerPage>
 
   final positionMsNotifier = ValueNotifier<int>(0);
   final playingNotifier = ValueNotifier<bool>(false);
+
+  /// 只在真正播放时常亮，播完、暂停、出错后恢复自动熄屏。
+  final _screenAwake =
+      ScreenAwakeController(setKeepScreenOn: NativePlayer.setKeepScreenOn);
   final durationMsNotifier = ValueNotifier<int>(0);
   final speedButtonKey = GlobalKey();
 
@@ -273,9 +278,14 @@ class _PlayerPageState extends State<PlayerPage>
     _seasons = widget.seasons;
     if (!_isDirectVideo && _seasons == null) unawaited(_loadSeasons());
     unawaited(_systemUi.setFullScreen());
-    NativePlayer.setKeepScreenOn(true);
+    playingNotifier.addListener(_onPlayingChangedForScreen);
+    _screenAwake.hold();
     WidgetsBinding.instance.addPostFrameCallback((_) => _flashKeyHint());
     _prepare();
+  }
+
+  void _onPlayingChangedForScreen() {
+    _screenAwake.setPlaying(playingNotifier.value);
   }
 
   void _onLikedVideosChanged() {
@@ -374,7 +384,8 @@ class _PlayerPageState extends State<PlayerPage>
     _episodeShrink.dispose();
     appRouteObserver.unsubscribe(this);
     WidgetsBinding.instance.removeObserver(this);
-    NativePlayer.setKeepScreenOn(false);
+    playingNotifier.removeListener(_onPlayingChangedForScreen);
+    _screenAwake.dispose();
     _keyHintTimer?.cancel();
     _okHoldTimer?.cancel();
     _keyFocus.dispose();

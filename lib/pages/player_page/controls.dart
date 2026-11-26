@@ -9,7 +9,7 @@ extension _PlayerControls on _PlayerPageState {
     if (_sleepStopped) {
       _sleepStopped = false;
       _userPaused = false;
-      unawaited(NativePlayer.setKeepScreenOn(true));
+      _screenAwake.hold();
       unawaited(
           _openEpisode(_currentEpisodeIndex, initialSeekMs: _sleepPositionMs));
       return;
@@ -243,7 +243,7 @@ extension _PlayerControls on _PlayerPageState {
     }
     _sleepStopped = false;
     _userPaused = false;
-    unawaited(NativePlayer.setKeepScreenOn(true));
+    _screenAwake.hold();
     _programmaticJump = true;
     _pageController?.jumpToPage(idx);
     _programmaticJump = false;

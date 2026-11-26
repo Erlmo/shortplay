@@ -54,11 +54,17 @@ class _ShortPlayAppState extends State<ShortPlayApp>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    DeviceProfile.revision.addListener(_onDeviceProfileChanged);
+  }
+
+  void _onDeviceProfileChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    DeviceProfile.revision.removeListener(_onDeviceProfileChanged);
     if (widget.appUpdateService == null) _updates.dispose();
     super.dispose();
   }
@@ -109,6 +115,8 @@ class _ShortPlayAppState extends State<ShortPlayApp>
     );
 
     return MaterialApp(
+      // 识别到遥控器后切换为电视模式，整棵界面按电视布局重新创建
+      key: ValueKey(DeviceProfile.revision.value),
       title: 'ShortPlay',
       debugShowCheckedModeBanner: false,
       theme: baseTheme,

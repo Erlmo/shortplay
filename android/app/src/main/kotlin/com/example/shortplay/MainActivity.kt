@@ -25,8 +25,22 @@ class MainActivity : FlutterActivity() {
     private fun isTelevision(): Boolean {
         val uiMode = getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager
         if (uiMode?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION) return true
-        // 部分国产电视盒子不报 TELEVISION 模式，但声明了 leanback 特性
-        return packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+        val pm = packageManager
+        // 部分国产电视盒子不报 TELEVISION 模式，但声明了 leanback / 电视特性
+        val tvFeatures = listOf(
+            PackageManager.FEATURE_LEANBACK,
+            "android.software.leanback_only",
+            "android.hardware.type.television",
+            "com.google.android.tv",
+            "amazon.hardware.fire_tv",
+        )
+        if (tvFeatures.any { pm.hasSystemFeature(it) }) return true
+        // 什么特性都不报的盒子：没有触摸屏，或者系统配置里就是方向键导航
+        if (!pm.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN)) return true
+        val config = resources.configuration
+        if (config.touchscreen == Configuration.TOUCHSCREEN_NOTOUCH) return true
+        if (config.navigation == Configuration.NAVIGATION_DPAD) return true
+        return false
     }
 
     private val channelName = "shortplay/crypto"

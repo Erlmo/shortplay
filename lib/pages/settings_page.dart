@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -74,6 +75,45 @@ class _SettingsPageState extends State<SettingsPage> {
       }
     } finally {
       if (mounted) setState(() => _savingQuality = false);
+    }
+  }
+
+  Future<void> _chooseTvMode() async {
+    final current = DeviceProfile.tvMode.value;
+    final auto = DeviceProfile.autoDetectedTv ? '电视' : '手机';
+    final selected = await showDialog<TvModeSetting>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: const Text('电视模式'),
+        children: [
+          for (final mode in TvModeSetting.values)
+            ListTile(
+              autofocus: mode == current,
+              title: Text(mode == TvModeSetting.auto
+                  ? '自动（识别为$auto）'
+                  : mode == TvModeSetting.on
+                      ? '开启（遥控器操作的电视界面）'
+                      : '关闭（触屏操作的手机界面）'),
+              leading: Icon(mode == current
+                  ? Icons.radio_button_checked
+                  : Icons.radio_button_off),
+              onTap: () => Navigator.of(dialogContext).pop(mode),
+            ),
+          const Padding(
+              padding: EdgeInsets.fromLTRB(24, 8, 24, 16),
+              child: Text('电视打开后仍是手机界面时选"开启"；手机被误识别成电视时选"关闭"。切换后会回到首页。',
+                  style: TextStyle(fontSize: 12, color: Colors.grey))),
+        ],
+      ),
+    );
+    if (selected == null || selected == current || !mounted) return;
+    try {
+      await DeviceProfile.setTvMode(selected);
+    } catch (_) {
+      if (mounted) {
+        showAppNotice(context,
+            message: '保存电视模式失败，请重试', kind: AppNoticeKind.error);
+      }
     }
   }
 
@@ -176,6 +216,21 @@ class _SettingsPageState extends State<SettingsPage> {
                         ),
                       ),
                       _divider,
+                      // 只有安卓需要：电视盒子可能识别不出来，手机也可能被误识别
+                      if (defaultTargetPlatform == TargetPlatform.android) ...[
+                        ValueListenableBuilder<TvModeSetting>(
+                          valueListenable: DeviceProfile.tvMode,
+                          builder: (_, mode, __) => _SettingsRow(
+                            icon: Icons.tv_rounded,
+                            title: '电视模式',
+                            trailing: Text(mode.label,
+                                style: const TextStyle(
+                                    fontSize: 14, color: Color(0xFF999999))),
+                            onTap: _chooseTvMode,
+                          ),
+                        ),
+                        _divider,
+                      ],
                       _SettingsRow(
                         icon: tv
                             ? Icons.qr_code_scanner_rounded

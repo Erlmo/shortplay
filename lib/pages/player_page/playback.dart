@@ -577,7 +577,7 @@ extension _PlayerPlayback on _PlayerPageState {
     cancelPlaybackPreparation();
     discardStandby();
     playingNotifier.value = false;
-    unawaited(NativePlayer.setKeepScreenOn(false));
+    _screenAwake.release();
     _systemUi.showUIAndResetTimer();
     _refresh(() {
       _playerInitialized = false;

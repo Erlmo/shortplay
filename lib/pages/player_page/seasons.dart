@@ -142,7 +142,7 @@ extension _PlayerSeasons on _PlayerPageState {
     if (oldPlayer != null) await oldPlayer.dispose();
     if (preparingPlayer != null) await preparingPlayer.dispose();
     if (!mounted) return;
-    unawaited(NativePlayer.setKeepScreenOn(true));
+    _screenAwake.hold();
     await _prepare();
   }
 }
