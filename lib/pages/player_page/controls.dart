@@ -40,7 +40,9 @@ extension _PlayerControls on _PlayerPageState {
 
   // 红果：竖屏单击暂停/播放；横屏单击显示/隐藏控件，双击暂停/播放。
   void _onTapVideo() {
-    if (_systemUi.isLandscapeFullScreen || DeviceProfile.usesFocusUi) {
+    // 电视上点画面（空鼠遥控器）只切换控制栏，播放暂停交给 OK 键；
+    // Mac 用鼠标，和手机一样单击画面暂停 / 继续。
+    if (_systemUi.isLandscapeFullScreen || DeviceProfile.isTv) {
       _systemUi.toggleLandscapeUi();
     } else {
       _onTogglePlay();
